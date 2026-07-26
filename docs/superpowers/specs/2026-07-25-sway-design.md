@@ -512,6 +512,64 @@ no cache to write. Structure needs no cooking at all — a `Transform` node writ
 its own component when a param changes and Bevy's propagation does the rest,
 per-frame, where that work belongs.
 
+#### Geometry residency — direction, not settled design
+
+Geometry operators should run as compute shaders wherever the work allows it.
+`Geometry`'s planar attribute layout was chosen partly for this: it is already
+what the GPU wants. Note that the toolkit is compute shaders, vertex pulling
+from storage buffers, and instancing — **there are no geometry shaders**, since
+wgpu and WebGPU have no such stage and Metal never had one.
+
+The structural consequence is larger than it first appears. Bevy's render world
+is a separate world extracted once per frame, while the graph ticks in
+`FixedUpdate` on the main world, so a cook cannot dispatch and read back
+synchronously — it can only enqueue. **GPU cooking therefore leaves the graph
+tick entirely:**
+
+```
+FixedUpdate   graph tick: apply params, mark dirty nodes
+Extract       dirty set + ShaderParams → render world
+Render        a render-graph subgraph dispatches compute in Feeds order;
+              results stay in GPU buffers and are consumed by the draw
+```
+
+Mostly this is a gain. Dispatch coalesces per frame, so a param changing across
+three ticks costs one dispatch, and cook cost genuinely leaves the frame's
+critical path — the async escape hatch of §7 arriving by a different road.
+
+**The port arena stays on the CPU.** It holds signal values that CPU-side nodes
+consume; making it GPU-resident would turn every LFO write into a GPU write and
+force readback for nodes reading their own inputs. The narrower split: a node
+feeding a compute op writes its effective params into a `ShaderParams`
+component (`#[derive(ShaderType)]`) on its own entity, which extraction uploads.
+That is Bevy's existing material-uniform path, already paved. `Geometry` becomes
+a handle to a GPU buffer rather than CPU arrays, and the cook invalidation
+above is unaffected, since it keys on the component's change tick rather than
+its contents.
+
+The line for which operators can go to the GPU is **whether output size is known
+before dispatch**. Element-wise work — noise, displace, transform, colour — and
+`Scatter` at fixed count are clean. `CopyToPoints` is often no dispatch at all:
+bind the point buffer as instance data and let the draw expand it. Variable
+output size (delete-by-threshold, fracture) needs atomic counters and indirect
+dispatch, and is later work. Anything rewriting topology or needing adjacency,
+such as subdivide or fuse, stays on the CPU.
+
+This qualifies one of the free wins above: with geometry resident on the GPU,
+inspecting an intermediate node's output needs an explicit async readback rather
+than a component read. Still worth having, but editor-requested and a frame
+late, not free.
+
+**The hazard to design for now** is mixed residency. A CPU operator wedged
+between two GPU operators forces a readback and a stall, and in the graph it
+looks identical to a chain that stays resident. Same shape as cook cost, so the
+same position (§7): the tool reports rather than polices. Residency is shown on
+the node — border, badge — so a ping-pong is something an author sees rather
+than something they profile.
+
+`sway-geo` consequently sits on the render side and depends on `bevy_render`.
+§2.9's rule survives untouched: it constrains `sway-graph`, not the node crates.
+
 #### What this deletes
 
 The commit and reconcile stage, a `SceneNode` port type, bind points, name
@@ -537,7 +595,8 @@ sway-gpu        wgpu instance/device/queue creation — the single place the
 sway-graph      engine: port kinds, edge kinds, node type registry, compiler,
                 port arena, cook gating, tick runner, project format
 sway-nodes      built-in node types — signal nodes and scene nodes
-sway-geo        Geometry attribute tables and the operators over them
+sway-geo        Geometry attribute tables and the operators over them; sits on
+                the render side, depends on bevy_render (§2.10)
 sway-runtime    headless Bevy app rendering to a texture; services, pipelines
 sway-midi       MIDI IO thread + transport clock estimator
 sway-editor     masonry UI; links the runtime directly
@@ -597,8 +656,16 @@ fastest-moving surface in the project, and both point clouds and z-depth
 spritesheets need one. Build them driven by hardcoded parameters, before anything
 architectural depends on them.
 
+**Extended to cover compute.** One geometry operator — `Scatter` at fixed count
+is the obvious candidate — dispatched from a dirty set carried through
+extraction, writing a buffer the draw consumes. Same undocumented surface, same
+rule that put this milestone out of order in the first place. If the
+extract-and-dispatch shape of §2.10 turns out to be unworkable, that changes the
+operator set, and learning it here costs a spike rather than a rewrite of M5.
+
 *Exit:* a point cloud and a z-depth sprite layer render at frame rate with custom
-vertex/fragment shaders. The code is provisional — the goal is knowledge, not
+vertex/fragment shaders, and one compute-cooked geometry operator dispatches from
+a graph-shaped dirty set. The code is provisional — the goal is knowledge, not
 architecture.
 
 ### M1b — Integration spike (S) — **go/no-go gate**
@@ -743,6 +810,14 @@ Spout. Timeline sequencing.
   apply the result when it lands, which genuinely decouples cost from the frame
   at the price of geometry arriving a frame or more late. Named here so it is a
   known option rather than a 2am rediscovery.
+
+- **Which geometry operators are GPU-resident** cannot be answered before M1
+  produces one. The shape is decided (§2.10: extract a dirty set, dispatch a
+  render-graph subgraph in `Feeds` order, params through `ShaderParams`, arena
+  stays on the CPU) and the criterion is decided (output size known before
+  dispatch). What is open is how far the criterion reaches in practice, and
+  whether mixed residency proves tolerable or forces a rule that a `Feeds` chain
+  must be entirely one or the other. Answer at M1, revisit before M5.
 
 - **Fixed tick rate value** is unchosen. The mechanism is settled
   (`Time::<Fixed>::from_hz`); the number should be picked at M2 with
