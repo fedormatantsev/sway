@@ -11,7 +11,6 @@
 // Locations 3-4 are the per-instance attributes pushed in point_cloud.rs's
 // `SpecializedMeshPipeline` impl: a position+scale vec4 and an RGBA colour.
 struct Vertex {
-    @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
@@ -34,8 +33,18 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     let local_position = vertex.position * scale + offset;
 
     var out: VertexOutput;
+    // NOTE: passing 0u rather than the `instance_index` builtin is
+    // deliberate, matching Bevy's own `custom_shader_instancing` reference
+    // example (see point_cloud.rs's module doc). Only one *mesh* instance is
+    // ever registered with Bevy's mesh-uniform array for this single draw
+    // entity — the per-point instancing here is a second, custom vertex
+    // buffer layered on top, entirely separate from Bevy's own instancing.
+    // `instance_index` counts 0..50000 across the custom per-point buffer,
+    // which is the wrong index into that one-entry mesh-uniform array: found
+    // by running this on real hardware (task-6-brief.md's Step 6) as a
+    // garbled, streaky point cloud instead of a fibonacci sphere.
     out.clip_position = mesh_functions::mesh_position_local_to_clip(
-        mesh_functions::get_world_from_local(vertex.instance_index),
+        mesh_functions::get_world_from_local(0u),
         vec4<f32>(local_position, 1.0),
     );
     out.color = vertex.point_color;
