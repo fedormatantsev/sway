@@ -4,4 +4,7 @@
 //! Per spec §5 the goal here is knowledge, not architecture — expect most of
 //! this to be rewritten at M5.
 
+pub mod point_cloud;
 pub mod shader_validation;
+
+pub use point_cloud::PointCloudPlugin;
