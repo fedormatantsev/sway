@@ -3,6 +3,7 @@
 **Date:** 2026-07-25
 **Status:** Approved, pre-implementation
 **Revision:** graph engine builds on Bevy's non-rendering subcrates (§2.2–§2.7, §3)
+**Revision:** scene composition is expressed in the graph, Houdini/USD-shaped (§2.10)
 
 ## 1. What this is
 
@@ -51,17 +52,22 @@ not a graph exists.
 
 ### 2.1 The central decoupling
 
-The graph *fires*; it does not *evaluate*. It says "burst here", "retarget that
-colour", "start clip 3" — and ECS systems own the continuation. An animation
+The graph does two things, and only two. It **declares structure** — what exists
+in the scene and how it composes (§2.10) — and it **fires** — "burst here",
+"retarget that colour", "start clip 3". What it does not do is drive the world
+frame by frame. Structure is cooked when something changes, not on every tick,
+and a fired event belongs to ECS systems from the moment it lands: an animation
 triggered by a node keeps running with no further involvement from the graph.
 
 This is why the runtime stands alone, why the graph can tick at a rate unrelated
 to the render loop, and why the graph does not need to be fast.
 
 Corollary principle: the graph is the nervous system, the Bevy world is the body.
-Low-cardinality global signals (an LFO, an envelope, a CC) live in the graph.
-High-cardinality per-entity state (10k points, rigid bodies, particle lifetimes)
-lives in the ECS, parameterised by the graph. **Physics never becomes a node.**
+Low-cardinality global signals (an LFO, an envelope, a CC) live in the graph's
+port arena. High-cardinality data (10k points, rigid bodies, particle lifetimes)
+lives in the ECS as components, parameterised by the graph. Scene composition
+does not breach this: geometry is a component on an entity, never a value on an
+edge (§2.10). **Physics never becomes a node.**
 
 ### 2.2 Node contract
 
@@ -88,7 +94,8 @@ pipelines. This is what lets a node ship its ECS systems and shaders alongside
 its control logic.
 
 Ten LFOs are ten entities, each carrying `LfoParams`, `LfoState`, and a port
-binding. There is no `NodeInstance` trait object: registration erases
+binding. A scene node's entity is additionally the scene object it makes
+(§2.10). There is no `NodeInstance` trait object: registration erases
 `NodeType::tick` to a bare `fn(&mut World, Entity, &mut PortView, &TickCtx)`
 stored in the node type registry, and the tick loop dispatches through it. State
 is components, so the editor can inspect it, and snapshot/restore becomes a
@@ -139,12 +146,24 @@ The consequence worth naming: **a node's schema is derived from its params
 struct, not written alongside it.** There is no `schema()` to fall out of sync
 with the type it describes.
 
-Port storage is a flat arena, not components. Ports are read and written in
-compiled index order by a single system, and the editor reads the whole arena to
-animate live values on edges (§2.8) — both are arena-shaped access patterns that
-per-entity components would only make slower and more awkward. The arena is a
-resource, taken out of the world for the duration of the tick so that a node can
-hold `&mut World` and `&mut PortView` at once.
+With one qualification: **schema is a function of the params value, not only of
+the params type.** An `AssignMaterial` node whose `field` param selects
+`emissive` has a `LinearRgba` port; selecting `metallic` gives it an `f32` one.
+Variable-arity nodes have the same shape. So the registry entry is
+`fn ports(&Params) -> PortSchema` rather than a purely type-derived constant —
+still generated from reflection, still incapable of drifting from the struct,
+but evaluated per instance at compile time. The port type of a driven parameter
+is read from `TypeRegistry` for the selected field, so a mistyped connection is
+a load error like any other.
+
+Port storage is a flat arena, not components, and holds **only signal values** —
+scalars, vectors, colours, event streams. Geometry and scene structure are not
+in it (§2.10). Ports are read and written in compiled index order by a single
+system, and the editor reads the whole arena to animate live values on edges
+(§2.8) — both are arena-shaped access patterns that per-entity components would
+only make slower and more awkward. The arena is a resource, taken out of the
+world for the duration of the tick so that a node can hold `&mut World` and
+`&mut PortView` at once.
 
 Two port kinds:
 
@@ -161,19 +180,33 @@ They fire immediately and recursively, which cannot be reconciled with
 topologically ordered evaluation, and they carry no notion of buffering several
 occurrences with sub-tick offsets to be drained at a known point.
 
-Edges are entities carrying source and target relationship components. Bevy
-maintains the reverse index, and despawning a node despawns its edges — which
-matters at M7, where the failure mode of a hand-rolled edge list is a dangling
-reference after a delete.
+**Param edges are entities**, carrying source and target relationship components
+with their port indices. Bevy maintains the reverse index, and despawning a node
+despawns its edges — which matters at M7, where the failure mode of a
+hand-rolled edge list is a dangling reference after a delete.
+
+They are one of three edge kinds. The other two — `ChildOf` and `Feeds` — carry
+no value at all and are relationships between node entities directly rather than
+edge entities of their own. §2.10 defines them.
 
 ### 2.5 Compilation
 
 ```
-project.ron → spawn node + edge entities → validate types → topo sort
+project.ron → spawn node entities
+            → structure pass:  ChildOf / Feeds — acyclic, single-parent
+            → dataflow pass:   param edges — validate types → topo sort
             → flat Vec<Entity> + port arena layout
 ```
 
 All failure happens at load. Tick is infallible.
+
+**Two passes, not one.** Structure edges are not data dependencies and must not
+enter the topological sort — a `Transform` node's evaluation order has nothing
+to do with which entity it parents. Their validation is separate and has its own
+failure modes: a parenting cycle, a `ChildOf` fan-out (illegal, an entity has
+one parent), a `Feeds` input slot filled twice. Each needs an error message in
+its own vocabulary; "cycle detected" is unhelpful when the author connected two
+edges to one parent socket.
 
 **Cycles are out of scope.** The compiler rejects them; the graph is a DAG. If
 feedback becomes interesting later, a one-tick delay node reintroduces it — edges
@@ -195,6 +228,15 @@ fixed rate decoupled from render framerate. Serial evaluation, direct `&mut
 World`, trivially ordered. `Time<Fixed>` owns the accumulator and the rate
 (`Time::<Fixed>::from_hz`), and its clamped catch-up behaviour is exactly the
 0..n-ticks-per-frame model below.
+
+**`FixedUpdate` decouples the tick rate from the frame rate, not the tick cost.**
+It runs inside `Main`, on the main thread, in the same frame — a 30 ms cook is a
+30 ms frame. And the coupling is slightly worse than neutral: a tick that
+overruns its timestep leaves the accumulator behind, so the next frame runs
+extra ticks to catch up. `Time<Fixed>::max_delta` stops that from spiralling,
+but it damps by *dropping* ticks, so a heavy cook produces a long frame followed
+by a jump in graph time — a hitch and a lurch, not just a busy screen. §7 states
+the position taken on this.
 
 **Nodes are not per-type systems, and this is the one place the ECS is refused.**
 The batched version of this design is seductive — an LFO node type as a system
@@ -218,7 +260,11 @@ Consequences, all coherent with the decoupling in 2.1:
   its own, which is exactly the intent.
 - Because the tick rate is fixed and independent of rendering performance, a
   recorded MIDI trace replays to bit-identical graph output. Golden-trace testing
-  of the entire control layer is exact, not approximate.
+  of the entire control layer is exact, not approximate. The guarantee is over
+  the *tick sequence*: tests drive `app.update()` with a fixed delta and so are
+  exact by construction. Live under sustained overload, `max_delta` drops ticks
+  and output diverges from the trace — acceptable for an instrument, but not a
+  promise the spec should make unqualified.
 
 MIDI events are timestamped on arrival by the IO thread; the tick drains events
 up to the tick boundary, preserving sub-tick offsets.
@@ -300,6 +346,9 @@ and nothing in the engine layer should be unbuildable headless.
 | Concern | Owner |
 |---|---|
 | Node/edge storage, lifecycle, cascade delete | `bevy_ecs` — entities, hooks, relationships |
+| Scene hierarchy, transform composition | `bevy_transform` — `ChildOf`, `GlobalTransform`, propagation |
+| Operator input wiring (`Feeds`) | `bevy_ecs` — custom relationships |
+| Cook invalidation | `bevy_ecs` — change detection (`Changed<Geometry>`) |
 | Port type registry, editor metadata, schema | `bevy_reflect` — `TypeRegistry`, `TypeData`, field attributes |
 | Type-erased port values | `bevy_reflect` — `Box<dyn PartialReflect>` |
 | Params (de)serialisation | `bevy_reflect` serde |
@@ -308,6 +357,7 @@ and nothing in the engine layer should be unbuildable headless.
 | Project loading, file watching, hot reload | `bevy_asset` — `AssetLoader`, `AssetEvent` |
 | Registration surface, schedule placement | `bevy_app` |
 | Type validation, topological sort, error reporting | **ours** |
+| `Geometry` attribute tables and the operators over them | **ours** |
 | Port arena and its compiled layout | **ours** |
 | Serial tick dispatch over the compiled order | **ours** |
 | Transport phase estimation from 24 ppqn | **ours** |
@@ -326,14 +376,117 @@ wgpu/winit alignment, this adds coordination but no new class of risk. The
 testing argument in the original §3 survives intact: golden-trace tests build a
 minimal `App` with no rendering, which is as cheap as building a bare `World`.
 
+### 2.10 Scene composition
+
+The scene is built by the graph, not loaded beside it. Camera, lights, meshes,
+groupings, materials and transforms are all authored as nodes, and there is no
+base scene file that the graph layers over: content comes from Blender through
+`Asset()` nodes at the leaves, composition comes from the graph. Ownership is
+total, which is what makes teardown and reload answerable.
+
+The model is Houdini's and USD's rather than a node-per-object scene editor. The
+distinction is load-bearing: **operators act on streams, so cardinality lives in
+the data, not the node count.** Thirty-two satellites are a `Scatter` and a
+`CopyToPoints`, not thirty-two nodes.
+
+**A node entity is a scene entity.** §2.2 already makes a node instance an
+entity carrying `Params` and `State`; a scene node additionally carries
+`Transform` and `Geometry`. There is no handle, no mapping table, no reconcile
+step, and selecting a node in the editor selects the object it makes, because
+they are the same entity.
+
+#### Components
+
+- **`Geometry`** — a named attribute table: `P`, `N`, `Cd`, `pscale`, plus
+  arbitrary custom attributes. Planar, not interleaved, as in Houdini and USD —
+  which is also the layout the GPU wants. One component holding a map rather
+  than one component per attribute, because an author can create `@myattr` at
+  runtime and component types cannot be registered then.
+- **`Transform` / `GlobalTransform`** — Bevy is already the local↔world pair
+  with propagation. Nothing to build.
+
+An entity carries either, both, or neither. That is USD's prim-with-schemas
+model: `Xform` and `Mesh` are independent capabilities of a prim, not a class
+hierarchy.
+
+#### Three edge kinds
+
+| Kind | Compiles to | Carries | Fan-out |
+|---|---|---|---|
+| `ChildOf` | Bevy hierarchy | nothing | illegal — one parent |
+| `Feeds` | a Bevy relationship, with input slot | nothing | legal |
+| param edge | an edge entity + arena slot | a signal value | legal |
+
+Only param edges touch the port arena, and only they enter the topological sort.
+`ChildOf` composes transforms; `Feeds` is Houdini's SOP wire, and an operator
+reads its input's `Geometry` component rather than receiving a value.
+
+One direction note, because it reads backwards in the compiler: dataflow runs
+leaf→root while parenting runs root→leaf, so a `ChildOf` edge's *source* is the
+child and its *target* is the parent.
+
+**The rule that tells an author which edge they want:** object-level composition
+— place, group, instance, assign — is structure. Element-level operations —
+scatter, noise, displace — are data.
+
+```
+Grid ─feeds→ Scatter ─feeds→ CopyToPoints ─childOf→ rig ─childOf→ root
+Asset("sat.glb") ─feeds→ CopyToPoints
+Asset("hero.glb") ─childOf→ rig
+Light("key"), Camera ─childOf→ root
+
+MidiNote ──> Envelope ─┬─param→ AssignMaterial("hero").emissive
+                       └─param→ hero.scale
+MidiCC 74 ─> Smooth ────param→ Light("key").intensity
+LFO(1/2 bar) ───────────param→ rig.rotate.y
+```
+
+`Grid` and `Scatter` carry `Geometry` and no `Transform`; they are operators and
+sit outside the scene tree entirely. `CopyToPoints` carries both and is in it.
+Which components an entity has *is* the distinction, visible the ECS-native way.
+`CopyToPoints` produces one entity with an instance buffer — the scattered
+points never individuate into entities.
+
+#### Two things this gets for free
+
+**Intermediate results are inspectable.** Only entities marked renderable draw,
+so cooked geometry on operator nodes sits in the world undrawn and available.
+That is Houdini's per-node display flag, obtained by toggling a component, and
+it is the single most useful debugging affordance in this class of tool.
+
+**`Changed<Geometry>` is the cook invalidation.** A node cooks only when an
+input's geometry changed, its params changed, or it is time-dependent. Bevy's
+change ticks plus the flat compiled order supply the dirty propagation; there is
+no cache to write. Structure needs no cooking at all — a `Transform` node writes
+its own component when a param changes and Bevy's propagation does the rest,
+per-frame, where that work belongs.
+
+#### What this deletes
+
+The commit and reconcile stage, a `SceneNode` port type, bind points, name
+resolution against an external scene file, and the whole sink-node set. A signal
+connects directly to the parameter port of the node that builds the thing, so a
+target cannot go stale.
+
+#### What it gives up
+
+Stream rewriting for object-level operations. In Houdini, `Transform →
+Subdivide → Scatter` are all operators on one geometry stream. Here `Transform`
+is a hierarchy node rather than a data operator, so transforming points and then
+scattering on the result is a `Feeds` chain, not a `ChildOf` chain. The gain is
+Bevy's transform propagation for free; the loss is that the two chains are
+different chains and the author has to know which is which. Hence the rule
+above.
+
 ## 3. Crate layout
 
 ```
 sway-gpu        wgpu instance/device/queue creation — the single place the
                 bevy↔vello version coupling lives
-sway-graph      engine: port kinds, node type registry, compiler, port arena,
-                tick runner, project format
-sway-nodes      built-in node types
+sway-graph      engine: port kinds, edge kinds, node type registry, compiler,
+                port arena, cook gating, tick runner, project format
+sway-nodes      built-in node types — signal nodes and scene nodes
+sway-geo        Geometry attribute tables and the operators over them
 sway-runtime    headless Bevy app rendering to a texture; services, pipelines
 sway-midi       MIDI IO thread + transport clock estimator
 sway-editor     masonry UI; links the runtime directly
@@ -347,8 +500,10 @@ what remains — port kinds, the node type registry, the document shape — is s
 enough that a separate crate would exist only to preserve a boundary nothing
 needs. The editor links `sway-graph` regardless.
 
-`sway-graph` depends on `bevy_app`, `bevy_ecs`, `bevy_reflect`, `bevy_time`, and
-`bevy_asset` — not on `bevy`, and specifically not on `bevy_render`. Making the
+`sway-graph` depends on `bevy_app`, `bevy_ecs`, `bevy_reflect`, `bevy_time`,
+`bevy_transform`, and `bevy_asset` — not on `bevy`, and specifically not on
+`bevy_render`. `bevy_transform` joins the list because §2.10 makes the scene
+hierarchy part of the graph; it is headless and pulls no renderer. Making the
 engine generic over a context type was considered and rejected: a minimal
 headless `App` is cheap to construct in tests, so the abstraction would buy
 nothing real.
@@ -359,7 +514,13 @@ nothing real.
   rate produces bit-identical output; assert against stored expectations.
 - **Transport** — recorded clock traces including tempo changes and dropouts.
 - **Compiler** — table-driven tests for type mismatches, cycles, missing nodes,
-  unknown types. Every failure mode must produce a clear load-time error.
+  unknown types, and the structure-pass failures of §2.5: parenting cycles,
+  `ChildOf` fan-out, a `Feeds` slot filled twice. Every failure mode must produce
+  a clear load-time error in the vocabulary of the edge kind that failed.
+- **Cooking** — a cook is a pure function of its inputs, so assert on the
+  resulting `Geometry` attributes directly. Also assert the *negative*: that an
+  unrelated param change cooks nothing, since a broken invalidation gate is a
+  performance bug that no output assertion would catch.
 - **Runtime** — replay recorded MIDI traces through a graph into a headless world;
   assert on ECS state and service calls rather than pixels.
 - **Rendering** — no pixel-diff tests. Verified by eye.
@@ -403,10 +564,15 @@ against the Syphon route.
 ### M2 — Graph engine (L)
 
 `sway-graph` core: `NodeType` trait with reflect-derived params, node and edge
-entities, type-erased ports with `Continuous`/`Event` kinds, compiler,
-`FixedUpdate` runner. Initial node set: MidiNote, MidiCC, LFO, Envelope, Math,
-Remap, Switch, Select. Golden-trace test harness. Graphs still constructed in
-Rust.
+entities, the three edge kinds with their two validation passes, type-erased
+ports with `Continuous`/`Event` kinds, compiler, `FixedUpdate` runner. Initial
+node set: MidiNote, MidiCC, LFO, Envelope, Math, Remap, Switch, Select.
+Golden-trace test harness. Graphs still constructed in Rust.
+
+Cook gating (`Changed<Geometry>` plus params) belongs here rather than at M5,
+even though no node cooks anything yet: it determines what the tick loop looks
+like, and retrofitting it around an existing runner is worse than building it
+in. A trivial `Geometry`-producing node is enough to exercise it.
 
 The reflect-derived schema is load-bearing for M7 and should be exercised here:
 one node type's params should already drive a throwaway debug inspector, so that
@@ -444,10 +610,21 @@ rather than regenerating it.
 
 ### M5 — Visual runtime (L)
 
-The real version of M1. Runtime services (`PointCloudSet`, `SpriteLayers`,
+The real version of M1, and the milestone that makes §2.10 real. The scene node
+set — `Asset`, `Transform`, `Group`, `Camera`, `Light`, `AssignMaterial`,
+`Grid`, `Scatter`, `CopyToPoints` — plus the `Geometry` component and the
+renderable marker. Runtime services (`PointCloudSet`, `SpriteLayers`,
 `Emitters`, `CameraRig`, `AnimationDirector`) with owned invariants, glTF mesh
 instancing, curve-driven procedural animation, physics if wanted. Where the
 fire-and-forget decoupling earns its keep: nodes trigger, ECS systems continue.
+
+Two things deliberately *not* here. An attribute expression node — Houdini's
+wrangle, where most of its power concentrates — is a language or a compiled
+kernel and is its own project; ship fixed operators first. And sinks driven at
+tick rate will step visibly when rendering runs faster, so a continuously driven
+`Transform` should write previous and next and let a per-frame system lerp by
+`Time<Fixed>::overstep_fraction`. Standard fixed-timestep render interpolation,
+cheap here, awkward to retrofit.
 
 *Exit:* a set can be built that actually looks like the intended set.
 
@@ -471,6 +648,13 @@ Topology editing spawns and despawns node and edge entities and requests a
 recompile. Nothing here weakens §1's guarantee that the graph is compiled before
 it runs: during a show there is no editor.
 
+Two things specific to §2.10. **Deleting a scene node must reparent before
+despawning** — Bevy's despawn cascades to `Children`, and a scene node's
+children are its inputs, so deleting a `Group` would otherwise take out
+everything feeding it. And the canvas should surface **per-node cook time and
+the display flag**, which are the two affordances that make a Houdini-shaped
+graph debuggable at all (§7, §2.10).
+
 *Exit:* authoring without touching RON.
 
 ### M8 — DMX (M)
@@ -486,6 +670,21 @@ Live graph patching. Preset and snapshot recall. Video decode. Audio reactivity
 Spout. Timeline sequencing.
 
 ## 7. Known open questions
+
+- **Cook cost belongs to the graph author, not the tool.** This is a decision,
+  recorded here because §2.6 makes its consequence unavoidable: a cook runs on
+  the main thread inside the frame, so an expensive one hitches. Houdini and
+  TouchDesigner take the same position, and the alternative — a tick budget that
+  silently defers work — trades a visible problem for an invisible one. The tool
+  therefore *reports* cost rather than policing it: per-node cook time in the
+  editor (M7), and a reflect marking on params that invalidate `Geometry` so the
+  author can see that `Scatter.count` is not `Light.intensity`. The residual
+  risk is covered by M6's watchdog rather than by the engine.
+
+  The escape hatch, if this ever does bite: cook on `AsyncComputeTaskPool` and
+  apply the result when it lands, which genuinely decouples cost from the frame
+  at the price of geometry arriving a frame or more late. Named here so it is a
+  known option rather than a 2am rediscovery.
 
 - **Fixed tick rate value** is unchosen. The mechanism is settled
   (`Time::<Fixed>::from_hz`); the number should be picked at M2 with
