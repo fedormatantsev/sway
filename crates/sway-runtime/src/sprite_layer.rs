@@ -40,6 +40,7 @@
 
 use bevy::{
     asset::RenderAssetUsages,
+    camera::visibility::NoFrustumCulling,
     prelude::*,
     reflect::TypePath,
     render::render_resource::{AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat},
@@ -227,6 +228,22 @@ pub fn spawn_demo_sprite_layers(
             // kept in agreement or the layers blend in the wrong order
             // despite each rendering at the right depth.
             Transform::from_translation(layer.position),
+            // The mesh here is `Rectangle::default()` (local half-size 0.5,
+            // flat in z), but the shader billboards it out to a half-size of
+            // `DEMO_LAYER_SCALE` *along the camera's own right/up axes* (see
+            // the vertex shader), not along this entity's local axes. Bevy's
+            // frustum culling checks the mesh's local AABB against
+            // `GlobalTransform` — a `Transform::with_scale` could inflate
+            // that AABB to match at the current axis-aligned demo camera,
+            // but since the flat mesh has zero local z-extent, a uniform
+            // local-axis scale stops bounding the actual billboard as soon
+            // as the camera's right/up vectors pick up any out-of-plane
+            // (roll/tilt) component — exactly the kind of repositioning
+            // Task 6 might introduce. `NoFrustumCulling` sidesteps that by
+            // exempting the entity from the check entirely, camera
+            // orientation notwithstanding; the same trade-off `point_cloud.rs`
+            // makes for its own camera-relative instanced draw.
+            NoFrustumCulling,
         ));
     }
 }
