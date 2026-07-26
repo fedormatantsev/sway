@@ -64,6 +64,7 @@
 //! (see `bevy_render::storage::ShaderBuffer::default`) — storage-bindable
 //! and readback-able out of the box. Nothing to opt into.
 
+use bevy::asset::{embedded_asset, load_embedded_asset};
 use bevy::core_pipeline::schedule::camera_driver;
 use bevy::platform::collections::HashSet as BevyHashSet;
 use bevy::prelude::*;
@@ -80,8 +81,6 @@ use bevy::render::{
     Render, RenderApp, RenderStartup,
 };
 
-const SHADER_ASSET_PATH: &str = "shaders/scatter.wgsl";
-
 /// Point count for the hardcoded demo scatter. Kept small (unlike the point
 /// cloud's 50,000) because the whole point of the reduced target is a
 /// human-readable logged readback, not a scale test.
@@ -97,6 +96,13 @@ pub struct ScatterPlugin;
 
 impl Plugin for ScatterPlugin {
     fn build(&self, app: &mut App) {
+        // Compiles `scatter.wgsl` into the binary and registers it under the
+        // `embedded://` asset source, so the shader is reachable without any
+        // filesystem path resolution relative to a running binary's location
+        // (see `init_scatter_pipeline`'s matching `load_embedded_asset!`
+        // call below).
+        embedded_asset!(app, "../assets/shaders/scatter.wgsl");
+
         app.add_plugins(ExtractComponentPlugin::<ScatterSource>::default());
 
         app.sub_app_mut(RenderApp)
@@ -160,7 +166,7 @@ fn init_scatter_pipeline(
             ),
         ),
     );
-    let shader = asset_server.load(SHADER_ASSET_PATH);
+    let shader = load_embedded_asset!(asset_server.as_ref(), "../assets/shaders/scatter.wgsl");
     let pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
         label: Some("scatter compute pipeline".into()),
         layout: vec![layout.clone()],

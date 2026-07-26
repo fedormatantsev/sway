@@ -39,15 +39,13 @@
 //!    buffer layout and no custom `Material::specialize` override is needed.
 
 use bevy::{
-    asset::RenderAssetUsages,
+    asset::{embedded_asset, embedded_path, AssetPath, RenderAssetUsages},
     camera::visibility::NoFrustumCulling,
     prelude::*,
     reflect::TypePath,
     render::render_resource::{AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat},
     shader::ShaderRef,
 };
-
-const SHADER_ASSET_PATH: &str = "shaders/sprite_layer.wgsl";
 
 /// Matches `Layer` in `sprite_layer.wgsl` field-for-field: uniform-buffer
 /// layout rules (16-byte-aligned vec4s) make a 1:1 Rust/WGSL struct the
@@ -77,11 +75,17 @@ pub struct SpriteLayerMaterial {
 
 impl Material for SpriteLayerMaterial {
     fn vertex_shader() -> ShaderRef {
-        SHADER_ASSET_PATH.into()
+        ShaderRef::Path(
+            AssetPath::from_path_buf(embedded_path!("../assets/shaders/sprite_layer.wgsl"))
+                .with_source("embedded"),
+        )
     }
 
     fn fragment_shader() -> ShaderRef {
-        SHADER_ASSET_PATH.into()
+        ShaderRef::Path(
+            AssetPath::from_path_buf(embedded_path!("../assets/shaders/sprite_layer.wgsl"))
+                .with_source("embedded"),
+        )
     }
 
     fn alpha_mode(&self) -> AlphaMode {
@@ -97,6 +101,12 @@ pub struct SpriteLayerPlugin;
 
 impl Plugin for SpriteLayerPlugin {
     fn build(&self, app: &mut App) {
+        // Compiles `sprite_layer.wgsl` into the binary and registers it
+        // under the `embedded://` asset source — see the matching
+        // `embedded_path!` calls in `SpriteLayerMaterial`'s
+        // `vertex_shader`/`fragment_shader` above.
+        embedded_asset!(app, "../assets/shaders/sprite_layer.wgsl");
+
         app.add_plugins(MaterialPlugin::<SpriteLayerMaterial>::default());
     }
 }

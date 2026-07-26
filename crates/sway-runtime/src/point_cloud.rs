@@ -30,6 +30,7 @@
 //!    `PREPROCESSOR_SHADERS` in `shader_validation.rs` as a deliberate,
 //!    reviewed skip.
 
+use bevy::asset::{embedded_asset, load_embedded_asset};
 use bevy::core_pipeline::core_3d::TransparentSortingInfo3d;
 use bevy::pbr::{
     self, MeshInputUniform, MeshPipelineSystems, MeshUniform, SetMeshViewBindingArrayBindGroup,
@@ -65,8 +66,6 @@ use bevy::{
     },
 };
 use bytemuck::{Pod, Zeroable};
-
-const SHADER_ASSET_PATH: &str = "shaders/point_cloud.wgsl";
 
 /// Number of points in the hardcoded demo pattern. M1 exit condition (see
 /// task-3-brief.md): 50,000 points visible at frame rate.
@@ -112,6 +111,13 @@ pub struct PointCloudPlugin;
 
 impl Plugin for PointCloudPlugin {
     fn build(&self, app: &mut App) {
+        // Compiles `point_cloud.wgsl` into the binary and registers it under
+        // the `embedded://` asset source, so the shader is reachable without
+        // any filesystem path resolution relative to a running binary's
+        // location (see `init_point_cloud_pipeline`'s matching
+        // `load_embedded_asset!` call below).
+        embedded_asset!(app, "../assets/shaders/point_cloud.wgsl");
+
         app.add_plugins(ExtractComponentPlugin::<PointCloudData>::default());
         app.sub_app_mut(RenderApp)
             .add_render_command::<Transparent3d, DrawPointCloud>()
@@ -297,7 +303,7 @@ fn init_point_cloud_pipeline(
     mesh_pipeline: Res<MeshPipeline>,
 ) {
     commands.insert_resource(PointCloudPipeline {
-        shader: asset_server.load(SHADER_ASSET_PATH),
+        shader: load_embedded_asset!(asset_server.as_ref(), "../assets/shaders/point_cloud.wgsl"),
         mesh_pipeline: mesh_pipeline.clone(),
     });
 }
