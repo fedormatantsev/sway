@@ -363,7 +363,7 @@ and nothing in the engine layer should be unbuildable headless.
 | Node/edge storage, lifecycle, cascade delete | `bevy_ecs` — entities, hooks, relationships |
 | Scene hierarchy, transform composition | `bevy_transform` — `ChildOf`, `GlobalTransform`, propagation |
 | Operator input wiring (`Feeds`) | `bevy_ecs` — custom relationships |
-| Cook invalidation | `bevy_ecs` — change detection (`Changed<Geometry>`) |
+| Cook invalidation | `bevy_ecs` — change ticks (compared explicitly, §2.11) |
 | Port type registry, editor metadata, schema | `bevy_reflect` — `TypeRegistry`, `TypeData`, field attributes |
 | Type-erased port values | `bevy_reflect` — `Box<dyn PartialReflect>` |
 | Params (de)serialisation | `bevy_reflect` serde |
@@ -505,10 +505,11 @@ so cooked geometry on operator nodes sits in the world undrawn and available.
 That is Houdini's per-node display flag, obtained by toggling a component, and
 it is the single most useful debugging affordance in this class of tool.
 
-**`Changed<Geometry>` is the cook invalidation.** A node cooks only when an
-input's geometry changed, its params changed, or it is time-dependent. Bevy's
-change ticks plus the flat compiled order supply the dirty propagation; there is
-no cache to write. Structure needs no cooking at all — a `Transform` node writes
+**Bevy's change ticks are the cook invalidation.** A node cooks only when an
+input's geometry changed, its params changed, or it is time-dependent. Change
+ticks plus the flat compiled order supply the dirty propagation; there is no
+cache to write. The comparison is explicit rather than a `Changed<T>` query
+filter, for a reason §2.11 gives. Structure needs no cooking at all — a `Transform` node writes
 its own component when a param changes and Bevy's propagation does the rest,
 per-frame, where that work belongs.
 
@@ -587,6 +588,124 @@ Bevy's transform propagation for free; the loss is that the two chains are
 different chains and the author has to know which is which. Hence the rule
 above.
 
+### 2.11 Graph state reaching the ECS
+
+Most of what "propagation" usually means does not exist here. Node params, node
+state, geometry and transforms are already components on node entities (§2.10),
+so nothing crosses a boundary between two representations. What happens instead
+is a few narrow write paths inside the tick, after which Bevy's own machinery
+takes over.
+
+```
+PreUpdate     MIDI IO thread → timestamped event buffers
+FixedUpdate   (0..n times per frame)
+                advance Time<Transport> from the phase estimator
+                graph tick — one exclusive system, compiled order:
+                  A. read input ports, write output ports      (arena)
+                  B. apply effective params → own components
+                  C. CPU cooks run; GPU cooks are marked dirty
+                  D. fire observer triggers
+Update        runtime systems: animation, particles, physics
+PostUpdate    transform propagation, visibility
+Extract       accumulated dirty set + ShaderParams → render world
+Render        compute subgraph in Feeds order, then the draw
+```
+
+Because the tick is an exclusive system holding `&mut World`, **writes are
+immediate**: a node later in topological order sees an earlier node's component
+writes within the same tick. Routing through `Commands` would introduce a flush
+boundary and a tick of lag, which is a concrete payoff of the §2.6 choice.
+
+#### A — signals into the arena
+
+Param edges move values from output ports to input ports in compiled index
+order. Pure arena work, no ECS involvement, and the only path that runs for
+every node on every tick.
+
+#### B — effective params into components
+
+The actual graph→ECS write, and it is small: each node writes only its own
+entity's components. A `Transform` node writes `Transform`; a material node
+writes through its `Handle<M>` into `Assets<M>`.
+
+**A connected port shadows the authored value; it does not overwrite it.**
+`Params` holds what the author wrote, the arena holds what the edge is currently
+sending, and the effective value is the arena's when the port is connected and
+the params field's when it is not. Three things follow, all wanted: disconnect a
+CC from a light and it returns to its authored value rather than freezing
+wherever the CC last left it; saving the project cannot bake in whatever the LFO
+happened to be at; and the inspector can show authored and live values at once.
+
+**Write only on change.** Assigning `Transform` unconditionally sets Bevy's
+change tick every tick, which re-runs transform propagation and re-uploads to
+the GPU for a scene that is not moving, and makes `Changed<Transform>`
+worthless for every downstream consumer. Components use `set_if_neq`. Assets
+need more care: `Assets::get_mut` marks the asset changed by the act of calling
+it, so a material write is `get`, compare, and only then `get_mut`.
+
+One interaction to keep in mind at M5: continuous driving plus render
+interpolation both target `Transform`, and they cannot both own it. The node
+writes a `DrivenTransform` carrying previous and next; the per-frame
+interpolator writes `Transform`.
+
+#### C — the geometry cook
+
+A CPU operator reads its `Feeds` sources' `Geometry`, computes, and writes its
+own; reads and writes touch different entities, so it reads through the world,
+computes into a local, and inserts into itself. `Geometry`'s buffers are
+`Arc`-backed, so passing an unchanged attribute through an operator is a
+refcount bump rather than a copy. A GPU operator does none of this in the tick —
+it only joins the dirty set, and §2.10 describes where it runs.
+
+**The naive `Changed<Geometry>` filter is wrong here, and the failure is
+silent.** The filter means "changed since this system last ran", and the graph
+tick system runs every tick — so the flag is true for exactly one tick after an
+upstream write, and a node that skips cooking on that particular tick for any
+other reason misses the change permanently. Instead each node stores, in its
+`State`, the change tick of every input it last cooked against, and compares
+against `get_change_ticks::<Geometry>()` on the source entity. That is robust
+regardless of cadence and survives a node being added mid-session.
+
+The dirty set for GPU cooks accumulates across every tick in a frame and is
+drained at extraction, so a param changing on three consecutive ticks produces
+one dispatch. A CPU operator downstream of a GPU one cannot read its result
+during the tick at all — that is the mixed-residency ping-pong of §2.10, and it
+costs either a stall or a frame of latency.
+
+#### D — events
+
+A node calls `world.trigger(...)` and observers run immediately and
+synchronously inside the tick, so their effects are visible to later nodes in
+the same tick. An observer may spawn, despawn and mutate components freely, but
+**must not touch the port arena**: it is not in the world during the tick
+(§2.4), and re-entering the graph from an observer would break the ordering
+guarantee the compiled order exists to provide.
+
+#### Then nothing
+
+After the tick no graph code runs. Transform propagation, visibility and render
+extraction are Bevy's, reading components the graph happened to write. Between
+ticks — and there may be several frames between them — the world keeps animating
+on its own. That is §2.1 as a mechanism rather than a principle. The editor
+likewise reads rather than receives: live port values come from the arena and
+live node values from components, with nothing pushed to it.
+
+#### Structural change is a separate, rarer path
+
+Spawning and despawning never happen during a tick. On load, reload, or an
+editor edit, the compiler runs and **reconciles by node ID**: nodes present in
+both the old and new project keep their entity, their state, and their ECS
+continuations; removed nodes despawn, cascading to children and edges; added
+nodes spawn; a node whose *type* changed under the same ID is a remove plus an
+add. Edges are rewired and the order recompiled.
+
+This is worth stating precisely, because §2.10 claims the reconcile stage is
+deleted. What is deleted is the *per-frame* reconcile a stream-and-commit design
+would have needed. A reload-time reconcile remains, and it is what keeps hot
+reload from resetting every LFO phase and killing every running animation on
+each save — the difference between authoring with the app running and restarting
+the app on every edit.
+
 ## 3. Crate layout
 
 ```
@@ -630,7 +749,14 @@ nothing real.
 - **Cooking** — a cook is a pure function of its inputs, so assert on the
   resulting `Geometry` attributes directly. Also assert the *negative*: that an
   unrelated param change cooks nothing, since a broken invalidation gate is a
-  performance bug that no output assertion would catch.
+  performance bug that no output assertion would catch. The §2.11 failure mode
+  deserves its own test — a node that skips a tick for an unrelated reason must
+  still cook the upstream change, which is exactly what a `Changed<T>` filter
+  would get wrong.
+- **Reload** — reconcile a project against an edited copy and assert that
+  surviving nodes kept their entity and state, that removed nodes took their
+  edges with them, and that a node whose type changed was replaced rather than
+  mutated.
 - **Runtime** — replay recorded MIDI traces through a graph into a headless world;
   assert on ECS state and service calls rather than pixels.
 - **Rendering** — no pixel-diff tests. Verified by eye.
@@ -687,10 +813,13 @@ ports with `Continuous`/`Event` kinds, compiler, `FixedUpdate` runner. Initial
 node set: MidiNote, MidiCC, LFO, Envelope, Math, Remap, Switch, Select.
 Golden-trace test harness. Graphs still constructed in Rust.
 
-Cook gating (`Changed<Geometry>` plus params) belongs here rather than at M5,
-even though no node cooks anything yet: it determines what the tick loop looks
-like, and retrofitting it around an existing runner is worse than building it
-in. A trivial `Geometry`-producing node is enough to exercise it.
+Cook gating on change ticks (§2.11) belongs here rather than at M5, even though
+no node cooks anything yet: it determines what the tick loop looks like, and
+retrofitting it around an existing runner is worse than building it in. A
+trivial `Geometry`-producing node is enough to exercise it. The
+authored-versus-driven param rule of §2.11 belongs here too — it is a semantic,
+not an optimisation, and every node written after it assumes one answer or the
+other.
 
 The reflect-derived schema is load-bearing for M7 and should be exercised here:
 one node type's params should already drive a throwaway debug inspector, so that
