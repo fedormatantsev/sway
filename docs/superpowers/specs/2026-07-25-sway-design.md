@@ -146,16 +146,29 @@ The consequence worth naming: **a node's schema is derived from its params
 struct, not written alongside it.** There is no `schema()` to fall out of sync
 with the type it describes.
 
-With one qualification: **schema is a function of the params value, not only of
-the params type.** A `Material` node's ports are the fields of whichever
-material type it was configured with — `StandardMaterial` and a custom shader
-material expose different sets — and a `Merge` or `Switch` node's arity is
-likewise a param, not a constant. So the registry entry is
-`fn ports(&Params) -> PortSchema` rather than a purely type-derived constant —
-still generated from reflection, still incapable of drifting from the struct,
-but evaluated per instance at compile time. The port type of a driven parameter
-is read from `TypeRegistry` for the selected field, so a mistyped connection is
-a load error like any other.
+That statement holds without qualification, and keeping it that way is a
+constraint on the node set rather than a happy accident. **A type-selector param
+is a smell; make it a node type.** There is no `Material` node with a kind
+dropdown — there is one node per material type, `StandardMaterial` plus one per
+custom shader material, each with ports that are simply its fields. Lights are
+the same: `DirectionalLight`, `PointLight`, `SpotLight`, not one `Light` with a
+kind param.
+
+This costs nothing to write, because such nodes are generated —
+`impl<M: Material + Reflect> NodeType for MaterialNode<M>` with one registration
+call per material type. The editor palette gains an entry per type, which is
+better than a generic node plus a dropdown, and changing a material's type
+becomes replacing a node rather than flipping a param — honest, since either way
+it invalidates every param edge attached to it.
+
+Variable arity is designed out the same way. `Merge` needs no input ports at
+all: its inputs are `ChildOf` edges, and fan-in is unbounded by nature. `Math`
+and `Switch` are binary and compose — `Switch(s1, Switch(s2, a, b), c)` covers
+the three-way case without a count param.
+
+So a registry entry is a constant derived from the params type. The compiler
+never evaluates a per-instance schema, the editor's inspector is a plain walk
+over a registered type, and there is one fewer moving part in both.
 
 Port storage is a flat arena, not components, and holds **only signal values** —
 scalars, vectors, colours, event streams. Geometry and scene structure are not
@@ -436,14 +449,14 @@ Grid ────────────── feeds(points) ──→ Scatter
 Scatter ─────────── feeds(points) ──→ CopyToPoints
 Asset("sat.glb") ── feeds(proto) ───→ CopyToPoints
 CopyToPoints ────── feeds(geo) ─────→ Mesh("sats")
-Material("shiny") ─ feeds(material) → Mesh("sats")
+StandardMaterial ── feeds(material) → Mesh("sats")
 Mesh("sats") ────── childOf ────────→ rig ── childOf ─→ root
 Asset("hero.glb") ─ childOf ────────→ rig
-Light("key"), Camera ─ childOf ─────→ root
+DirectionalLight("key"), Camera ─ childOf → root
 
-MidiNote ──> Envelope ─┬─param→ Material("shiny").emissive
+MidiNote ──> Envelope ─┬─param→ StandardMaterial("shiny").emissive
                        └─param→ hero.scale
-MidiCC 74 ─> Smooth ────param→ Light("key").intensity
+MidiCC 74 ─> Smooth ────param→ DirectionalLight("key").illuminance
 LFO(1/2 bar) ───────────param→ rig.rotate.y
 ```
 
@@ -461,22 +474,26 @@ about the two chain kinds.
 
 #### Materials are nodes, not assignments
 
-A `Material` node owns a `Handle<StandardMaterial>` and a `Mesh` node takes it
-as a typed input slot. There is no node that assigns a material to something
-else, and therefore no node that reaches into entities it does not own — the
-ownership rule of §2.2 holds without exception.
+A material node owns a `Handle<M>` and a `Mesh` node takes it as a typed input
+slot. There is no node that assigns a material to something else, and therefore
+no node that reaches into entities it does not own — the ownership rule of §2.2
+holds without exception.
+
+There is one node type per material type, not one `Material` node with a type
+param, for the reason given in §2.4: it keeps every node's port schema derivable
+from its params type alone.
 
 The second effect matters more in practice. Material sharing becomes a visible
-topology fact rather than hidden aliasing: one `Material` feeding three `Mesh`
-nodes is obviously shared, and three `Material` nodes are obviously not. The
+topology fact rather than hidden aliasing: one material node feeding three
+`Mesh` nodes is obviously shared, and three material nodes are obviously not. The
 failure this designs out is real and nasty — with assignment-style materials,
 driving one object's emissive silently drives every object sharing the handle,
 and the graph gives no indication. Here, wanting independent emissive means
-drawing a second `Material` node, which is exactly the thought the author should
+drawing a second material node, which is exactly the thought the author should
 be having.
 
 `Feeds` slots are consequently **named and typed**: `points`, `proto`, `geo`,
-`material`. A `Material` output cannot fill a geometry slot, and that is checked
+`material`. A material output cannot fill a geometry slot, and that is checked
 in the structure pass (§2.5) alongside cycles and fan-out. The edge still
 carries nothing at runtime — the target reads the source's component or handle —
 but it is not untyped.
@@ -632,6 +649,13 @@ authoring possible long before the editor exists, and it is why the editor can
 wait. File watching, debounce, and the write-then-rename behaviour of real text
 editors come from `AssetServer` rather than a hand-rolled watcher.
 
+Node types are referenced in the file by a short registered name, not by reflect
+`TypePath`. §2.4's generated node types make this necessary rather than merely
+nicer: the path for a generic node reads
+`sway_nodes::MaterialNode<bevy_pbr::StandardMaterial>`, which no one should have
+to type or read in a hand-authored document, and which pins an internal module
+layout into the file format.
+
 Constraint: the format is both human- and machine-authored, so it must survive
 round-tripping through the editor without destroying comments or ordering. Decide
 this here, not at M7. **Reflect does not solve this** — `ReflectSerializer`
@@ -645,9 +669,9 @@ rather than regenerating it.
 ### M5 — Visual runtime (L)
 
 The real version of M1, and the milestone that makes §2.10 real. The scene node
-set — `Asset`, `Transform`, `Group`, `Camera`, `Light`, `Material`, `Mesh` — and
-the geometry operators — `Grid`, `Scatter`, `CopyToPoints` — plus the `Geometry`
-component and the renderable marker. Runtime services (`PointCloudSet`, `SpriteLayers`,
+set — `Asset`, `Transform`, `Group`, `Camera`, `Mesh`, one node per light type,
+one per material type — and the geometry operators — `Grid`, `Scatter`,
+`CopyToPoints` — plus the `Geometry` component and the renderable marker. Runtime services (`PointCloudSet`, `SpriteLayers`,
 `Emitters`, `CameraRig`, `AnimationDirector`) with owned invariants, glTF mesh
 instancing, curve-driven procedural animation, physics if wanted. Where the
 fire-and-forget decoupling earns its keep: nodes trigger, ECS systems continue.
