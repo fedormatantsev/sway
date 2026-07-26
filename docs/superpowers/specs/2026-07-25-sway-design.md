@@ -147,9 +147,10 @@ struct, not written alongside it.** There is no `schema()` to fall out of sync
 with the type it describes.
 
 With one qualification: **schema is a function of the params value, not only of
-the params type.** An `AssignMaterial` node whose `field` param selects
-`emissive` has a `LinearRgba` port; selecting `metallic` gives it an `f32` one.
-Variable-arity nodes have the same shape. So the registry entry is
+the params type.** A `Material` node's ports are the fields of whichever
+material type it was configured with — `StandardMaterial` and a custom shader
+material expose different sets — and a `Merge` or `Switch` node's arity is
+likewise a param, not a constant. So the registry entry is
 `fn ports(&Params) -> PortSchema` rather than a purely type-derived constant —
 still generated from reflection, still incapable of drifting from the struct,
 but evaluated per instance at compile time. The port type of a driven parameter
@@ -204,7 +205,8 @@ All failure happens at load. Tick is infallible.
 enter the topological sort — a `Transform` node's evaluation order has nothing
 to do with which entity it parents. Their validation is separate and has its own
 failure modes: a parenting cycle, a `ChildOf` fan-out (illegal, an entity has
-one parent), a `Feeds` input slot filled twice. Each needs an error message in
+one parent), a `Feeds` slot filled twice, a `Feeds` slot filled with the wrong
+kind of thing (a material into a geometry slot). Each needs an error message in
 its own vocabulary; "cycle detected" is unhelpful when the author connected two
 edges to one parent socket.
 
@@ -414,7 +416,7 @@ hierarchy.
 | Kind | Compiles to | Carries | Fan-out |
 |---|---|---|---|
 | `ChildOf` | Bevy hierarchy | nothing | illegal — one parent |
-| `Feeds` | a Bevy relationship, with input slot | nothing | legal |
+| `Feeds` | a Bevy relationship, into a named typed slot | nothing | legal |
 | param edge | an edge entity + arena slot | a signal value | legal |
 
 Only param edges touch the port arena, and only they enter the topological sort.
@@ -430,22 +432,54 @@ child and its *target* is the parent.
 scatter, noise, displace — are data.
 
 ```
-Grid ─feeds→ Scatter ─feeds→ CopyToPoints ─childOf→ rig ─childOf→ root
-Asset("sat.glb") ─feeds→ CopyToPoints
-Asset("hero.glb") ─childOf→ rig
-Light("key"), Camera ─childOf→ root
+Grid ────────────── feeds(points) ──→ Scatter
+Scatter ─────────── feeds(points) ──→ CopyToPoints
+Asset("sat.glb") ── feeds(proto) ───→ CopyToPoints
+CopyToPoints ────── feeds(geo) ─────→ Mesh("sats")
+Material("shiny") ─ feeds(material) → Mesh("sats")
+Mesh("sats") ────── childOf ────────→ rig ── childOf ─→ root
+Asset("hero.glb") ─ childOf ────────→ rig
+Light("key"), Camera ─ childOf ─────→ root
 
-MidiNote ──> Envelope ─┬─param→ AssignMaterial("hero").emissive
+MidiNote ──> Envelope ─┬─param→ Material("shiny").emissive
                        └─param→ hero.scale
 MidiCC 74 ─> Smooth ────param→ Light("key").intensity
 LFO(1/2 bar) ───────────param→ rig.rotate.y
 ```
 
-`Grid` and `Scatter` carry `Geometry` and no `Transform`; they are operators and
-sit outside the scene tree entirely. `CopyToPoints` carries both and is in it.
-Which components an entity has *is* the distinction, visible the ECS-native way.
-`CopyToPoints` produces one entity with an instance buffer — the scattered
-points never individuate into entities.
+`Grid`, `Scatter` and `CopyToPoints` carry `Geometry` and no `Transform`; they
+are operators and sit outside the scene tree entirely. `Mesh` carries
+`Transform`, `Mesh3d` and `MeshMaterial3d` and is in it. Which components an
+entity has *is* the distinction, visible the ECS-native way. `CopyToPoints`
+produces one buffer of instances — the scattered points never individuate into
+entities.
+
+**`Mesh` is where a `Feeds` chain enters the `ChildOf` tree**, and it is the
+only place that happens other than `Asset`, which imports a glTF subtree
+directly. Naming that boundary is most of what an author needs to understand
+about the two chain kinds.
+
+#### Materials are nodes, not assignments
+
+A `Material` node owns a `Handle<StandardMaterial>` and a `Mesh` node takes it
+as a typed input slot. There is no node that assigns a material to something
+else, and therefore no node that reaches into entities it does not own — the
+ownership rule of §2.2 holds without exception.
+
+The second effect matters more in practice. Material sharing becomes a visible
+topology fact rather than hidden aliasing: one `Material` feeding three `Mesh`
+nodes is obviously shared, and three `Material` nodes are obviously not. The
+failure this designs out is real and nasty — with assignment-style materials,
+driving one object's emissive silently drives every object sharing the handle,
+and the graph gives no indication. Here, wanting independent emissive means
+drawing a second `Material` node, which is exactly the thought the author should
+be having.
+
+`Feeds` slots are consequently **named and typed**: `points`, `proto`, `geo`,
+`material`. A `Material` output cannot fill a geometry slot, and that is checked
+in the structure pass (§2.5) alongside cycles and fan-out. The edge still
+carries nothing at runtime — the target reads the source's component or handle —
+but it is not untyped.
 
 #### Two things this gets for free
 
@@ -611,9 +645,9 @@ rather than regenerating it.
 ### M5 — Visual runtime (L)
 
 The real version of M1, and the milestone that makes §2.10 real. The scene node
-set — `Asset`, `Transform`, `Group`, `Camera`, `Light`, `AssignMaterial`,
-`Grid`, `Scatter`, `CopyToPoints` — plus the `Geometry` component and the
-renderable marker. Runtime services (`PointCloudSet`, `SpriteLayers`,
+set — `Asset`, `Transform`, `Group`, `Camera`, `Light`, `Material`, `Mesh` — and
+the geometry operators — `Grid`, `Scatter`, `CopyToPoints` — plus the `Geometry`
+component and the renderable marker. Runtime services (`PointCloudSet`, `SpriteLayers`,
 `Emitters`, `CameraRig`, `AnimationDirector`) with owned invariants, glTF mesh
 instancing, curve-driven procedural animation, physics if wanted. Where the
 fire-and-forget decoupling earns its keep: nodes trigger, ECS systems continue.
