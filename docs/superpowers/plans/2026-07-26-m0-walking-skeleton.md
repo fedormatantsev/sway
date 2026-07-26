@@ -1088,9 +1088,19 @@ fn parse_args() -> Args {
     args
 }
 
-/// Logs every monitor once at startup, so choosing `--monitor N` does not
-/// require guessing.
-fn log_monitors(monitors: Query<&Monitor>) {
+/// Logs every monitor once, so choosing `--monitor N` does not require
+/// guessing.
+///
+/// This must run in `Update`, not `Startup`. Bevy spawns `Monitor` entities
+/// from `create_monitors`, which winit calls from its event-loop resume
+/// handler — after `Startup` has already run, so a `Startup` query sees an
+/// empty world. The `Local` latch makes it fire once, on the first frame where
+/// monitors actually exist.
+fn log_monitors(monitors: Query<&Monitor>, mut logged: Local<bool>) {
+    if *logged || monitors.is_empty() {
+        return;
+    }
+    *logged = true;
     for (i, m) in monitors.iter().enumerate() {
         info!(
             "monitor {i}: {} {}x{} @ {:?} mHz",
@@ -1147,9 +1157,9 @@ fn main() {
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
         .insert_resource(MidiRx(rx))
         .init_resource::<GraphState>()
-        .add_systems(Startup, (setup_scene, log_monitors))
+        .add_systems(Startup, setup_scene)
         .add_systems(FixedUpdate, graph_tick)
-        .add_systems(Update, apply_level)
+        .add_systems(Update, (apply_level, log_monitors))
         .run();
 }
 ```
