@@ -610,7 +610,24 @@ git commit -m "feat(midi): packet walking and CoreMIDI port connection"
 
 **Note on the test harness:** `TimeUpdateStrategy::FixedTimesteps(1)` makes each `app.update()` run `FixedUpdate` exactly once — except the first, where the accumulator is still empty. The helper therefore burns one warm-up update, and `warm_up_update_ran_no_ticks` pins that behaviour so it fails loudly if a Bevy upgrade changes it.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Declare the module first**
+
+`sway-app` is a binary-only crate, so `graph.rs` is not compiled at all until
+`main.rs` declares it. Declaring the module before writing the test is what
+makes the next step a genuine red: without it, `cargo test` reports `0 tests`
+rather than a compile error.
+
+Replace `crates/sway-app/src/main.rs` with:
+
+```rust
+mod graph;
+
+fn main() {
+    println!("sway");
+}
+```
+
+- [ ] **Step 2: Write the failing tests**
 
 `crates/sway-app/src/graph.rs`:
 
@@ -733,12 +750,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `cargo test -p sway-app`
-Expected: FAIL — `cannot find type 'GraphState' in this scope` and similar
+Expected: FAIL to compile — `cannot find type 'GraphState' in this scope` and similar. If you instead see `0 tests`, Step 1 was skipped.
 
-- [ ] **Step 3: Write the graph**
+- [ ] **Step 4: Write the graph**
 
 Prepend to `crates/sway-app/src/graph.rs`, above the `tests` module:
 
@@ -792,18 +809,6 @@ pub fn graph_tick(world: &mut World) {
 }
 ```
 
-- [ ] **Step 4: Declare the module**
-
-Replace `crates/sway-app/src/main.rs` with:
-
-```rust
-mod graph;
-
-fn main() {
-    println!("sway");
-}
-```
-
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cargo test -p sway-app`
@@ -833,7 +838,23 @@ git commit -m "feat(app): hardcoded graph tick with golden-trace determinism tes
 
 **Note on the material write:** `Assets::get_mut` marks the asset changed by the act of being called, so an unconditional write would re-upload the material every frame. Spec §2.11 requires read-compare-then-write, which is what `apply_level` does.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Declare the module first**
+
+Same reason as Task 4: `scene.rs` is not compiled until `main.rs` declares it,
+so without this the next step reports `0 tests` instead of failing.
+
+Replace `crates/sway-app/src/main.rs` with:
+
+```rust
+mod graph;
+mod scene;
+
+fn main() {
+    println!("sway");
+}
+```
+
+- [ ] **Step 2: Write the failing test**
 
 `crates/sway-app/src/scene.rs`:
 
@@ -927,12 +948,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 3: Run the test to verify it fails**
 
 Run: `cargo test -p sway-app`
-Expected: FAIL — `cannot find function 'apply_level' in this scope`
+Expected: FAIL to compile — `cannot find function 'apply_level' in this scope`. If you instead see only Task 4's 7 tests passing, Step 1 was skipped.
 
-- [ ] **Step 3: Write the scene module**
+- [ ] **Step 4: Write the scene module**
 
 Prepend to `crates/sway-app/src/scene.rs`, above the `tests` module:
 
@@ -1002,19 +1023,6 @@ pub fn apply_level(
             mat.base_color = want;
         }
     }
-}
-```
-
-- [ ] **Step 4: Declare the module**
-
-Replace `crates/sway-app/src/main.rs` with:
-
-```rust
-mod graph;
-mod scene;
-
-fn main() {
-    println!("sway");
 }
 ```
 
