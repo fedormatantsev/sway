@@ -6,5 +6,7 @@
 
 pub mod point_cloud;
 pub mod shader_validation;
+pub mod sprite_layer;
 
 pub use point_cloud::PointCloudPlugin;
+pub use sprite_layer::SpriteLayerPlugin;
