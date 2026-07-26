@@ -12,25 +12,28 @@
 //! cloud's (Task 3) instanced draw reads them directly as its per-instance
 //! vertex buffer, with no CPU round trip anywhere.
 //!
-//! That bridge is not what this module does, and it cannot be done without
-//! violating one of the two fixed contracts this task was given:
+//! That bridge is not what this module does — but it is not blocked by a
+//! fundamental format incompatibility between fixed contracts. The two
+//! formats really do differ: `scatter.wgsl` (not to be modified) writes
+//! *only* `xyz` position triples, 12 bytes per point, while
+//! `point_cloud.rs`'s `PointInstance` is a 32-byte interleaved
+//! position+scale+colour record. But `point_cloud.rs`'s
+//! `SpecializedMeshPipeline::specialize` (around lines 305-334) already uses
+//! independently-strided vertex buffer slots — the mesh's own attributes in
+//! one slot, the per-instance `PointInstance` data pushed as a separate
+//! slot. A *second*, non-interleaved vertex buffer slot fed directly from
+//! scatter's raw position buffer, paired with a hardcoded uniform scale and
+//! colour, would bridge the two formats with no second compute pass needed.
+//! Only `scatter.wgsl` was ever a fixed contract for this task;
+//! `point_cloud.wgsl` and `point_cloud.rs`'s instance layout were never
+//! declared immutable — they simply belong to Task 3, and this task's Files
+//! list (`scatter.rs`, `lib.rs`) doesn't include them.
 //!
-//! - `scatter.wgsl` (not to be modified) writes *only* `xyz` position
-//!   triples — 12 bytes per point, tightly packed, no scale or colour.
-//! - `point_cloud.wgsl` (also not to be modified; see `point_cloud.rs`)
-//!   reads a per-instance vertex buffer laid out as two `vec4<f32>`s —
-//!   position+scale packed into the first, RGBA colour into the second —
-//!   32 bytes per point.
-//!
-//! A storage buffer written by `scatter.wgsl` has the wrong stride and is
-//! missing two whole attributes (scale, colour) to be reinterpreted as that
-//! vertex buffer. Bridging the two without a CPU round trip would need a
-//! second GPU-side pass (or a change to one of the two WGSL files) to
-//! reshape 12-byte position triples into 32-byte interleaved instances —
-//! which is more than this reduced-scope reduced-target task asks for, and
-//! starts to look like architecture rather than a spike finding. That is the
-//! genuine finding this task produces: **the fixed scatter/point-cloud
-//! contracts, as specified for M1, do not compose for a zero-copy bridge.**
+//! So the real finding is narrower than "hard incompatibility": level (a)
+//! was **unreachable within Task 5's own stated file scope**, not blocked by
+//! the data formats themselves. A modest instance-layout change on Task 3's
+//! side (`point_cloud.rs`/`point_cloud.wgsl`) would close the gap without a
+//! second GPU-side expansion pass.
 //!
 //! So this module takes the brief's explicitly sanctioned fallback instead:
 //! compute writes the buffer, and a `gpu_readback.rs`-style [`Readback`]
@@ -231,6 +234,20 @@ fn dispatch_scatter(
 
     for (buffer_id, params) in &queue.0 {
         let Some(gpu_buffer) = buffers.get(*buffer_id) else {
+            // `queue_scatter_jobs` already marked this id as processed before
+            // this system ever ran, so skipping it here drops the job
+            // permanently: the dirty set will never re-offer this id. That
+            // is only expected if the buffer asset was despawned/unloaded
+            // between queuing and dispatch (same-frame race), which should
+            // not happen for the demo's `ScatterSource`/`ShaderBuffer`
+            // lifetime. Log loudly rather than silently swallowing it so a
+            // real occurrence is visible instead of a scatter source quietly
+            // never getting its GPU-computed data.
+            error!(
+                "scatter: output buffer {buffer_id:?} not resolvable in \
+                 RenderAssets<GpuShaderBuffer> at dispatch time; dropping \
+                 this scatter job permanently (it will not be retried)"
+            );
             continue;
         };
 
@@ -269,7 +286,8 @@ fn dispatch_scatter(
 /// `gpu_readback.rs` pattern — reads it back once, logging the computed
 /// points to prove the values are correct. It does *not* feed the point
 /// cloud's instanced draw; see the module doc for why that bridge was out of
-/// reach without touching a fixed WGSL contract.
+/// reach within this task's file scope, not because the data formats are
+/// fundamentally incompatible.
 pub fn spawn_demo_scatter(mut commands: Commands, mut buffers: ResMut<Assets<ShaderBuffer>>) {
     // Zero-filled initial data: the compute shader overwrites every element
     // up to `count`, so the initial contents never reach the readback impl —
