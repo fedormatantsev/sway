@@ -1,0 +1,13 @@
+[package]
+name = "sway-app"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "sway"
+path = "src/main.rs"
+
+[dependencies]
+bevy.workspace = true
+crossbeam-channel.workspace = true
+sway-midi.workspace = true

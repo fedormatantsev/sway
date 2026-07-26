@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = ["crates/sway-midi", "crates/sway-app"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+bevy = "=0.19.0"
+crossbeam-channel = "0.5"
+sway-midi = { path = "crates/sway-midi" }
