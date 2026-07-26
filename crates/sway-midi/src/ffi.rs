@@ -51,6 +51,9 @@ unsafe extern "C" {
         conn_refcon: *mut c_void,
     ) -> OSStatus;
 
+    pub fn MIDIPortDispose(port: MIDIPortRef) -> OSStatus;
+    pub fn MIDIClientDispose(client: MIDIClientRef) -> OSStatus;
+
     pub fn MIDIGetNumberOfSources() -> ItemCount;
     pub fn MIDIGetSource(index: ItemCount) -> MIDIEndpointRef;
     pub fn MIDIObjectGetStringProperty(

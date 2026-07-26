@@ -43,8 +43,10 @@ pub(crate) extern "C" fn read_proc(
     _src: *mut c_void,
 ) {
     // SAFETY: `refcon` is the boxed Sender pointer handed to
-    // MIDIInputPortCreate, kept alive by the `MidiInput` guard for as long as
-    // the port exists. `list` is owned by CoreMIDI for the duration of the call.
+    // MIDIInputPortCreate. `Drop for MidiInput` disposes the CoreMIDI port
+    // (and client) before the `Box<Sender>` it points at is freed, so as long
+    // as this callback can only run while the port is alive, the pointer is
+    // valid here. `list` is owned by CoreMIDI for the duration of the call.
     unsafe {
         let tx = &*(refcon as *const Sender<MidiEvent>);
         let n = (*list).num_packets;
@@ -53,10 +55,22 @@ pub(crate) extern "C" fn read_proc(
             let len = ((*pkt).length as usize).min(256);
             let data = std::slice::from_raw_parts((&raw const (*pkt).data) as *const u8, len);
             let host_time = (*pkt).time_stamp;
+            // NOTE: this assumes every message in the stream is exactly three
+            // bytes (note on/off, control change, pitch bend, etc). Real MIDI
+            // streams also carry one-byte System Real-Time messages (clock,
+            // start/stop/continue), two-byte messages (Program Change,
+            // Channel Pressure), and running status (repeated status bytes
+            // omitted). Those are currently skipped or misparsed by this
+            // fixed stride. Acceptable for M0, which only needs note-on; the
+            // transport milestone (M3) needs a real byte-stream parser here.
             let mut i = 0;
             while i + 2 < len {
                 let status = data[i];
                 if status & 0x80 != 0 {
+                    // NOTE: `send` on an unbounded channel can allocate (to
+                    // grow the internal buffer) and this runs on CoreMIDI's
+                    // high-priority real-time thread (see module doc).
+                    // Acceptable for M0; revisit if this ever causes glitches.
                     let _ = tx.send(MidiEvent {
                         status,
                         data1: data[i + 1],
@@ -72,12 +86,27 @@ pub(crate) extern "C" fn read_proc(
 }
 
 /// Keeps the CoreMIDI client, port, and the boxed sender the callback points
-/// at alive. Dropping it releases the sender, after which the callback must not
-/// run again — so it must outlive the app.
+/// at alive. Dropping it disposes the CoreMIDI port and client first (so
+/// `read_proc` can no longer be invoked), then frees the boxed sender.
 pub struct MidiInput {
     _client: MIDIClientRef,
     _port: MIDIPortRef,
     _tx: Box<Sender<MidiEvent>>,
+}
+
+impl Drop for MidiInput {
+    fn drop(&mut self) {
+        // SAFETY: `_port` and `_client` were created together in `open_input`
+        // and are only ever disposed here. Rust drops struct fields in
+        // declaration order after `Drop::drop` returns, so disposing the port
+        // (which stops CoreMIDI from invoking `read_proc` with this port's
+        // refcon) and the client here, before `_tx` is freed below, is what
+        // guarantees `read_proc` never dereferences a dangling `Box<Sender>`.
+        unsafe {
+            MIDIPortDispose(self._port);
+            MIDIClientDispose(self._client);
+        }
+    }
 }
 
 /// Opens every source whose display name contains `filter` and streams events
@@ -100,6 +129,9 @@ pub fn open_input(filter: &str, tx: Sender<MidiEvent>) -> Result<MidiInput, OSSt
     // the caller must keep alive for the lifetime of the port.
     let st = unsafe { MIDIInputPortCreate(client, port_name.0, read_proc, refcon, &mut port) };
     if st != 0 {
+        // SAFETY: `client` was just created above and is otherwise unused;
+        // dispose it so it is not leaked on this error path.
+        unsafe { MIDIClientDispose(client) };
         return Err(st);
     }
 

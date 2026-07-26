@@ -84,4 +84,16 @@ mod tests {
         assert_eq!((b.status, b.data1, b.data2, b.host_time), (0x90, 64, 80, 222));
         assert!(rx.try_recv().is_err(), "exactly two events expected");
     }
+
+    /// Opens an input with a filter that matches no source (or every source,
+    /// on a machine with none present) and drops it immediately. This
+    /// exercises the `Drop for MidiInput` path — port and client disposal —
+    /// without needing real MIDI hardware, and without ever reaching
+    /// `read_proc` since nothing is connected.
+    #[test]
+    fn dropping_an_unmatched_input_does_not_crash() {
+        let (tx, _rx) = crossbeam_channel::unbounded::<MidiEvent>();
+        let input = crate::input::open_input("no-such-source-xyz", tx).expect("open_input");
+        drop(input);
+    }
 }
