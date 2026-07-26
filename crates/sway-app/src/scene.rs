@@ -46,6 +46,14 @@ pub fn setup_scene(
 /// Reads and compares before calling `get_mut`, because `get_mut` marks the
 /// asset modified purely by being called — an unconditional write would
 /// re-upload the material every frame (spec §2.11).
+///
+/// DEVIATION from spec §2.11: the spec puts "apply state to components"
+/// inside the `FixedUpdate` tick; this runs in `Update` instead, so it fires
+/// once per frame rather than once per graph tick. This is a deliberate
+/// coalescing choice, not an oversight — the tick runs at 120 Hz (see
+/// `graph::TICK_HZ`), faster than the frame rate, so applying on every tick
+/// would just mean redundant writes of intermediate states nothing ever
+/// sees.
 pub fn apply_level(
     state: Res<GraphState>,
     mut materials: ResMut<Assets<StandardMaterial>>,

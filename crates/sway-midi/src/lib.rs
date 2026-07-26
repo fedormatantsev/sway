@@ -47,9 +47,18 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded::<MidiEvent>();
         let tx = Box::new(tx);
 
-        let mut buf = vec![0u8; 4096];
-        // SAFETY: `buf` is far larger than two packets and is 8-byte aligned
-        // enough for the fields we write; we only read back what we wrote.
+        // Backed by a `Vec<u32>` rather than `Vec<u8>` so the allocation is
+        // 4-byte aligned, matching CoreMIDI's real packet-list buffers (which
+        // are packed to 4 per MIDIServices.h). A `Vec<u8>` is only guaranteed
+        // 1-byte aligned and would not reproduce the alignment this layout
+        // depends on.
+        let mut buf_u32 = vec![0u32; 1024];
+        let buf = unsafe {
+            std::slice::from_raw_parts_mut(buf_u32.as_mut_ptr() as *mut u8, buf_u32.len() * 4)
+        };
+        // SAFETY: `buf` is far larger than two packets and is 4-byte aligned,
+        // matching `MIDIPacketList`'s required alignment; we only read back
+        // what we wrote.
         unsafe {
             let list = buf.as_mut_ptr() as *mut MIDIPacketList;
             (*list).num_packets = 2;
@@ -95,5 +104,33 @@ mod tests {
         let (tx, _rx) = crossbeam_channel::unbounded::<MidiEvent>();
         let input = crate::input::open_input("no-such-source-xyz", tx).expect("open_input");
         drop(input);
+    }
+
+    /// Pins `MIDIPacket`/`MIDIPacketList` to the exact layout CoreMIDI uses,
+    /// independent of anything this crate does with them.
+    ///
+    /// The numbers below are measured from the macOS SDK: `MIDIServices.h`
+    /// wraps both structs in `#pragma pack(push, 4)` (line 446, popped at
+    /// 613). A C program compiled against the SDK reports:
+    ///   MIDIPacket:     size=268 align=4, .timeStamp@0 .length@8 .data@10
+    ///   MIDIPacketList: size=272 align=4, .numPackets@0 .packet@4
+    /// `read_proc_parses_multiple_packets` only checks that `next_packet`'s
+    /// stride agrees with the *Rust* struct definition, so it cannot catch a
+    /// mismatch between the Rust definition and the real CoreMIDI ABI; this
+    /// test is what actually pins the layout.
+    #[test]
+    fn midi_packet_layout_matches_core_midi_abi() {
+        use crate::ffi::{MIDIPacket, MIDIPacketList};
+
+        assert_eq!(std::mem::size_of::<MIDIPacket>(), 268);
+        assert_eq!(std::mem::align_of::<MIDIPacket>(), 4);
+        assert_eq!(std::mem::offset_of!(MIDIPacket, time_stamp), 0);
+        assert_eq!(std::mem::offset_of!(MIDIPacket, length), 8);
+        assert_eq!(std::mem::offset_of!(MIDIPacket, data), 10);
+
+        assert_eq!(std::mem::size_of::<MIDIPacketList>(), 272);
+        assert_eq!(std::mem::align_of::<MIDIPacketList>(), 4);
+        assert_eq!(std::mem::offset_of!(MIDIPacketList, num_packets), 0);
+        assert_eq!(std::mem::offset_of!(MIDIPacketList, packet), 4);
     }
 }

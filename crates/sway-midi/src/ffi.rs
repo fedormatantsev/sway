@@ -15,13 +15,22 @@ pub type CFAllocatorRef = *const c_void;
 pub type MIDINotifyProc = extern "C" fn(*const c_void, *mut c_void);
 pub type MIDIReadProc = extern "C" fn(*const MIDIPacketList, *mut c_void, *mut c_void);
 
-#[repr(C)]
+// Apple's MIDIServices.h wraps these in `#pragma pack(push, 4)` (line 446,
+// popped at 613), so a plain `#[repr(C)]` is wrong here: the `u64 time_stamp`
+// would force 8-byte alignment on the struct and shift every field after it
+// relative to what CoreMIDI actually writes. `packed(4)` reproduces the SDK's
+// pack-to-4 behaviour: fields keep their natural alignment capped at 4 bytes,
+// matching the measured C layout (MIDIPacket size=268 align=4, .timeStamp@0
+// .length@8 .data@10; MIDIPacketList size=272 align=4, .numPackets@0
+// .packet@4). See the layout test in `lib.rs` for the numbers this must
+// satisfy.
+#[repr(C, packed(4))]
 pub struct MIDIPacketList {
     pub num_packets: u32,
     pub packet: [MIDIPacket; 1],
 }
 
-#[repr(C)]
+#[repr(C, packed(4))]
 pub struct MIDIPacket {
     pub time_stamp: u64,
     pub length: u16,

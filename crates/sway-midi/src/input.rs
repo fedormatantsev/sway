@@ -140,6 +140,13 @@ pub fn open_input(filter: &str, tx: Sender<MidiEvent>) -> Result<MidiInput, OSSt
         let n = MIDIGetNumberOfSources();
         for i in 0..n {
             let ep = MIDIGetSource(i);
+            // NOTE: a source whose name could not be read is treated as "does
+            // not match the filter" (`unwrap_or(false)`). `object_display_name`
+            // returns `None` not just when CoreMIDI has no name to give, but
+            // also when `CFStringGetCString` overflows its 256-byte buffer.
+            // So a device with a sufficiently long display name silently
+            // connects nothing when a non-empty `--midi` filter is given,
+            // with no error surfaced.
             let matches = filter.is_empty()
                 || object_display_name(ep)
                     .map(|s| s.contains(filter))
