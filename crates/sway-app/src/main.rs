@@ -1,5 +1,6 @@
 mod graph;
 mod scene;
+mod shell;
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
@@ -25,6 +26,7 @@ struct Args {
     windowed: bool,
     list_only: bool,
     demo: Option<Demo>,
+    editor: bool,
 }
 
 fn parse_args() -> Args {
@@ -34,6 +36,7 @@ fn parse_args() -> Args {
         windowed: false,
         list_only: false,
         demo: None,
+        editor: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -49,6 +52,7 @@ fn parse_args() -> Args {
             }
             "--windowed" => args.windowed = true,
             "--list" => args.list_only = true,
+            "--editor" => args.editor = true,
             "--demo" => {
                 let value = it.next().expect("--demo needs a value");
                 args.demo = Some(match value.as_str() {
@@ -124,6 +128,20 @@ fn main() {
         }
     }
     if args.list_only {
+        return;
+    }
+
+    // `--editor` runs the M1b winit/vello shell instead of the Bevy app
+    // below, and must branch before any of it is touched: `DefaultPlugins`
+    // (added further down) creates its own winit event loop as soon as
+    // `add_plugins` runs, not lazily at `app.run()`, and winit allows only
+    // one event loop per process -- building the Bevy app first and
+    // deciding whether to call `.run()` afterward panics with
+    // `EventLoopError::RecreationAttempt` the moment the editor shell tries
+    // to create its own. Task 3 unifies the two paths; for now they are
+    // mutually exclusive and this is the earliest point that's true.
+    if args.editor {
+        shell::run();
         return;
     }
 

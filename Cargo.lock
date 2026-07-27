@@ -4800,8 +4800,13 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "crossbeam-channel",
+ "imaging",
+ "kurbo",
+ "peniko",
+ "sway-gpu",
  "sway-midi",
  "sway-runtime",
+ "winit",
 ]
 
 [[package]]
@@ -4817,6 +4822,7 @@ dependencies = [
  "peniko",
  "pollster",
  "wgpu",
+ "winit",
 ]
 
 [[package]]
