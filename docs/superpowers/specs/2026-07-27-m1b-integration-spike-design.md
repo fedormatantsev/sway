@@ -2,6 +2,7 @@
 
 **Date:** 2026-07-27
 **Status:** Approved, pre-implementation
+**Revision:** §1's risk-weighting was wrong, not its framing — device sharing (Q1) worked on the first end-to-end run and needed neither fallback; the real friction was an undocumented `External` host-integration gap inside Q2 that §5 did not name (see `docs/superpowers/reports/2026-07-28-m1b-integration-findings.md` §§2, 4)
 **Parent spec:** `2026-07-25-sway-design.md` §2.8, §5 (M1b)
 
 ## 1. What this milestone answers
