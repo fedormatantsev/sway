@@ -25,3 +25,4 @@ winit = "=0.30.13"
 ui-events-winit = "0.3.0"
 masonry = { git = "https://github.com/linebender/xilem.git", rev = "c5950bcb03d4f3d187a20d1159f6aa276fd056bf" }
 masonry_core = { git = "https://github.com/linebender/xilem.git", rev = "c5950bcb03d4f3d187a20d1159f6aa276fd056bf" }
+masonry_testing = { git = "https://github.com/linebender/xilem.git", rev = "c5950bcb03d4f3d187a20d1159f6aa276fd056bf" }

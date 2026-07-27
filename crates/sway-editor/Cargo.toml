@@ -11,3 +11,6 @@ kurbo.workspace = true
 peniko.workspace = true
 ui-events-winit.workspace = true
 winit.workspace = true
+
+[dev-dependencies]
+masonry_testing.workspace = true
