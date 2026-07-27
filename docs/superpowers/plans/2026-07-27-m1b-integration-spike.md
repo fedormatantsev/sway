@@ -55,7 +55,7 @@ We are the first host to realize it. Task 5 is where that shows up. If `External
 - **Do not touch `crates/sway-app/src/graph.rs`.** M2 lifts it into `sway-graph`; unrelated edits create conflicts. Same constraint M1 carried.
 - **Do not edit `point_cloud.rs`, `sprite_layer.rs` or `scatter.rs`.** M1's demos are the content under test and must keep working *unmodified* — that is what makes them a regression signal.
 - **Every shader is naga-validated.** `sway-gpu` gets its own validation test (Task 2); `sway-runtime`'s existing harness is `#[cfg(test)]`-private and cannot be reused across crates.
-- Existing tests must keep passing: `cargo test --workspace` is currently 15 green.
+- Existing tests must keep passing: `cargo test --workspace` was **25 green** at the start of this milestone (measured, not recalled — an earlier draft of this line said 15, inherited from M1's plan text, and was wrong). Task 1 adds 1, making 26.
 
 ## Colour space — decide once, here
 
