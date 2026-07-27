@@ -417,6 +417,13 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
 
 - [ ] **Step 2: Run the validator.** Expected: `validated 2 shader(s)`.
 
+  > **Post-hoc note (final review, 2026-07-26):** this expectation did not
+  > hold. Task 4's `sprite_layer.wgsl` had to take the escape hatch this
+  > step's own Step 3 authorized (see below) and switched to Bevy's
+  > `#import`, joining `point_cloud.wgsl` on the allowlist. Actual outcome:
+  > `validated 1 shader(s)` (`scatter.wgsl`) + 2 allowlisted
+  > (`point_cloud.wgsl`, `sprite_layer.wgsl`).
+
 - [ ] **Step 3: Implement `SpriteLayerPlugin`.** If binding your own `View` uniform proves awkward against the `Material` trait's bind-group conventions, switching the shader to Bevy's mesh view import is acceptable — but then it leaves the validated set, so say so in your report.
 
 - [ ] **Step 4: Spawn a hardcoded demo** of **five** layers at distinct z depths with a generated texture (no asset file needed — build an RGBA image in code, e.g. a soft radial gradient). Overlapping layers at different depths is what proves depth sorting works.

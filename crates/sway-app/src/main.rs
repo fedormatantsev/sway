@@ -1,16 +1,30 @@
 mod graph;
 mod scene;
 
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::window::{Monitor, MonitorSelection, WindowMode};
 use graph::{graph_tick, GraphState, MidiRx, TICK_HZ};
 use scene::{apply_level, setup_scene};
+
+/// Which M1 render spike (if any) to run instead of the M0 cube. See
+/// `main`'s demo-dispatch match for how each variant is wired up, and its
+/// comment on the camera-collision hazard between these demos and
+/// `scene::setup_scene`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Demo {
+    PointCloud,
+    Sprites,
+    Scatter,
+    All,
+}
 
 struct Args {
     monitor: usize,
     midi_filter: String,
     windowed: bool,
     list_only: bool,
+    demo: Option<Demo>,
 }
 
 fn parse_args() -> Args {
@@ -19,6 +33,7 @@ fn parse_args() -> Args {
         midi_filter: String::new(),
         windowed: false,
         list_only: false,
+        demo: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -34,6 +49,16 @@ fn parse_args() -> Args {
             }
             "--windowed" => args.windowed = true,
             "--list" => args.list_only = true,
+            "--demo" => {
+                let value = it.next().expect("--demo needs a value");
+                args.demo = Some(match value.as_str() {
+                    "point-cloud" => Demo::PointCloud,
+                    "sprites" => Demo::Sprites,
+                    "scatter" => Demo::Scatter,
+                    "all" => Demo::All,
+                    other => panic!("unknown --demo value: {other}"),
+                });
+            }
             other => panic!("unknown argument: {other}"),
         }
     }
@@ -61,6 +86,28 @@ fn log_monitors(monitors: Query<&Monitor>, mut logged: Local<bool>) {
             m.physical_height,
             m.refresh_rate_millihertz,
         );
+    }
+}
+
+/// Logs `FrameTimeDiagnosticsPlugin`'s smoothed FPS once per second. "At
+/// frame rate" is an M1 exit criterion and needs a measured number, not an
+/// impression — this is what produces that number in the run logs.
+fn log_fps(
+    diagnostics: Res<DiagnosticsStore>,
+    time: Res<Time>,
+    mut since_last_log: Local<f32>,
+) {
+    *since_last_log += time.delta_secs();
+    if *since_last_log < 1.0 {
+        return;
+    }
+    *since_last_log = 0.0;
+
+    if let Some(fps) = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|d| d.smoothed())
+    {
+        info!("fps (smoothed): {fps:.1}");
     }
 }
 
@@ -97,20 +144,75 @@ fn main() {
         WindowMode::BorderlessFullscreen(MonitorSelection::Index(args.monitor))
     };
 
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                mode,
-                title: "sway".into(),
-                ..default()
-            }),
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            mode,
+            title: "sway".into(),
             ..default()
-        }))
-        .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
-        .insert_resource(MidiRx(rx))
-        .init_resource::<GraphState>()
-        .add_systems(Startup, setup_scene)
-        .add_systems(FixedUpdate, graph_tick)
-        .add_systems(Update, (apply_level, log_monitors))
-        .run();
+        }),
+        ..default()
+    }))
+    .add_plugins(FrameTimeDiagnosticsPlugin::default())
+    .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
+    .insert_resource(MidiRx(rx))
+    .init_resource::<GraphState>()
+    .add_systems(FixedUpdate, graph_tick)
+    .add_systems(Update, (apply_level, log_monitors, log_fps));
+
+    // Camera-collision hazard: `scene::setup_scene` (M0) and each demo's own
+    // setup helper each spawn a camera, and Bevy renders every camera with
+    // the same (default) order to the same window — the last one drawn wins
+    // and the rest are invisibly overdrawn. So exactly one of "M0 scene" or
+    // "a demo" runs per process, never both, and `all` is wired to end up
+    // with exactly one active camera too:
+    //   - `point-cloud` spawns its own camera (required: it carries
+    //     `NoIndirectDrawing`, which the point-cloud pipeline needs).
+    //   - `sprites` spawns its own dedicated camera via
+    //     `sprite_layer::spawn_demo_camera`.
+    //   - `scatter` spawns no camera at all: it is compute + readback only,
+    //     proven by a log line, not by anything on screen.
+    //   - `all` reuses the point cloud's camera for the sprite layers too
+    //     (skipping `spawn_demo_camera`) rather than spawning a second one.
+    match args.demo {
+        None => {
+            app.add_systems(Startup, setup_scene);
+        }
+        Some(Demo::PointCloud) => {
+            app.add_plugins(sway_runtime::PointCloudPlugin).add_systems(
+                Startup,
+                sway_runtime::point_cloud::spawn_demo_point_cloud,
+            );
+        }
+        Some(Demo::Sprites) => {
+            app.add_plugins(sway_runtime::SpriteLayerPlugin).add_systems(
+                Startup,
+                (
+                    sway_runtime::sprite_layer::spawn_demo_sprite_layers,
+                    sway_runtime::sprite_layer::spawn_demo_camera,
+                ),
+            );
+        }
+        Some(Demo::Scatter) => {
+            app.add_plugins(sway_runtime::ScatterPlugin)
+                .add_systems(Startup, sway_runtime::scatter::spawn_demo_scatter);
+        }
+        Some(Demo::All) => {
+            app.add_plugins((
+                sway_runtime::PointCloudPlugin,
+                sway_runtime::SpriteLayerPlugin,
+                sway_runtime::ScatterPlugin,
+            ))
+            .add_systems(
+                Startup,
+                (
+                    sway_runtime::point_cloud::spawn_demo_point_cloud,
+                    sway_runtime::sprite_layer::spawn_demo_sprite_layers,
+                    sway_runtime::scatter::spawn_demo_scatter,
+                ),
+            );
+        }
+    }
+
+    app.run();
 }

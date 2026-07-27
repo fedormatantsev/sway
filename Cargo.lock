@@ -4702,6 +4702,7 @@ dependencies = [
  "bevy",
  "crossbeam-channel",
  "sway-midi",
+ "sway-runtime",
 ]
 
 [[package]]
@@ -4709,6 +4710,15 @@ name = "sway-midi"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+]
+
+[[package]]
+name = "sway-runtime"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bytemuck",
+ "naga",
 ]
 
 [[package]]

@@ -1,0 +1,11 @@
+[package]
+name = "sway-runtime"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+bevy.workspace = true
+bytemuck.workspace = true
+
+[dev-dependencies]
+naga.workspace = true
