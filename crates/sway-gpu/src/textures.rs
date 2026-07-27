@@ -88,9 +88,6 @@ impl UiTexture {
 /// decoding them again). `view_formats` must list the second format at
 /// creation or wgpu rejects the view.
 pub struct ViewportTexture {
-    // Held alongside the views to keep the resource alive; nothing reads it
-    // directly (mirrors `UiTexture`'s `texture` field).
-    #[allow(dead_code)]
     texture: Texture,
     pub bevy_view: TextureView,
     pub sample_view: TextureView,
@@ -108,6 +105,14 @@ impl ViewportTexture {
             width: width.max(1),
             height: height.max(1),
         }
+    }
+
+    /// The backing texture, for `COPY_SRC` readback (e.g.
+    /// `CommandEncoder::copy_texture_to_buffer`). `bevy_view`/`sample_view`
+    /// are views, and wgpu's texture-to-buffer copy needs the texture
+    /// itself, not a view of it.
+    pub fn texture(&self) -> &Texture {
+        &self.texture
     }
 
     fn create(device: &Device, width: u32, height: u32) -> (Texture, TextureView, TextureView) {

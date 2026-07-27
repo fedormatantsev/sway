@@ -120,9 +120,15 @@ impl ApplicationHandler for Shell {
         let compositor = Compositor::new(&gpu.device, surface.format());
 
         let mut app = (config.build_app)(&gpu, &viewport, UVec2::new(width, height));
-        // Must run once, after construction and before the first
-        // `app.update()`, or render resources stay uninitialised (they are
-        // normally driven by `App::run`'s runner, which we don't use).
+        // Must run once, after construction and before the first `app.update()`,
+        // or render resources stay uninitialised (normally an `App::run` runner
+        // busy-waits on `plugins_state() == Ready` before calling these; we skip
+        // that wait). Calling `finish()` immediately, with no wait, is safe here
+        // *only* because `RenderCreation::Manual` (used by `headless::build_app`)
+        // populates its `FutureRenderResources` synchronously inside `Plugin::build`
+        // -- under the default `RenderCreation::Automatic`, whose device resolution
+        // is asynchronous, `RenderPlugin::finish` would panic (`.unwrap()` on a
+        // still-empty resource) if called before that resolution completes.
         app.finish();
         app.cleanup();
 
