@@ -37,9 +37,19 @@
 //!
 //! So this module takes the brief's explicitly sanctioned fallback instead:
 //! compute writes the buffer, and a `gpu_readback.rs`-style [`Readback`]
-//! reads it back once to prove the values are right. That is level **(b)**
-//! from the brief's three levels, not level (a) — see
-//! `spawn_demo_scatter` below, and the task report for the full writeup.
+//! reads it back to prove the values are right. That is level **(b)** from
+//! the brief's three levels, not level (a) — see `spawn_demo_scatter` below,
+//! and the task report for the full writeup.
+//!
+//! The *compute* half of that is genuinely dirty-set-gated: delta 1 below
+//! makes `dispatch_workgroups` run once per source, not once per frame — see
+//! the headline finding in that section. The *readback* half is not: on
+//! hardware, `ReadbackComplete` fires every frame (Bevy's `Readback`
+//! component re-triggers a copy each frame it exists, unlike the one-shot
+//! dispatch), so `spawn_demo_scatter`'s observer logs thousands of
+//! near-identical lines rather than firing once. That is redundant
+//! per-frame *polling* of an already-computed buffer, not redundant
+//! *computation* — the compute dispatch itself still only ever runs once.
 //!
 //! ## Delta 1 — the dirty set (the actual point of this task)
 //!
@@ -288,11 +298,14 @@ fn dispatch_scatter(
 /// Spawns one `ScatterSource` (16 points, hardcoded params) and a `Readback`
 /// on the same output buffer. This is the module's delta-5 level-(b) bridge:
 /// the compute shader fills the buffer entirely on the GPU (the dirty set
-/// ensures exactly one dispatch), and the `Readback` — Bevy's own
-/// `gpu_readback.rs` pattern — reads it back once, logging the computed
-/// points to prove the values are correct. It does *not* feed the point
-/// cloud's instanced draw; see the module doc for why that bridge was out of
-/// reach within this task's file scope, not because the data formats are
+/// ensures exactly one dispatch, not one per frame), and the `Readback` —
+/// Bevy's own `gpu_readback.rs` pattern — logs the computed points to prove
+/// the values are correct. The readback itself is not one-shot: on
+/// hardware `ReadbackComplete` fires every frame this entity exists (see the
+/// module doc), so this observer runs repeatedly even though the compute
+/// work it is observing does not. It does *not* feed the point cloud's
+/// instanced draw; see the module doc for why that bridge was out of reach
+/// within this task's file scope, not because the data formats are
 /// fundamentally incompatible.
 pub fn spawn_demo_scatter(mut commands: Commands, mut buffers: ResMut<Assets<ShaderBuffer>>) {
     // Zero-filled initial data: the compute shader overwrites every element

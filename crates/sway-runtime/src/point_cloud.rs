@@ -29,6 +29,16 @@
 //!    `mesh_functions`), so naga cannot parse it; it is listed in
 //!    `PREPROCESSOR_SHADERS` in `shader_validation.rs` as a deliberate,
 //!    reviewed skip.
+//! 6. Two per-frame costs are inherited from the reference example, not
+//!    chosen. `ExtractComponentPlugin::<PointCloudData>` is registered with
+//!    `QueryFilter = ()`, verbatim from the example, which runs the default
+//!    (not visibility-gated) `extract_components` system every
+//!    `ExtractSchedule`; that system calls `PointCloudData::extract_component`
+//!    below, which clones the entire 50,000-element `Vec<PointInstance>`
+//!    (~1.6MB) on the CPU every frame. `prepare_instance_buffers` then
+//!    rebuilds and re-uploads a matching ~1.6MB GPU buffer every frame on
+//!    top of that. Neither is amortized across frames for this static demo
+//!    data.
 
 use bevy::asset::{embedded_asset, load_embedded_asset};
 use bevy::core_pipeline::core_3d::TransparentSortingInfo3d;
@@ -141,12 +151,21 @@ impl Plugin for PointCloudPlugin {
 /// demo pattern per the M1 point-cloud brief — no parameters are exposed
 /// beyond what this module itself calls with.
 fn fibonacci_sphere_points(count: usize, radius: f32, scale: f32) -> Vec<PointInstance> {
+    if count == 0 {
+        return Vec::new();
+    }
     let golden_angle = std::f32::consts::PI * (3.0 - 5f32.sqrt());
+    // Guards `count == 1`, where `count - 1` would otherwise divide by zero
+    // (NaN, not a panic — the panic risk is the `count == 0` case handled
+    // above via the usize subtraction underflowing). For `count >= 2` this
+    // is exactly `count - 1` as before, so output at the hardcoded
+    // `DEMO_POINT_COUNT = 50_000` is unchanged.
+    let y_denom = ((count - 1).max(1)) as f32;
     (0..count)
         .map(|i| {
             let i_f = i as f32;
             // y sweeps from +1 to -1 across all points.
-            let y = 1.0 - (i_f / (count - 1) as f32) * 2.0;
+            let y = 1.0 - (i_f / y_denom) * 2.0;
             let radius_at_y = (1.0 - y * y).max(0.0).sqrt();
             let theta = golden_angle * i_f;
             let position =
@@ -247,12 +266,7 @@ fn queue_point_cloud(
                         &render_mesh_instances,
                         maybe_batched_instance_buffers.as_deref(),
                     )
-                    .transform_point3(
-                        meshes
-                            .get(mesh_instance.mesh_asset_id())
-                            .unwrap()
-                            .aabb_center,
-                    ),
+                    .transform_point3(mesh.aabb_center),
                     depth_bias: 0.0,
                 },
                 entity: (entity, *main_entity),
@@ -273,6 +287,12 @@ struct InstanceBuffer {
     length: usize,
 }
 
+/// Rebuilds and re-uploads the full ~1.6MB instance buffer from scratch
+/// every frame via `create_buffer_with_data` — the GPU-side half of the
+/// per-frame cost recorded in the module doc (delta 6); the CPU-side half is
+/// the `Vec<PointInstance>` clone in `PointCloudData::extract_component`
+/// above. Both are inherited from the reference example, not chosen, and
+/// neither is amortized for this static demo data.
 fn prepare_instance_buffers(
     mut commands: Commands,
     query: Query<(Entity, &PointCloudData)>,
@@ -412,5 +432,25 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
             }
         }
         RenderCommandResult::Success
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fibonacci_sphere_points_count_zero_returns_empty() {
+        // Would otherwise underflow `count - 1` on a usize (panics in debug).
+        assert!(fibonacci_sphere_points(0, 20.0, 0.06).is_empty());
+    }
+
+    #[test]
+    fn fibonacci_sphere_points_count_one_is_finite_not_nan() {
+        // Would otherwise divide by `(count - 1) as f32 == 0.0` (NaN, no panic).
+        let points = fibonacci_sphere_points(1, 20.0, 0.06);
+        assert_eq!(points.len(), 1);
+        assert!(points[0].position.is_finite());
+        assert!(points[0].scale.is_finite());
     }
 }
