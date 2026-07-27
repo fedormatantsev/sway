@@ -4,29 +4,56 @@
 //! see the crate manifest. `winit` appears only because `ui-events-winit`
 //! takes `&winit::event::WindowEvent`; nothing here draws with it.
 
+pub mod external;
+
 use std::sync::Arc;
+use std::time::Instant;
 
 use masonry_core::app::{RenderRoot, RenderRootOptions, RenderRootSignal, VisualLayerPlan, WindowSizePolicy};
 use masonry_core::core::{NewWidget, TextEvent, Widget, WindowEvent as MasonryWindowEvent};
+use masonry::layout::AsUnit;
 use masonry::properties::{Background, Dimensions};
-use masonry::widgets::{Label, SizedBox};
+use masonry::widgets::{Flex, Label, SizedBox};
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use winit::dpi::PhysicalSize;
+
+use crate::external::ViewportPlaceholder;
+
+/// The Bevy viewport's fixed footprint in the placeholder layout, in logical
+/// pixels. Matches the size `EditorPresenter`'s Task 4 hardcoded rect used
+/// (`EDITOR_VIEWPORT_RECT`), purely for visual continuity across Task 5 --
+/// nothing requires this exact number now that masonry's widget tree decides
+/// the rect. Task 6's `GraphCanvas` will replace this whole placeholder tree.
+const VIEWPORT_WIDTH: f64 = 640.0;
+const VIEWPORT_HEIGHT: f64 = 360.0;
 
 /// A placeholder root widget that paints something obvious: a full-window
 /// panel (via `Dimensions::MAX`, the same property `RenderRoot`'s own
 /// internal `LayerStack` uses to always measure the full window) with a
-/// visible background, holding a text label.
+/// visible background, a text label, and -- Task 5 -- a
+/// [`ViewportPlaceholder`] child marked `PaintLayerMode::External`. That
+/// child's layout box is what `sway_editor::external::viewport_rect` reads
+/// back out of the `VisualLayerPlan`; the presenter no longer hardcodes it.
 ///
 /// Task 6 replaces this with `GraphCanvas`.
 fn placeholder_root() -> NewWidget<dyn Widget> {
-    SizedBox::new(Label::new("sway editor").prepare())
+    let label = Label::new("sway editor").prepare();
+    let viewport = ViewportPlaceholder::new()
         .prepare()
-        .with_props((
-            Dimensions::MAX,
-            Background::Color(masonry::theme::ZYNC_900),
-        ))
-        .erased()
+        .with_props(Dimensions::fixed(VIEWPORT_WIDTH.px(), VIEWPORT_HEIGHT.px()));
+
+    SizedBox::new(
+        Flex::column()
+            .with_fixed(label)
+            .with_fixed(viewport)
+            .prepare(),
+    )
+    .prepare()
+    .with_props((
+        Dimensions::MAX,
+        Background::Color(masonry::theme::ZYNC_900),
+    ))
+    .erased()
 }
 
 /// The masonry widget tree, driven by winit events, one `RenderRoot` per
@@ -36,6 +63,10 @@ pub struct EditorUi {
     root: RenderRoot,
     reducer: WindowEventReducer,
     scale_factor: f64,
+    /// When `redraw` last pumped an anim frame. See `redraw`'s docs: this
+    /// host drives masonry's animation clock itself rather than through a
+    /// real windowing event, because nothing else in this shell does.
+    last_anim_tick: Instant,
 }
 
 impl EditorUi {
@@ -62,6 +93,7 @@ impl EditorUi {
             root,
             reducer: WindowEventReducer::default(),
             scale_factor,
+            last_anim_tick: Instant::now(),
         }
     }
 
@@ -106,7 +138,29 @@ impl EditorUi {
     /// Ignores the `Option<TreeUpdate>` `RenderRoot::redraw` also returns
     /// (R4, controller dispatch ruling): accessibility is out of scope for
     /// M1b.
+    ///
+    /// Pumps a `WindowEvent::AnimFrame` first -- a real gap found while
+    /// implementing Task 5, not a pre-existing part of this API. Masonry
+    /// resets a widget's `PaintLayerMode` to `Inline` at the top of every
+    /// paint pass and only restores it if that widget's own `paint` method
+    /// actually runs, which only happens when something (an event, an anim
+    /// tick, ...) has marked it dirty. `ViewportPlaceholder`
+    /// (`external.rs`) keeps itself dirty via `request_anim_frame`, but that
+    /// request is only serviced if the host actually delivers
+    /// `WindowEvent::AnimFrame` -- masonry does not invent a clock on its
+    /// own. This host has no other source of frame ticks (the signal sink
+    /// that would normally carry `RequestAnimFrame` is a no-op, see `new`'s
+    /// docs), so `redraw` supplies one directly, every call, using wall-clock
+    /// elapsed time since the last call. Confirmed empirically before this
+    /// was wired in: an `External` layer that never receives an anim frame
+    /// vanishes from the very next `VisualLayerPlan`.
     pub fn redraw(&mut self) -> VisualLayerPlan {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_anim_tick);
+        self.last_anim_tick = now;
+        self.root
+            .handle_window_event(MasonryWindowEvent::AnimFrame(elapsed));
+
         self.root.redraw().0
     }
 

@@ -18,6 +18,7 @@ use bevy::app::App;
 use bevy::math::UVec2;
 use sway_gpu::{Compositor, GpuContext, ViewportTexture, WindowSurface};
 use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
@@ -224,9 +225,14 @@ impl ApplicationHandler for Shell {
                         );
                     }
                     Presenter::Editor(presenter) => {
-                        // The viewport texture stays pinned at
-                        // `EDITOR_VIEWPORT_RECT`'s size regardless of window
-                        // size (R1); only masonry's window size changes.
+                        // Carried finding from Task 4: a minimized window can
+                        // deliver `(0, 0)` here, and masonry's layout pass
+                        // has a documented panic on non-finite/negative
+                        // resolved dimensions. The show path above already
+                        // clamps before touching its own resources; this
+                        // path didn't clamp before handing `size` to
+                        // masonry, so it's fixed here too.
+                        let size = PhysicalSize::new(size.width.max(1), size.height.max(1));
                         presenter.resize(size, running.window.scale_factor());
                     }
                 }
