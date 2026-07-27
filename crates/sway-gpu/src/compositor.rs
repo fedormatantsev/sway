@@ -4,16 +4,23 @@
 //! Two render pipelines exist — opaque and alpha-blended — because blend
 //! state is baked into a `wgpu::RenderPipeline` at creation time; there is no
 //! way to select it per-draw.
+//!
+//! `draw` (below) is `pub(crate)`, reachable only through `Frame::composite`
+//! (see `frame.rs`) — `Compositor` itself stays `pub` so a caller can own one
+//! across frames (constructing the pipelines and the per-quad buffer/bind
+//! group cache is not something to redo every frame), but the only way to
+//! actually composite is through a `Frame`, which is also the only place a
+//! `wgpu::CommandEncoder` gets created. That keeps all wgpu object creation
+//! inside `sway-gpu`, per the crate's one job.
 
-use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
-    BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, BindingResource, BindingType, BlendState, BufferBindingType,
-    BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder, Device, FilterMode,
-    FragmentState, LoadOp, MipmapFilterMode, MultisampleState, Operations,
-    PipelineLayoutDescriptor, PrimitiveState, RenderPassColorAttachment, RenderPassDescriptor,
-    RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerBindingType, SamplerDescriptor,
-    ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp, TextureFormat,
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
+    BindGroupLayoutEntry, BindingResource, BindingType, BlendState, Buffer, BufferBindingType,
+    BufferDescriptor, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder, Device,
+    FilterMode, FragmentState, LoadOp, MipmapFilterMode, MultisampleState, Operations,
+    PipelineLayoutDescriptor, PrimitiveState, Queue, RenderPassColorAttachment,
+    RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerBindingType,
+    SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp, TextureFormat,
     TextureSampleType, TextureView, TextureViewDimension, VertexState,
 };
 
@@ -37,13 +44,53 @@ fn to_ndc(dst: kurbo::Rect, width: f32, height: f32) -> [f32; 4] {
     ]
 }
 
+/// Per-quad-position GPU resources, reused frame over frame instead of
+/// recreated. Position in `Compositor::slots` corresponds to a quad's index
+/// in the `quads` slice passed to `draw` (quad 0 is always the Bevy
+/// viewport, quad 1 always the UI layer, once Task 3 adds the viewport) --
+/// not to any identity of the source texture, so a slot's bind group is
+/// rebuilt whenever the view it was built against stops matching the
+/// incoming quad's view (e.g. after a resize recreates a texture).
+struct QuadSlot {
+    /// Holds the NDC bounds uniform. Rewritten via `queue.write_buffer` every
+    /// frame (the destination rect can change even when the source view
+    /// doesn't); never recreated.
+    rect_buffer: Buffer,
+    bind_group: Option<BindGroup>,
+    /// The view `bind_group` was built against, so a changed view (a resized
+    /// texture was recreated, not just resized in place) is detected and the
+    /// bind group rebuilt. `wgpu::TextureView` is cheap to clone (an Arc-style
+    /// handle) and implements `Eq` by the underlying resource identity, so
+    /// this comparison is exact, not heuristic.
+    cached_view: Option<TextureView>,
+}
+
+impl QuadSlot {
+    fn new(device: &Device) -> Self {
+        let rect_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("sway composite quad rect"),
+            size: 16, // vec4<f32>
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self {
+            rect_buffer,
+            bind_group: None,
+            cached_view: None,
+        }
+    }
+}
+
 /// Draws textured quads (the Bevy viewport, then the UI layer) onto a
-/// target through `composite.wgsl`.
+/// target through `composite.wgsl`. Owned across frames by the caller (see
+/// `frame.rs`); the pipelines, sampler, and per-quad buffer/bind group cache
+/// are all built once and reused, not recreated per frame.
 pub struct Compositor {
     bind_group_layout: BindGroupLayout,
     sampler: Sampler,
     pipeline_opaque: RenderPipeline,
     pipeline_blend: RenderPipeline,
+    slots: Vec<QuadSlot>,
 }
 
 impl Compositor {
@@ -138,6 +185,7 @@ impl Compositor {
             sampler,
             pipeline_opaque,
             pipeline_blend,
+            slots: Vec::new(),
         }
     }
 
@@ -145,10 +193,15 @@ impl Compositor {
     /// The target is cleared to opaque black first, so a quad with
     /// `blend: true` composites over that (or over an earlier quad already
     /// drawn in this call) rather than over whatever `target` held before.
-    pub fn draw(
-        &self,
+    ///
+    /// `pub(crate)`: only `Frame::composite` calls this, so a
+    /// `wgpu::CommandEncoder` (created by `Frame`) never needs to exist
+    /// outside `sway-gpu`.
+    pub(crate) fn draw(
+        &mut self,
         encoder: &mut CommandEncoder,
         device: &Device,
+        queue: &Queue,
         target: &TextureView,
         quads: &[Quad],
     ) {
@@ -156,6 +209,10 @@ impl Compositor {
             let texture = target.texture();
             (texture.width(), texture.height())
         };
+
+        while self.slots.len() < quads.len() {
+            self.slots.push(QuadSlot::new(device));
+        }
 
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("sway composite pass"),
@@ -174,31 +231,34 @@ impl Compositor {
             multiview_mask: None,
         });
 
-        for quad in quads {
+        for (i, quad) in quads.iter().enumerate() {
+            let slot = &mut self.slots[i];
+
             let bounds = to_ndc(quad.dst, width as f32, height as f32);
-            let rect_buffer = device.create_buffer_init(&BufferInitDescriptor {
-                label: Some("sway composite quad rect"),
-                contents: bytemuck::cast_slice(&bounds),
-                usage: BufferUsages::UNIFORM,
-            });
-            let bind_group = device.create_bind_group(&BindGroupDescriptor {
-                label: Some("sway composite bind group"),
-                layout: &self.bind_group_layout,
-                entries: &[
-                    BindGroupEntry {
-                        binding: 0,
-                        resource: BindingResource::TextureView(quad.view),
-                    },
-                    BindGroupEntry {
-                        binding: 1,
-                        resource: BindingResource::Sampler(&self.sampler),
-                    },
-                    BindGroupEntry {
-                        binding: 2,
-                        resource: rect_buffer.as_entire_binding(),
-                    },
-                ],
-            });
+            queue.write_buffer(&slot.rect_buffer, 0, bytemuck::cast_slice(&bounds));
+
+            let view_changed = slot.cached_view.as_ref() != Some(quad.view);
+            if slot.bind_group.is_none() || view_changed {
+                slot.bind_group = Some(device.create_bind_group(&BindGroupDescriptor {
+                    label: Some("sway composite bind group"),
+                    layout: &self.bind_group_layout,
+                    entries: &[
+                        BindGroupEntry {
+                            binding: 0,
+                            resource: BindingResource::TextureView(quad.view),
+                        },
+                        BindGroupEntry {
+                            binding: 1,
+                            resource: BindingResource::Sampler(&self.sampler),
+                        },
+                        BindGroupEntry {
+                            binding: 2,
+                            resource: slot.rect_buffer.as_entire_binding(),
+                        },
+                    ],
+                }));
+                slot.cached_view = Some(quad.view.clone());
+            }
 
             let pipeline = if quad.blend {
                 &self.pipeline_blend
@@ -206,7 +266,7 @@ impl Compositor {
                 &self.pipeline_opaque
             };
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_bind_group(0, slot.bind_group.as_ref().unwrap(), &[]);
             pass.draw(0..6, 0..1);
         }
     }

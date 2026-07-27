@@ -5,12 +5,14 @@
 
 pub mod compositor;
 pub mod context;
+pub mod frame;
 pub mod surface;
 pub mod textures;
 pub mod ui_render;
 
 pub use compositor::{Compositor, Quad};
 pub use context::GpuContext;
+pub use frame::Frame;
 pub use surface::WindowSurface;
 pub use textures::UiTexture;
 pub use ui_render::UiRenderer;

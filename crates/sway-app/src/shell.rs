@@ -11,7 +11,7 @@ use imaging::Painter;
 use imaging::record::Scene;
 use kurbo::Rect;
 use peniko::{Brush, Color};
-use sway_gpu::{wgpu, Compositor, GpuContext, Quad, UiRenderer, UiTexture, WindowSurface};
+use sway_gpu::{Compositor, GpuContext, Quad, UiRenderer, UiTexture, WindowSurface};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -36,11 +36,14 @@ impl Running {
     /// texture, and composites that single quad fullscreen onto the window
     /// surface.
     fn redraw(&mut self) {
-        // Acquire first: if the window is occluded or minimized there is no
-        // frame to draw, and no point painting the UI scene or touching the
-        // compositor. Keep the loop alive by asking for another redraw so we
-        // notice when the surface becomes presentable again.
-        let Some(frame) = self.surface.acquire() else {
+        // Begin the frame first: if the window is occluded or minimized
+        // there is nothing to draw, and no point painting the UI scene.
+        // Keep the loop alive by asking for another redraw so we notice
+        // when the surface becomes presentable again.
+        let Some(mut frame) = self
+            .surface
+            .begin_frame(&self.gpu.device, &self.gpu.queue, &mut self.compositor)
+        else {
             self.window.request_redraw();
             return;
         };
@@ -66,27 +69,12 @@ impl Running {
         self.ui_renderer
             .render_scene(&scene, &self.ui_texture.view, width, height);
 
-        let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        frame.composite(&[Quad {
+            view: &self.ui_texture.view,
+            dst: Rect::new(0.0, 0.0, width as f64, height as f64),
+            blend: true,
+        }]);
 
-        let mut encoder = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("sway editor frame encoder"),
-            });
-
-        self.compositor.draw(
-            &mut encoder,
-            &self.gpu.device,
-            &frame_view,
-            &[Quad {
-                view: &self.ui_texture.view,
-                dst: Rect::new(0.0, 0.0, width as f64, height as f64),
-                blend: true,
-            }],
-        );
-
-        self.gpu.queue.submit(Some(encoder.finish()));
         frame.present();
 
         // Keeps the loop continuous: vsync (the surface is `Fifo`) paces us,

@@ -4,11 +4,14 @@
 use std::sync::Arc;
 
 use wgpu::{
-    Adapter, CompositeAlphaMode, CurrentSurfaceTexture, Device, Instance, PresentMode, Surface,
-    SurfaceConfiguration, SurfaceTexture, TextureFormat, TextureUsages,
+    Adapter, CompositeAlphaMode, CurrentSurfaceTexture, Device, Instance, PresentMode, Queue,
+    Surface, SurfaceConfiguration, SurfaceTexture, TextureFormat, TextureUsages,
 };
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
+
+use crate::compositor::Compositor;
+use crate::frame::Frame;
 
 /// The window's swapchain.
 ///
@@ -72,23 +75,39 @@ impl WindowSurface {
         self.surface.configure(device, &self.config);
     }
 
-    /// Acquires the next presentable texture.
+    /// Begins a frame: acquires the next presentable texture and wraps it
+    /// (plus a fresh command encoder) in a [`Frame`], so the caller never
+    /// needs to create a `wgpu::TextureView` or `wgpu::CommandEncoder`
+    /// itself -- every wgpu object a frame touches is created inside
+    /// `sway-gpu`.
     ///
     /// Returns `None` for the surface's transient not-ready states --
     /// `Timeout` and `Occluded` -- which windowing systems raise routinely
     /// (a minimized or backgrounded window, a frame that briefly took too
     /// long) and which their own documentation says to handle by skipping
     /// the frame and trying again next redraw, not by treating them as
-    /// errors. This deviates from a bare `-> SurfaceTexture` return (the
-    /// brief's original shape): that signature has no way to express "there
-    /// is no frame to draw right now," and forcing one of these routine
-    /// states through `.expect()` would panic the app the first time the
-    /// window is minimized.
+    /// errors. Forcing one of these routine states through `.expect()`
+    /// would panic the app the first time the window is minimized, so
+    /// there is no frame to return in that case rather than a broken one.
     ///
     /// Reconfigures and retries once on `Outdated` (e.g. a resize the
     /// window's `Resized` event hasn't caught up with yet). Panics on `Lost`
     /// or `Validation`, which retrying cannot fix.
-    pub fn acquire(&self) -> Option<SurfaceTexture> {
+    pub fn begin_frame<'a>(
+        &self,
+        device: &Device,
+        queue: &Queue,
+        compositor: &'a mut Compositor,
+    ) -> Option<Frame<'a>> {
+        let surface_texture = self.acquire()?;
+        Some(Frame::new(device, queue, compositor, surface_texture))
+    }
+
+    /// Acquires the next presentable texture, or `None` for a transient
+    /// not-ready state. Private: [`Self::begin_frame`] is the only public
+    /// way to reach a frame, so a caller outside this crate can never hold a
+    /// bare `wgpu::SurfaceTexture` and build its own view/encoder from it.
+    fn acquire(&self) -> Option<SurfaceTexture> {
         match self.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(texture) | CurrentSurfaceTexture::Suboptimal(texture) => {
                 Some(texture)
