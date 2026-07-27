@@ -35,9 +35,9 @@
 
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
-    AccessCtx, ChildrenIds, EventCtx, LayoutCtx, MeasureCtx, PaintCtx, PointerButtonEvent,
-    PointerEvent, PointerState, PointerUpdate, PropertiesMut, PropertiesRef, RegisterCtx, Widget,
-    WidgetMut,
+    AccessCtx, ChildrenIds, EventCtx, LayoutCtx, MeasureCtx, PaintCtx, PointerButton,
+    PointerButtonEvent, PointerEvent, PointerState, PointerUpdate, PropertiesMut, PropertiesRef,
+    RegisterCtx, Widget, WidgetMut,
 };
 use masonry::imaging::Painter;
 use masonry::layout::{LenReq, Length};
@@ -172,7 +172,15 @@ impl Widget for NodeBox {
         event: &PointerEvent,
     ) {
         match event {
-            PointerEvent::Down(PointerButtonEvent { state, .. }) => {
+            PointerEvent::Down(PointerButtonEvent { button, state, .. }) => {
+                if *button != Some(PointerButton::Primary) {
+                    // Anything other than the primary button -- in
+                    // particular the middle button, which `GraphCanvas`
+                    // uses to pan directly (brief step 4) -- is not a node
+                    // gesture. Leave it unhandled so it bubbles up to
+                    // `GraphCanvas::on_pointer_event`.
+                    return;
+                }
                 // `ctx.local_position` is safe to use here (and only here):
                 // at `Down`, this widget's transform hasn't been touched by
                 // the gesture we're about to start, so there's no

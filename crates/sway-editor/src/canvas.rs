@@ -20,8 +20,9 @@
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
     AccessCtx, ActionCtx, ChildrenIds, ErasedAction, EventCtx, LayoutCtx, MeasureCtx, Modifiers,
-    NewWidget, NoAction, PaintCtx, PointerEvent, PointerScrollEvent, PropertiesMut, PropertiesRef,
-    RegisterCtx, Update, UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod,
+    NewWidget, NoAction, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent,
+    PointerScrollEvent, PointerState, PointerUpdate, PropertiesMut, PropertiesRef, RegisterCtx,
+    Update, UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod,
 };
 use masonry::dpi::PhysicalPosition;
 use masonry::imaging::Painter;
@@ -31,6 +32,15 @@ use peniko::Color;
 
 use crate::external::ViewportPlaceholder;
 use crate::node_box::{self, NodeBox, NodeBoxAction};
+
+/// Converts a [`PointerState`]'s position to a window-space (logical pixels)
+/// [`Point`]. Same helper as `node_box::window_point`, duplicated rather than
+/// shared (R3, controller dispatch ruling) since it's three lines and the two
+/// modules otherwise share no pointer-handling code.
+fn window_point(state: &PointerState) -> Point {
+    let p = state.logical_position();
+    Point::new(p.x, p.y)
+}
 
 /// The external-mode viewport, held separately from the `NodeBox` children
 /// because it is a different widget type (Task 5's `ViewportPlaceholder`,
@@ -65,6 +75,9 @@ pub struct GraphCanvas {
     /// bezier -- R1, controller dispatch ruling, still applies: this pending
     /// edge is never itself hit-tested, only the commit target is).
     pending_edge: Option<(usize, Point)>,
+    /// A middle-drag pan in progress (brief step 4): the last-seen
+    /// window-space (logical) pointer position. `None` when not panning.
+    panning: Option<Point>,
 }
 
 // --- MARK: BUILDERS
@@ -80,6 +93,7 @@ impl GraphCanvas {
             zoom: 1.0,
             selected: None,
             pending_edge: None,
+            panning: None,
         }
     }
 
@@ -229,14 +243,47 @@ impl Widget for GraphCanvas {
         event: &PointerEvent,
     ) {
         match event {
+            PointerEvent::Down(PointerButtonEvent {
+                button: Some(PointerButton::Auxiliary),
+                state,
+                ..
+            }) => {
+                // Middle-drag pans directly (brief step 4). `NodeBox::on_pointer_event`
+                // only claims the primary button, so this reaches `GraphCanvas`
+                // regardless of whether the press landed over a node or empty
+                // canvas -- panning isn't node-specific.
+                ctx.capture_pointer();
+                self.panning = Some(window_point(state));
+                ctx.set_handled();
+            }
             PointerEvent::Down(..) => {
                 // masonry hit-tests children before the parent (deepest hit
                 // wins -- see `find_widget_under_pointer`), and every
-                // `NodeBox::on_pointer_event` marks its own `Down` handled.
-                // So a `Down` reaching *this* widget's own handler means the
-                // press landed outside every node: a background click.
+                // `NodeBox::on_pointer_event` marks its own `Down` handled
+                // (for the primary button; see the `Auxiliary` arm above for
+                // the middle button). So a `Down` reaching *this* widget's
+                // own handler for the primary button means the press landed
+                // outside every node: a background click.
                 self.clear_selection(ctx);
                 ctx.set_handled();
+            }
+            PointerEvent::Move(PointerUpdate { current, .. })
+                if ctx.is_active() && self.panning.is_some() =>
+            {
+                let window = window_point(current);
+                if let Some(anchor) = &mut self.panning {
+                    // Unlike node dragging (`delta / zoom`, canvas space),
+                    // panning moves the viewport itself: the raw window-space
+                    // delta is exactly how far the whole canvas should shift.
+                    let delta = window - *anchor;
+                    *anchor = window;
+                    self.pan += delta;
+                }
+                self.retransform_all_from_event(ctx);
+                ctx.set_handled();
+            }
+            PointerEvent::Up(..) | PointerEvent::Cancel(..) => {
+                self.panning = None;
             }
             PointerEvent::Scroll(PointerScrollEvent { delta, state, .. }) => {
                 let pixels = delta.to_pixel_delta(
@@ -394,6 +441,14 @@ impl GraphCanvas {
     pub fn selected_node(&self) -> Option<usize> {
         self.selected
     }
+
+    /// Returns the current pan offset. Read-only test/inspection accessor,
+    /// mirroring `selected_node` -- panning itself is driven by
+    /// `on_pointer_event`'s middle-drag handling or `set_pan` above, never
+    /// by writing this directly.
+    pub fn pan(&self) -> Vec2 {
+        self.pan
+    }
 }
 
 // --- MARK: HELPERS
@@ -501,7 +556,7 @@ impl GraphCanvas {
 mod tests {
     use super::GraphCanvas;
     use masonry::core::{DefaultProperties, PointerButton, Widget};
-    use masonry_core::kurbo::Point;
+    use masonry_core::kurbo::{Point, Vec2};
     use masonry_testing::TestHarness;
 
     /// The claim spec §2.8 makes for masonry, reduced to an assertion.
@@ -552,6 +607,44 @@ mod tests {
         harness.mouse_move(Point::new(20.0, 20.0));
         harness.mouse_button_press(Some(PointerButton::Primary));
 
+        assert_eq!(harness.root_widget().selected_node(), None);
+    }
+
+    /// Fix round 1: brief step 4's "Middle-drag ... pans directly", the
+    /// finding from the review that flagged it as unimplemented despite the
+    /// original report claiming pan was complete. Widget-level (not one of
+    /// the two gate tests, which stay untouched): presses the middle
+    /// button, drags, and checks `pan` moved by exactly the raw window-space
+    /// delta -- unscaled, unlike node dragging's `delta / zoom`.
+    #[test]
+    fn middle_drag_pans_the_canvas_by_the_raw_delta() {
+        let canvas = GraphCanvas::new().with_node(0, Point::new(100.0, 100.0), "a");
+        let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
+
+        harness.mouse_move(Point::new(50.0, 50.0));
+        harness.mouse_button_press(Some(PointerButton::Auxiliary));
+        harness.mouse_move(Point::new(80.0, 65.0));
+        harness.mouse_button_release(Some(PointerButton::Auxiliary));
+
+        assert_eq!(harness.root_widget().pan(), Vec2::new(30.0, 15.0));
+    }
+
+    /// A middle-drag that starts *over* a node must still pan the canvas,
+    /// not drag the node -- `NodeBox` only claims the primary button (see
+    /// its `on_pointer_event`), so this exercises that the middle button
+    /// really does bubble up instead of being swallowed by the node.
+    #[test]
+    fn middle_drag_over_a_node_pans_instead_of_dragging_it() {
+        let canvas = GraphCanvas::new().with_node(0, Point::new(100.0, 100.0), "a");
+        let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
+
+        // (150, 130) is inside node 0's unscaled border box (100,100)-(260,172).
+        harness.mouse_move(Point::new(150.0, 130.0));
+        harness.mouse_button_press(Some(PointerButton::Auxiliary));
+        harness.mouse_move(Point::new(170.0, 150.0));
+        harness.mouse_button_release(Some(PointerButton::Auxiliary));
+
+        assert_eq!(harness.root_widget().pan(), Vec2::new(20.0, 20.0));
         assert_eq!(harness.root_widget().selected_node(), None);
     }
 }
