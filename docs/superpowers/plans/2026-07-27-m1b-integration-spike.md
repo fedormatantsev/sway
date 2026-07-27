@@ -80,7 +80,8 @@ crates/sway-gpu/                     NEW — the only crate that creates wgpu ob
   Cargo.toml
   src/lib.rs                         re-exports; the wgpu-identity assertion test
   src/context.rs                     GpuContext: instance/adapter/device/queue, feature+limit union
-  src/surface.rs                     WindowSurface: configure, resize, acquire
+  src/surface.rs                     WindowSurface: configure, resize, begin_frame
+  src/frame.rs                       Frame: owns the surface view + encoder; composite, present
   src/textures.rs                    ViewportTexture, UiTexture: creation and resize policy
   src/compositor.rs                  Compositor: the two-quad pass
   src/ui_render.rs                   UiRenderer: VisualLayerPlan -> vello::Scene -> UI texture
@@ -316,11 +317,11 @@ git commit -m "feat(gpu): sway-gpu crate and the bevy/vello wgpu identity gate"
 - Produces:
   - `sway_gpu::WindowSurface::new(instance, device, adapter, window: Arc<winit::window::Window>) -> WindowSurface`
   - `WindowSurface::resize(&mut self, device: &wgpu::Device, size: winit::dpi::PhysicalSize<u32>)`
-  - `WindowSurface::acquire(&self) -> wgpu::SurfaceTexture`
+  - `WindowSurface::begin_frame<'a>(&self, device: &wgpu::Device, queue: &wgpu::Queue, compositor: &'a mut Compositor) -> Option<Frame<'a>>` — `None` when the surface is not presentable (`Occluded`/`Timeout`); the caller skips the frame and requests another redraw. `acquire` is private; this is the only route to a `Frame`.
   - `WindowSurface::format(&self) -> wgpu::TextureFormat` (always `Bgra8Unorm`)
-  - `sway_gpu::UiTexture::new(device, width, height) -> UiTexture` with `pub view: wgpu::TextureView`, `resize(&mut self, device, width, height)`
-  - `sway_gpu::Compositor::new(device, surface_format) -> Compositor`
-  - `Compositor::draw(&self, encoder: &mut wgpu::CommandEncoder, device: &wgpu::Device, target: &wgpu::TextureView, quads: &[Quad])` where `Quad { view: &wgpu::TextureView, dst: kurbo::Rect, blend: bool }`
+  - `sway_gpu::UiTexture::new(device, width, height) -> UiTexture` with `pub view: wgpu::TextureView`, `resize(&mut self, device, width, height)`. Usage flags are `STORAGE_BINDING | TEXTURE_BINDING` — **not** `RENDER_ATTACHMENT`, because vello 0.9 writes through a compute pipeline.
+  - `sway_gpu::Compositor::new(device, surface_format) -> Compositor` (`draw` is `pub(crate)`, reachable only via `Frame::composite`)
+  - `sway_gpu::Frame::composite(&mut self, quads: &[Quad])` and `Frame::present(self)`, where `Quad<'a> { view: &'a wgpu::TextureView, dst: kurbo::Rect, blend: bool }`. `Frame` owns the surface view and the command encoder, so no crate outside `sway-gpu` creates a wgpu object.
   - `sway_gpu::UiRenderer::new(device: wgpu::Device, queue: wgpu::Queue) -> UiRenderer`
   - `UiRenderer::render_scene(&mut self, scene: &imaging::record::Scene, view: &wgpu::TextureView, width: u32, height: u32)`
 
@@ -657,32 +658,31 @@ impl ShowPresenter {
         gpu: &sway_gpu::GpuContext,
         surface: &sway_gpu::WindowSurface,
         viewport: &sway_gpu::ViewportTexture,
-        compositor: &sway_gpu::Compositor,
+        compositor: &mut sway_gpu::Compositor,
     ) {
         app.update();
 
-        let frame = surface.acquire();
-        let target = frame.texture.create_view(&Default::default());
-        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        // `None` means the surface is not presentable this frame (Occluded /
+        // Timeout). Skip it and let the caller request another redraw — this
+        // is routine, not an error.
+        let Some(mut frame) = surface.begin_frame(&gpu.device, &gpu.queue, compositor) else {
+            return;
+        };
 
-        compositor.draw(
-            &mut encoder,
-            &gpu.device,
-            &target,
-            &[sway_gpu::Quad {
-                view: &viewport.sample_view,
-                dst: kurbo::Rect::new(0.0, 0.0, surface.width() as f64, surface.height() as f64),
-                blend: false,
-            }],
-        );
+        frame.composite(&[sway_gpu::Quad {
+            view: &viewport.sample_view,
+            dst: kurbo::Rect::new(0.0, 0.0, surface.width() as f64, surface.height() as f64),
+            blend: false,
+        }]);
 
-        gpu.queue.submit([encoder.finish()]);
         frame.present();
     }
 }
 ```
 
 Both renderers submit to the same queue, so Bevy's work (submitted inside `app.update()`) is ordered before the compositor's without explicit synchronisation.
+
+**`Frame` owns the encoder and the surface view**, so no crate outside `sway-gpu` creates a wgpu object — `Frame::present` finishes the encoder, submits, and presents, in that order. This shape replaced an earlier `Compositor::draw(encoder, device, target, quads)` that forced its caller to build both; the constraint that all wgpu creation lives in `sway-gpu` is what drove the change.
 
 - [ ] **Step 5: Route `main.rs` through the shell**
 
@@ -1255,6 +1255,6 @@ git commit -m "docs: M1b integration spike findings"
 
 **Two gaps found and closed while reviewing:** the colour-space scheme was implied by the design but never written down, and would have cost hours — it is now a table with a fixed decision before Task 1. And the M1 demos spawn their own window-targeted cameras, which no design section covers; Task 3 Step 3 adds `retarget_cameras` rather than editing files the Global Constraints protect.
 
-**Type consistency.** `ViewportTexture` exposes `bevy_view`/`sample_view` and is used under those names in Tasks 3 and 4. `UiTexture::view` likewise. `viewport_rect` returns `Option<Rect>` in Task 5 and its `None` case is handled in Task 5 Step 6. `VIEWPORT_HANDLE` is defined once in Task 3 and used in `retarget_cameras` in the same task. `Compositor::draw` takes `&[Quad]` and both presenters pass slices.
+**Type consistency.** `ViewportTexture` exposes `bevy_view`/`sample_view` and is used under those names in Tasks 3 and 4. `UiTexture::view` likewise. `viewport_rect` returns `Option<Rect>` in Task 5 and its `None` case is handled in Task 5 Step 6. `VIEWPORT_HANDLE` is defined once in Task 3 and used in `retarget_cameras` in the same task. `Frame::composite` takes `&[Quad]` and both presenters pass slices.
 
 **Known soft spots, flagged in place rather than papered over:** the Bevy `TextureView` newtype conversion in Task 3 Step 2, `TestHarness`'s method names in Task 7 Step 2, and the child→parent communication idiom in Task 7 Step 5 each say to read the pinned source rather than trusting this plan. That is honest for a spike against an unreleased dependency; inventing plausible signatures for them would not be.
