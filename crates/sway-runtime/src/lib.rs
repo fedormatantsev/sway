@@ -4,6 +4,7 @@
 //! Per spec §5 the goal here is knowledge, not architecture — expect most of
 //! this to be rewritten at M5.
 
+pub mod headless;
 pub mod point_cloud;
 pub mod scatter;
 pub mod shader_validation;

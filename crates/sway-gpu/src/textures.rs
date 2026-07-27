@@ -1,7 +1,7 @@
 //! Offscreen render targets used by the editor's compositor.
 //!
-//! For M1b Task 2 there is exactly one: the UI layer vello renders into. The
-//! Bevy viewport texture (Task 3) will follow the same shape.
+//! For M1b Task 2 there was exactly one: the UI layer vello renders into.
+//! Task 3 adds [`ViewportTexture`], the texture Bevy renders into.
 
 use wgpu::{
     Device, Extent3d, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
@@ -75,6 +75,85 @@ impl UiTexture {
         let (texture, view) = Self::create(device, width, height);
         self.texture = texture;
         self.view = view;
+        self.width = width;
+        self.height = height;
+    }
+}
+
+/// The texture Bevy renders into.
+///
+/// Two views of one texture, in different formats: Bevy writes through the
+/// sRGB view (so the hardware encodes its linear output), and the compositor
+/// samples through the non-sRGB view (so it reads those encoded bytes without
+/// decoding them again). `view_formats` must list the second format at
+/// creation or wgpu rejects the view.
+pub struct ViewportTexture {
+    // Held alongside the views to keep the resource alive; nothing reads it
+    // directly (mirrors `UiTexture`'s `texture` field).
+    #[allow(dead_code)]
+    texture: Texture,
+    pub bevy_view: TextureView,
+    pub sample_view: TextureView,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ViewportTexture {
+    pub fn new(device: &Device, width: u32, height: u32) -> Self {
+        let (texture, bevy_view, sample_view) = Self::create(device, width, height);
+        Self {
+            texture,
+            bevy_view,
+            sample_view,
+            width: width.max(1),
+            height: height.max(1),
+        }
+    }
+
+    fn create(device: &Device, width: u32, height: u32) -> (Texture, TextureView, TextureView) {
+        let texture = device.create_texture(&TextureDescriptor {
+            label: Some("sway viewport texture"),
+            size: Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::RENDER_ATTACHMENT
+                | TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_SRC,
+            view_formats: &[TextureFormat::Rgba8Unorm],
+        });
+        let bevy_view = texture.create_view(&TextureViewDescriptor {
+            label: Some("sway viewport bevy view (srgb)"),
+            format: Some(TextureFormat::Rgba8UnormSrgb),
+            ..Default::default()
+        });
+        let sample_view = texture.create_view(&TextureViewDescriptor {
+            label: Some("sway viewport sample view (non-srgb)"),
+            format: Some(TextureFormat::Rgba8Unorm),
+            ..Default::default()
+        });
+        (texture, bevy_view, sample_view)
+    }
+
+    /// Recreates the texture (and both its views) if `width`/`height` differ
+    /// from the current size. A no-op otherwise. Callers that hold a Bevy
+    /// `App` must follow a resize with `sway_runtime::headless::set_viewport_view`
+    /// -- the old views are dropped here and the app's `ManualTextureViews`
+    /// entry would otherwise point at a destroyed texture.
+    pub fn resize(&mut self, device: &Device, width: u32, height: u32) {
+        let (width, height) = (width.max(1), height.max(1));
+        if width == self.width && height == self.height {
+            return;
+        }
+        let (texture, bevy_view, sample_view) = Self::create(device, width, height);
+        self.texture = texture;
+        self.bevy_view = bevy_view;
+        self.sample_view = sample_view;
         self.width = width;
         self.height = height;
     }

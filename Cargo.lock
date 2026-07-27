@@ -4839,6 +4839,7 @@ dependencies = [
  "bevy",
  "bytemuck",
  "naga",
+ "sway-gpu",
 ]
 
 [[package]]

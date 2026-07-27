@@ -130,4 +130,14 @@ impl WindowSurface {
     pub fn format(&self) -> TextureFormat {
         TextureFormat::Bgra8Unorm
     }
+
+    /// The swapchain's current configured width, in physical pixels.
+    pub fn width(&self) -> u32 {
+        self.config.width
+    }
+
+    /// The swapchain's current configured height, in physical pixels.
+    pub fn height(&self) -> u32 {
+        self.config.height
+    }
 }

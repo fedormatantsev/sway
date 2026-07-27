@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 bevy.workspace = true
 bytemuck.workspace = true
+sway-gpu.workspace = true
 
 [dev-dependencies]
 naga.workspace = true

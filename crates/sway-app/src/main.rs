@@ -1,10 +1,12 @@
 mod graph;
+mod presenter;
 mod scene;
 mod shell;
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::math::UVec2;
 use bevy::prelude::*;
-use bevy::window::{Monitor, MonitorSelection, WindowMode};
+use bevy::window::Monitor;
 use graph::{graph_tick, GraphState, MidiRx, TICK_HZ};
 use scene::{apply_level, setup_scene};
 
@@ -20,6 +22,7 @@ enum Demo {
     All,
 }
 
+#[allow(dead_code)] // `monitor` and `windowed`: see the DEVIATION note in main().
 struct Args {
     monitor: usize,
     midi_filter: String,
@@ -72,11 +75,14 @@ fn parse_args() -> Args {
 /// Logs every monitor once, so choosing `--monitor N` does not require
 /// guessing.
 ///
-/// This must run in `Update`, not `Startup`. Bevy spawns `Monitor` entities
-/// from `create_monitors`, which winit calls from its event-loop resume
-/// handler — after `Startup` has already run, so a `Startup` query sees an
-/// empty world. The `Local` latch makes it fire once, on the first frame where
-/// monitors actually exist.
+/// DEVIATION (Task 3): this can no longer fire. `Monitor` entities are
+/// spawned by `bevy_winit`'s `create_monitors`, called from winit's
+/// event-loop resume handler -- but `WinitPlugin` is disabled now (see
+/// `sway_runtime::headless::build_app`), so nothing ever spawns a `Monitor`
+/// entity and this query is permanently empty. Left in place rather than
+/// deleted: it is harmless (never logs, never panics) and documents that
+/// `--monitor` selection is a known, accepted regression until M6 (per the
+/// task-3 brief's ruling on this).
 fn log_monitors(monitors: Query<&Monitor>, mut logged: Local<bool>) {
     if *logged || monitors.is_empty() {
         return;
@@ -131,23 +137,11 @@ fn main() {
         return;
     }
 
-    // `--editor` runs the M1b winit/vello shell instead of the Bevy app
-    // below, and must branch before any of it is touched: `DefaultPlugins`
-    // (added further down) creates its own winit event loop as soon as
-    // `add_plugins` runs, not lazily at `app.run()`, and winit allows only
-    // one event loop per process -- building the Bevy app first and
-    // deciding whether to call `.run()` afterward panics with
-    // `EventLoopError::RecreationAttempt` the moment the editor shell tries
-    // to create its own. Task 3 unifies the two paths; for now they are
-    // mutually exclusive and this is the earliest point that's true.
-    if args.editor {
-        shell::run();
-        return;
-    }
-
     let (tx, rx) = crossbeam_channel::unbounded();
     // Held for the process lifetime: dropping it closes the port and frees the
-    // sender the CoreMIDI callback points at.
+    // sender the CoreMIDI callback points at. `shell::run` below blocks until
+    // the window closes, so this stays alive on `main`'s stack for exactly as
+    // long as it needs to.
     let _midi = match sway_midi::open_input(&args.midi_filter, tx) {
         Ok(conn) => Some(conn),
         Err(status) => {
@@ -156,81 +150,89 @@ fn main() {
         }
     };
 
-    let mode = if args.windowed {
-        WindowMode::Windowed
-    } else {
-        WindowMode::BorderlessFullscreen(MonitorSelection::Index(args.monitor))
-    };
+    // DEVIATION (Task 3): `--monitor` and fullscreen selection are dropped.
+    // Window creation now happens once, in `shell::run`, before any demo is
+    // known, and is windowed-only until M6 (per the task-3 brief's ruling on
+    // this) -- `args.monitor`/`args.windowed` are still parsed (so existing
+    // invocations don't fail argument parsing) but no longer read here.
+    let demo = args.demo;
 
-    let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            mode,
-            title: "sway".into(),
-            ..default()
-        }),
-        ..default()
-    }))
-    .add_plugins(FrameTimeDiagnosticsPlugin::default())
-    .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
-    .insert_resource(MidiRx(rx))
-    .init_resource::<GraphState>()
-    .add_systems(FixedUpdate, graph_tick)
-    .add_systems(Update, (apply_level, log_monitors, log_fps));
+    // Everything demo-specific is built into the closure the shell calls
+    // once the window, shared device, and viewport texture exist --
+    // `sway_runtime::headless::build_app` builds the underlying `App`
+    // (Bevy's `RenderPlugin` in manual mode, no window, no winit event loop
+    // of its own); this closure only adds what's specific to this run.
+    let build_app: shell::AppBuilder = Box::new(move |gpu, viewport, size: UVec2| {
+        let mut app = sway_runtime::headless::build_app(gpu, viewport, size);
 
-    // Camera-collision hazard: `scene::setup_scene` (M0) and each demo's own
-    // setup helper each spawn a camera, and Bevy renders every camera with
-    // the same (default) order to the same window — the last one drawn wins
-    // and the rest are invisibly overdrawn. So exactly one of "M0 scene" or
-    // "a demo" runs per process, never both, and `all` is wired to end up
-    // with exactly one active camera too:
-    //   - `point-cloud` spawns its own camera (required: it carries
-    //     `NoIndirectDrawing`, which the point-cloud pipeline needs).
-    //   - `sprites` spawns its own dedicated camera via
-    //     `sprite_layer::spawn_demo_camera`.
-    //   - `scatter` spawns no camera at all: it is compute + readback only,
-    //     proven by a log line, not by anything on screen.
-    //   - `all` reuses the point cloud's camera for the sprite layers too
-    //     (skipping `spawn_demo_camera`) rather than spawning a second one.
-    match args.demo {
-        None => {
-            app.add_systems(Startup, setup_scene);
-        }
-        Some(Demo::PointCloud) => {
-            app.add_plugins(sway_runtime::PointCloudPlugin).add_systems(
-                Startup,
-                sway_runtime::point_cloud::spawn_demo_point_cloud,
-            );
-        }
-        Some(Demo::Sprites) => {
-            app.add_plugins(sway_runtime::SpriteLayerPlugin).add_systems(
-                Startup,
-                (
-                    sway_runtime::sprite_layer::spawn_demo_sprite_layers,
-                    sway_runtime::sprite_layer::spawn_demo_camera,
-                ),
-            );
-        }
-        Some(Demo::Scatter) => {
-            app.add_plugins(sway_runtime::ScatterPlugin)
-                .add_systems(Startup, sway_runtime::scatter::spawn_demo_scatter);
-        }
-        Some(Demo::All) => {
-            app.add_plugins((
-                sway_runtime::PointCloudPlugin,
-                sway_runtime::SpriteLayerPlugin,
-                sway_runtime::ScatterPlugin,
-            ))
-            .add_systems(
-                Startup,
-                (
+        app.add_plugins(FrameTimeDiagnosticsPlugin::default())
+            .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
+            .insert_resource(MidiRx(rx))
+            .init_resource::<GraphState>()
+            .add_systems(FixedUpdate, graph_tick)
+            .add_systems(Update, (apply_level, log_monitors, log_fps));
+
+        // Camera-collision hazard: `scene::setup_scene` (M0) and each demo's
+        // own setup helper each spawn a camera, and Bevy renders every
+        // camera with the same (default) order to the same target -- the
+        // last one drawn wins and the rest are invisibly overdrawn. So
+        // exactly one of "M0 scene" or "a demo" runs per process, never
+        // both, and `all` is wired to end up with exactly one active camera
+        // too:
+        //   - `point-cloud` spawns its own camera (required: it carries
+        //     `NoIndirectDrawing`, which the point-cloud pipeline needs).
+        //   - `sprites` spawns its own dedicated camera via
+        //     `sprite_layer::spawn_demo_camera`.
+        //   - `scatter` spawns no camera at all: it is compute + readback
+        //     only, proven by a log line, not by anything on screen.
+        //   - `all` reuses the point cloud's camera for the sprite layers
+        //     too (skipping `spawn_demo_camera`) rather than spawning a
+        //     second one.
+        match demo {
+            None => {
+                app.add_systems(Startup, setup_scene);
+            }
+            Some(Demo::PointCloud) => {
+                app.add_plugins(sway_runtime::PointCloudPlugin).add_systems(
+                    Startup,
                     sway_runtime::point_cloud::spawn_demo_point_cloud,
-                    sway_runtime::sprite_layer::spawn_demo_sprite_layers,
-                    sway_runtime::scatter::spawn_demo_scatter,
-                ),
-            );
+                );
+            }
+            Some(Demo::Sprites) => {
+                app.add_plugins(sway_runtime::SpriteLayerPlugin).add_systems(
+                    Startup,
+                    (
+                        sway_runtime::sprite_layer::spawn_demo_sprite_layers,
+                        sway_runtime::sprite_layer::spawn_demo_camera,
+                    ),
+                );
+            }
+            Some(Demo::Scatter) => {
+                app.add_plugins(sway_runtime::ScatterPlugin)
+                    .add_systems(Startup, sway_runtime::scatter::spawn_demo_scatter);
+            }
+            Some(Demo::All) => {
+                app.add_plugins((
+                    sway_runtime::PointCloudPlugin,
+                    sway_runtime::SpriteLayerPlugin,
+                    sway_runtime::ScatterPlugin,
+                ))
+                .add_systems(
+                    Startup,
+                    (
+                        sway_runtime::point_cloud::spawn_demo_point_cloud,
+                        sway_runtime::sprite_layer::spawn_demo_sprite_layers,
+                        sway_runtime::scatter::spawn_demo_scatter,
+                    ),
+                );
+            }
         }
-    }
 
-    app.run();
+        app
+    });
+
+    shell::run(shell::ShellConfig {
+        editor: args.editor,
+        build_app,
+    });
 }

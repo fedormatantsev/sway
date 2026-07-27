@@ -14,7 +14,7 @@ pub use compositor::{Compositor, Quad};
 pub use context::GpuContext;
 pub use frame::Frame;
 pub use surface::WindowSurface;
-pub use textures::UiTexture;
+pub use textures::{UiTexture, ViewportTexture};
 pub use ui_render::UiRenderer;
 pub use wgpu;
 

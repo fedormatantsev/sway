@@ -1,21 +1,44 @@
-//! The winit shell for the editor path (`--editor`).
+//! The winit shell: the one event loop shared by both run paths.
 //!
-//! Bevy does not appear here — this is M1b Task 2's minimum: a window, the
-//! shared wgpu device, a vello-painted UI texture, and the compositor putting
-//! that texture on screen. Task 3 adds the Bevy viewport texture as a second
-//! quad; Task 4 adds masonry/ui-events for real UI input.
+//! Task 2 built this file as a standalone editor-only shell (window, shared
+//! device, a vello-painted UI texture, compositor). Task 3 unifies it with
+//! the plain Bevy path: `DefaultPlugins` creates its own winit event loop as
+//! soon as `add_plugins` runs (not lazily at `app.run()`), and winit allows
+//! only one event loop per process, so there can no longer be a separate
+//! "just call `app.run()`" path alongside this shell -- every run, demo or
+//! editor, now goes through here. Task 2's vello demo (a solid rectangle) is
+//! retired in favour of what Task 4 adds for real: masonry input and vello
+//! UI composited alongside the Bevy viewport. Until then `--editor` falls
+//! back to the same `ShowPresenter` as the default path (see `ShellConfig`).
 
 use std::sync::Arc;
 
-use imaging::Painter;
-use imaging::record::Scene;
-use kurbo::Rect;
-use peniko::{Brush, Color};
-use sway_gpu::{Compositor, GpuContext, Quad, UiRenderer, UiTexture, WindowSurface};
+use bevy::app::App;
+use bevy::math::UVec2;
+use sway_gpu::{Compositor, GpuContext, ViewportTexture, WindowSurface};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
+
+use crate::presenter::ShowPresenter;
+
+/// Builds the demo-specific Bevy `App` once the window, shared device, and
+/// viewport texture exist. Boxed so `main` can hand the shell a closure that
+/// closes over MIDI setup and the `--demo`/scene selection without the shell
+/// needing to know about either -- `sway_runtime::headless::build_app` does
+/// the actual `App` construction; this closure just adds whatever's specific
+/// to this run on top of the `App` it returns.
+pub type AppBuilder = Box<dyn FnOnce(&GpuContext, &ViewportTexture, UVec2) -> App>;
+
+/// What to run once the window is up.
+pub struct ShellConfig {
+    /// Selects the window title and (eventually, Task 4) the editor
+    /// presenter. For M1b Task 3 there is only `ShowPresenter`, so this only
+    /// affects the title.
+    pub editor: bool,
+    pub build_app: AppBuilder,
+}
 
 /// Everything that exists only once the window (and therefore the GPU
 /// context bound to its surface) is up. `None` before the first `resumed`
@@ -26,65 +49,31 @@ struct Running {
     window: Arc<Window>,
     gpu: GpuContext,
     surface: WindowSurface,
-    ui_texture: UiTexture,
+    viewport: ViewportTexture,
     compositor: Compositor,
-    ui_renderer: UiRenderer,
+    app: App,
+    presenter: ShowPresenter,
 }
 
 impl Running {
-    /// Paints one solid rectangle into the UI scene, renders it to the UI
-    /// texture, and composites that single quad fullscreen onto the window
-    /// surface.
     fn redraw(&mut self) {
-        // Begin the frame first: if the window is occluded or minimized
-        // there is nothing to draw, and no point painting the UI scene.
-        // Keep the loop alive by asking for another redraw so we notice
-        // when the surface becomes presentable again.
-        let Some(mut frame) = self
-            .surface
-            .begin_frame(&self.gpu.device, &self.gpu.queue, &mut self.compositor)
-        else {
-            self.window.request_redraw();
-            return;
-        };
-
-        let size = self.window.inner_size();
-        let (width, height) = (size.width.max(1), size.height.max(1));
-
-        let mut scene = Scene::new();
-        {
-            let mut painter = Painter::new(&mut scene);
-            let margin_x = width as f64 * 0.2;
-            let margin_y = height as f64 * 0.2;
-            let rect = Rect::new(
-                margin_x,
-                margin_y,
-                width as f64 - margin_x,
-                height as f64 - margin_y,
-            );
-            let brush = Brush::Solid(Color::from_rgb8(0x2a, 0x6f, 0xdb));
-            painter.fill_rect(rect, &brush);
-        }
-
-        self.ui_renderer
-            .render_scene(&scene, &self.ui_texture.view, width, height);
-
-        frame.composite(&[Quad {
-            view: &self.ui_texture.view,
-            dst: Rect::new(0.0, 0.0, width as f64, height as f64),
-            blend: true,
-        }]);
-
-        frame.present();
-
+        self.presenter.present(
+            &mut self.app,
+            &self.gpu,
+            &self.surface,
+            &self.viewport,
+            &mut self.compositor,
+        );
         // Keeps the loop continuous: vsync (the surface is `Fifo`) paces us,
-        // not this call.
+        // not this call. This also covers `begin_frame` returning `None`
+        // (occluded/timeout, handled inside `ShowPresenter::present`): asking
+        // again is how the loop notices when the surface becomes presentable.
         self.window.request_redraw();
     }
 }
 
-#[derive(Default)]
 struct Shell {
+    config: Option<ShellConfig>,
     running: Option<Running>,
 }
 
@@ -93,10 +82,17 @@ impl ApplicationHandler for Shell {
         if self.running.is_some() {
             return;
         }
+        let Some(config) = self.config.take() else {
+            // Only happens on a second `resumed` (suspend/resume), which
+            // desktop winit doesn't raise; nothing to rebuild without a
+            // config to rebuild from.
+            return;
+        };
 
+        let title = if config.editor { "sway (editor)" } else { "sway" };
         let window = event_loop
-            .create_window(Window::default_attributes().with_title("sway (editor)"))
-            .expect("could not create the editor window");
+            .create_window(Window::default_attributes().with_title(title))
+            .expect("could not create the window");
         let window = Arc::new(window);
 
         // `GpuContext::new`'s `compatible_surface` exists so the adapter
@@ -120,17 +116,24 @@ impl ApplicationHandler for Shell {
         let (width, height) = (size.width.max(1), size.height.max(1));
 
         let surface = WindowSurface::new(&gpu.instance, &gpu.device, &gpu.adapter, window.clone());
-        let ui_texture = UiTexture::new(&gpu.device, width, height);
+        let viewport = ViewportTexture::new(&gpu.device, width, height);
         let compositor = Compositor::new(&gpu.device, surface.format());
-        let ui_renderer = UiRenderer::new(gpu.device.clone(), gpu.queue.clone());
+
+        let mut app = (config.build_app)(&gpu, &viewport, UVec2::new(width, height));
+        // Must run once, after construction and before the first
+        // `app.update()`, or render resources stay uninitialised (they are
+        // normally driven by `App::run`'s runner, which we don't use).
+        app.finish();
+        app.cleanup();
 
         self.running = Some(Running {
             window,
             gpu,
             surface,
-            ui_texture,
+            viewport,
             compositor,
-            ui_renderer,
+            app,
+            presenter: ShowPresenter,
         });
     }
 
@@ -144,7 +147,15 @@ impl ApplicationHandler for Shell {
             WindowEvent::Resized(size) => {
                 let (width, height) = (size.width.max(1), size.height.max(1));
                 running.surface.resize(&running.gpu.device, size);
-                running.ui_texture.resize(&running.gpu.device, width, height);
+                running.viewport.resize(&running.gpu.device, width, height);
+                // The resize just recreated the viewport texture (and its
+                // views), invalidating whatever `ManualTextureViews` entry
+                // the app's `VIEWPORT_HANDLE` pointed at -- repoint it.
+                sway_runtime::headless::set_viewport_view(
+                    &mut running.app,
+                    &running.viewport,
+                    UVec2::new(width, height),
+                );
             }
             WindowEvent::RedrawRequested => running.redraw(),
             _ => {}
@@ -152,11 +163,14 @@ impl ApplicationHandler for Shell {
     }
 }
 
-/// Runs the editor's winit shell. Blocks until the window is closed.
-pub fn run() {
+/// Runs the shell. Blocks until the window is closed.
+pub fn run(config: ShellConfig) {
     let event_loop = EventLoop::new().expect("could not create the winit event loop");
-    let mut shell = Shell::default();
+    let mut shell = Shell {
+        config: Some(config),
+        running: None,
+    };
     event_loop
         .run_app(&mut shell)
-        .expect("editor event loop exited with an error");
+        .expect("shell event loop exited with an error");
 }
