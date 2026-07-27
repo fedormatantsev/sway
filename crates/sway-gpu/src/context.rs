@@ -64,3 +64,49 @@ impl GpuContext {
         Self { instance, adapter, device, queue }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::GpuContext;
+
+    /// Guards the experimental-features subtraction in `GpuContext::new`,
+    /// not "wgpu works" in general.
+    ///
+    /// On at least one real adapter (Metal on Apple Silicon), `adapter.features()`
+    /// advertises `EXPERIMENTAL_RAY_QUERY`, `EXPERIMENTAL_MESH_SHADER`, and
+    /// `EXPERIMENTAL_COOPERATIVE_MATRIX`. wgpu 29 will not grant those to a
+    /// device without an explicit, `unsafe ExperimentalFeatures::enabled()`
+    /// opt-in, so passing `adapter.features()` straight through as
+    /// `required_features` makes `request_device` fail with
+    /// `ExperimentalFeaturesNotEnabled` — this was reproduced during
+    /// development. `GpuContext::new` subtracts
+    /// `wgpu::Features::all_experimental_mask()` before requesting the
+    /// device specifically to avoid that. If someone later deletes that
+    /// subtraction (e.g. while "simplifying" the feature/limit union logic),
+    /// this test starts panicking through `GpuContext::new`'s own
+    /// `.expect("could not create the shared wgpu device")` and this comment
+    /// is the explanation.
+    ///
+    /// Not `#[ignore]`: this project has no CI and runs only on this
+    /// developer's Mac, so a plain `#[test]` that fails loudly with no
+    /// adapter present is more useful than a silently-skipped one.
+    #[test]
+    fn gpu_context_new_succeeds_despite_adapter_advertised_experimental_features() {
+        // The real regression guard is that this call does not panic. If
+        // `GpuContext::new`'s experimental-features subtraction is ever
+        // deleted, and the adapter under test still advertises any
+        // `EXPERIMENTAL_*` feature (true for Metal on Apple Silicon, per the
+        // doc comment above), `request_device` fails with
+        // `ExperimentalFeaturesNotEnabled` and this test panics right here.
+        let ctx = GpuContext::new(None);
+
+        // Confirm the device is real and usable, not merely constructed.
+        assert!(ctx.device.limits().max_bind_groups > 0);
+
+        // Record what this run's adapter actually advertised, so a failure
+        // to reproduce the guarded condition on a different machine is
+        // visible in the test output rather than silently vacuous.
+        let experimental = ctx.adapter.features() & wgpu::Features::all_experimental_mask();
+        println!("adapter-advertised experimental features on this run: {experimental:?}");
+    }
+}
