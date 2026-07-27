@@ -4,56 +4,70 @@
 //! see the crate manifest. `winit` appears only because `ui-events-winit`
 //! takes `&winit::event::WindowEvent`; nothing here draws with it.
 
+pub mod canvas;
 pub mod external;
+pub mod node_box;
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use masonry_core::app::{RenderRoot, RenderRootOptions, RenderRootSignal, VisualLayerPlan, WindowSizePolicy};
 use masonry_core::core::{NewWidget, TextEvent, Widget, WindowEvent as MasonryWindowEvent};
+use masonry::kurbo::Point;
 use masonry::layout::AsUnit;
-use masonry::properties::{Background, Dimensions};
-use masonry::widgets::{Flex, Label, SizedBox};
+use masonry::properties::Dimensions;
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use winit::dpi::PhysicalSize;
 
+use crate::canvas::GraphCanvas;
 use crate::external::ViewportPlaceholder;
 
-/// The Bevy viewport's fixed footprint in the placeholder layout, in logical
+/// The Bevy viewport's fixed footprint in the graph canvas, in logical
 /// pixels. Matches the size `EditorPresenter`'s Task 4 hardcoded rect used
-/// (`EDITOR_VIEWPORT_RECT`), purely for visual continuity across Task 5 --
+/// (`EDITOR_VIEWPORT_RECT`), purely for visual continuity across Tasks 5-6 --
 /// nothing requires this exact number now that masonry's widget tree decides
-/// the rect. Task 6's `GraphCanvas` will replace this whole placeholder tree.
+/// the rect.
 const VIEWPORT_WIDTH: f64 = 640.0;
 const VIEWPORT_HEIGHT: f64 = 360.0;
 
-/// A placeholder root widget that paints something obvious: a full-window
-/// panel (via `Dimensions::MAX`, the same property `RenderRoot`'s own
-/// internal `LayerStack` uses to always measure the full window) with a
-/// visible background, a text label, and -- Task 5 -- a
-/// [`ViewportPlaceholder`] child marked `PaintLayerMode::External`. That
-/// child's layout box is what `sway_editor::external::viewport_rect` reads
-/// back out of the `VisualLayerPlan`; the presenter no longer hardcodes it.
+/// Builds the root widget: a [`GraphCanvas`] carrying a handful of
+/// placeholder node boxes and edges around Task 5's [`ViewportPlaceholder`],
+/// which keeps its seat in the tree as one of the canvas's children so the
+/// Bevy viewport still appears (`sway_editor::external::viewport_rect` reads
+/// its layout box back out of the `VisualLayerPlan`, same as before).
 ///
-/// Task 6 replaces this with `GraphCanvas`.
-fn placeholder_root() -> NewWidget<dyn Widget> {
-    let label = Label::new("sway editor").prepare();
+/// Deviation from a stale claim this function's predecessor's doc comment
+/// made: the previous placeholder root relied on `Dimensions::MAX` to fill
+/// the window, attributing that to `RenderRoot`'s `LayerStack` also using
+/// `Dimensions::MAX` internally. That was wrong -- under
+/// `WindowSizePolicy::User`, `run_layout_pass` resolves the root via
+/// `SizeDef::fixed(window_size)` and `LayerStack::layout` forwards it
+/// unconditionally, so `Dimensions::MAX` was inert on that path the whole
+/// time. `GraphCanvas` below sets no `Dimensions` property at all and fills
+/// the window regardless, which is the actual mechanism at work.
+fn graph_root() -> NewWidget<dyn Widget> {
     let viewport = ViewportPlaceholder::new()
         .prepare()
         .with_props(Dimensions::fixed(VIEWPORT_WIDTH.px(), VIEWPORT_HEIGHT.px()));
 
-    SizedBox::new(
-        Flex::column()
-            .with_fixed(label)
-            .with_fixed(viewport)
-            .prepare(),
-    )
-    .prepare()
-    .with_props((
-        Dimensions::MAX,
-        Background::Color(masonry::theme::ZYNC_900),
-    ))
-    .erased()
+    GraphCanvas::new()
+        .with_node(0, Point::new(20.0, 20.0), "Source")
+        .with_node(1, Point::new(20.0, 160.0), "Filter")
+        .with_node(2, Point::new(20.0, 300.0), "Transform")
+        .with_node(3, Point::new(860.0, 20.0), "Output")
+        .with_node(4, Point::new(860.0, 160.0), "Debug View")
+        .with_node(5, Point::new(860.0, 300.0), "Camera")
+        .with_edge(0, 1)
+        .with_edge(1, 2)
+        .with_edge(3, 4)
+        .with_edge(4, 5)
+        .with_viewport(
+            viewport,
+            Point::new(200.0, 20.0),
+            masonry::kurbo::Size::new(VIEWPORT_WIDTH, VIEWPORT_HEIGHT),
+        )
+        .prepare()
+        .erased()
 }
 
 /// The masonry widget tree, driven by winit events, one `RenderRoot` per
@@ -72,7 +86,7 @@ pub struct EditorUi {
 impl EditorUi {
     pub fn new(size: PhysicalSize<u32>, scale_factor: f64) -> Self {
         let root = RenderRoot::new(
-            placeholder_root(),
+            graph_root(),
             // R2 (controller dispatch ruling): the signal sink is a no-op.
             // Masonry emits `RenderRootSignal`s for cursor changes, IME, and
             // window requests (resize, title, exit, ...); a spike driving one
