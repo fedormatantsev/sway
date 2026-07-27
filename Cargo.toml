@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/sway-midi", "crates/sway-app", "crates/sway-runtime", "crates/sway-gpu"]
+members = ["crates/sway-midi", "crates/sway-app", "crates/sway-runtime", "crates/sway-gpu", "crates/sway-editor"]
 
 [workspace.package]
 edition = "2024"
@@ -12,6 +12,7 @@ crossbeam-channel = "0.5"
 sway-midi = { path = "crates/sway-midi" }
 sway-runtime = { path = "crates/sway-runtime" }
 sway-gpu = { path = "crates/sway-gpu" }
+sway-editor = { path = "crates/sway-editor" }
 bytemuck = { version = "1", features = ["derive"] }
 naga = { version = "29", features = ["wgsl-in"] }
 wgpu = "=29.0.4"
@@ -21,3 +22,6 @@ peniko = "0.6.1"
 imaging = "0.0.1"
 imaging_vello = { version = "0.0.2", default-features = false, features = ["vello-0-9"] }
 winit = "=0.30.13"
+ui-events-winit = "0.3.0"
+masonry = { git = "https://github.com/linebender/xilem.git", rev = "c5950bcb03d4f3d187a20d1159f6aa276fd056bf" }
+masonry_core = { git = "https://github.com/linebender/xilem.git", rev = "c5950bcb03d4f3d187a20d1159f6aa276fd056bf" }

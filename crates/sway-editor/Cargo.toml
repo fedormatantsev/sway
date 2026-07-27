@@ -1,0 +1,13 @@
+[package]
+name = "sway-editor"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+masonry.workspace = true
+masonry_core.workspace = true
+imaging.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
+ui-events-winit.workspace = true
+winit.workspace = true
