@@ -44,11 +44,13 @@ impl GpuContext {
         }))
         .expect("no suitable wgpu adapter");
 
-        // The union. Bevy's own initialisation asks for the adapter's full
-        // feature set and then downgrades; vello needs no optional features on
-        // the wgpu backend but does need non-default limits for its bind
-        // groups. Taking the adapter's limits wholesale satisfies both without
-        // guessing which specific limit each one reads.
+        // Neither party's needs are enumerated: we ask for everything the
+        // adapter offers, minus the experimental bits below. Bevy's own
+        // initialisation asks for the adapter's full feature set and then
+        // downgrades; vello needs no optional features on the wgpu backend but
+        // does need non-default limits for its bind groups. Taking the
+        // adapter's limits wholesale satisfies both without guessing which
+        // specific limit each one reads.
         //
         // Experimental features (ray query, mesh shader, cooperative matrix, ...)
         // are excluded: wgpu 29 requires an explicit, `unsafe`
