@@ -162,11 +162,13 @@ impl ApplicationHandler for Shell {
         // or render resources stay uninitialised (normally an `App::run` runner
         // busy-waits on `plugins_state() == Ready` before calling these; we skip
         // that wait). Calling `finish()` immediately, with no wait, is safe here
-        // *only* because `RenderCreation::Manual` (used by `headless::build_app`)
-        // populates its `FutureRenderResources` synchronously inside `Plugin::build`
-        // -- under the default `RenderCreation::Automatic`, whose device resolution
-        // is asynchronous, `RenderPlugin::finish` would panic (`.unwrap()` on a
-        // still-empty resource) if called before that resolution completes.
+        // because we build natively: both `RenderCreation::Manual` and the
+        // default `RenderCreation::Automatic` resolve `FutureRenderResources`
+        // synchronously inside `Plugin::build` on native targets (`Automatic`
+        // does so via `bevy_tasks::block_on`) -- it's wasm32 that instead
+        // detaches the resolution as a task, which is where `RenderPlugin::finish`'s
+        // `.unwrap()` on a still-empty resource would actually panic, and where
+        // the `plugins_state() == Ready` wait this shell skips would be needed.
         app.finish();
         app.cleanup();
 

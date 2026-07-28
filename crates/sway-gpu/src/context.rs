@@ -1,9 +1,17 @@
 //! Instance, adapter, device and queue creation.
 //!
-//! The device is requested with the **union** of what Bevy and vello need. This
-//! is the most likely place the shared-device route fails, so the request is
-//! explicit and the failure is loud rather than a missing-feature panic deep
-//! inside a render pass.
+//! The device is requested with the adapter's **entire** non-experimental
+//! feature set and full limits, rather than a computed union of what Bevy and
+//! vello each need -- a deliberate simplification that satisfies both without
+//! either party's requirements being enumerated. Experimental features are
+//! subtracted because wgpu 29 refuses to grant them without an unsafe opt-in:
+//! on this machine (Apple M4 / Metal) the adapter advertises
+//! `EXPERIMENTAL_RAY_QUERY | EXPERIMENTAL_MESH_SHADER |
+//! EXPERIMENTAL_COOPERATIVE_MATRIX`, and leaving them in makes
+//! `request_device` fail with `ExperimentalFeaturesNotEnabled` (a committed
+//! test guards this). This is the most likely place the shared-device route
+//! fails, so the request is explicit and the failure is loud rather than a
+//! missing-feature panic deep inside a render pass.
 
 use wgpu::{
     Adapter, Backends, Device, DeviceDescriptor, Instance, InstanceDescriptor, Queue,
