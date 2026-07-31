@@ -4,7 +4,16 @@ pub mod ffi;
 
 pub mod input;
 
-pub use input::{open_input, MidiEvent, MidiInput};
+pub use input::{MidiEvent, MidiInput, open_input};
+
+/// Converts CoreMIDI's mach absolute host time to seconds.
+pub fn host_time_to_secs(host_time: u64) -> f64 {
+    let mut info = ffi::MachTimebaseInfo { numer: 0, denom: 0 };
+    // SAFETY: `info` is a valid writable out-parameter.
+    let status = unsafe { ffi::mach_timebase_info(&mut info) };
+    assert_eq!(status, 0, "mach_timebase_info failed");
+    host_time as f64 * f64::from(info.numer) / f64::from(info.denom) / 1_000_000_000.0
+}
 
 /// Lists every CoreMIDI source by index and display name, for preflight output.
 pub fn list_sources() -> Vec<(usize, String)> {
@@ -25,6 +34,21 @@ pub fn list_sources() -> Vec<(usize, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_time_conversion_is_monotonic_and_matches_timebase() {
+        let mut info = ffi::MachTimebaseInfo { numer: 0, denom: 0 };
+        // SAFETY: `info` is a valid writable out-parameter.
+        assert_eq!(unsafe { ffi::mach_timebase_info(&mut info) }, 0);
+
+        // One denominator's worth of host ticks converts to `numer`
+        // nanoseconds by the documented mach timebase ratio.
+        let ticks = u64::from(info.denom);
+        let expected_secs = f64::from(info.numer) / 1_000_000_000.0;
+        let converted = host_time_to_secs(ticks);
+        assert!((converted - expected_secs).abs() < f64::EPSILON);
+        assert!(host_time_to_secs(ticks + 1) > converted);
+    }
 
     #[test]
     fn enumerating_sources_does_not_crash() {
@@ -90,7 +114,10 @@ mod tests {
             (a.status, a.data1, a.data2, a.host_time),
             (0x90, 60, 100, 111)
         );
-        assert_eq!((b.status, b.data1, b.data2, b.host_time), (0x90, 64, 80, 222));
+        assert_eq!(
+            (b.status, b.data1, b.data2, b.host_time),
+            (0x90, 64, 80, 222)
+        );
         assert!(rx.try_recv().is_err(), "exactly two events expected");
     }
 

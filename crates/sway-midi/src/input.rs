@@ -11,9 +11,8 @@ pub struct MidiEvent {
     pub status: u8,
     pub data1: u8,
     pub data2: u8,
-    /// CoreMIDI host time, in mach absolute time units. Converting to a wall
-    /// clock needs `mach_timebase_info`, which M0 does not need — sub-tick
-    /// offsets arrive with the transport at M3.
+    /// CoreMIDI host time, in mach absolute time units. Convert with
+    /// [`crate::host_time_to_secs`] before feeding the graph's MIDI inbox.
     pub host_time: u64,
 }
 

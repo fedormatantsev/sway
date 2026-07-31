@@ -10,7 +10,9 @@ path = "src/main.rs"
 [dependencies]
 bevy.workspace = true
 crossbeam-channel.workspace = true
+sway-graph.workspace = true
 sway-midi.workspace = true
+sway-nodes.workspace = true
 sway-runtime.workspace = true
 sway-gpu.workspace = true
 sway-editor.workspace = true

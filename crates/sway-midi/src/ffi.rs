@@ -1,7 +1,7 @@
 //! Raw CoreMIDI and CoreFoundation declarations. Everything unsafe about the
 //! MIDI layer is confined to this file and `input.rs`.
 
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{CString, c_char, c_void};
 
 pub type OSStatus = i32;
 pub type MIDIObjectRef = u32;
@@ -12,8 +12,18 @@ pub type ItemCount = usize;
 pub type CFStringRef = *const c_void;
 pub type CFAllocatorRef = *const c_void;
 
+#[repr(C)]
+pub struct MachTimebaseInfo {
+    pub numer: u32,
+    pub denom: u32,
+}
+
 pub type MIDINotifyProc = extern "C" fn(*const c_void, *mut c_void);
 pub type MIDIReadProc = extern "C" fn(*const MIDIPacketList, *mut c_void, *mut c_void);
+
+unsafe extern "C" {
+    pub fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
+}
 
 // Apple's MIDIServices.h wraps these in `#pragma pack(push, 4)` (line 446,
 // popped at 613), so a plain `#[repr(C)]` is wrong here: the `u64 time_stamp`

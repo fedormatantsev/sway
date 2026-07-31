@@ -1,8 +1,9 @@
 //! The M0 scene: one cube, one camera, one light. Replaced by graph-authored
 //! scene nodes at M5 (spec §2.10).
 
-use crate::graph::GraphState;
+use crate::bridge::CubeGraphOutput;
 use bevy::prelude::*;
+use sway_graph::{NodeRuntime, PortArena};
 
 /// Marks the cube whose colour the graph drives.
 #[derive(Component)]
@@ -41,7 +42,7 @@ pub fn setup_scene(
     ));
 }
 
-/// Writes the graph's level into the cube's material.
+/// Writes the graph's envelope output into the cube's material.
 ///
 /// Reads and compares before calling `get_mut`, because `get_mut` marks the
 /// asset modified purely by being called — an unconditional write would
@@ -51,15 +52,26 @@ pub fn setup_scene(
 /// inside the `FixedUpdate` tick; this runs in `Update` instead, so it fires
 /// once per frame rather than once per graph tick. This is a deliberate
 /// coalescing choice, not an oversight — the tick runs at 120 Hz (see
-/// `graph::TICK_HZ`), faster than the frame rate, so applying on every tick
+/// `main::TICK_HZ`), faster than the frame rate, so applying on every tick
 /// would just mean redundant writes of intermediate states nothing ever
 /// sees.
 pub fn apply_level(
-    state: Res<GraphState>,
+    output: Res<CubeGraphOutput>,
+    arena: Res<PortArena>,
+    runtimes: Query<&NodeRuntime>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     q: Query<&MeshMaterial3d<StandardMaterial>, With<Cube>>,
 ) {
-    let want = colour_for_level(state.level);
+    let Ok(runtime) = runtimes.get(output.entity) else {
+        return;
+    };
+    let Some(level) = arena.continuous[runtime.continuous_base + output.ordinal as usize]
+        .try_downcast_ref::<f32>()
+        .copied()
+    else {
+        return;
+    };
+    let want = colour_for_level(level);
     for handle in &q {
         let Some(current) = materials.get(&handle.0) else {
             continue;
@@ -76,7 +88,9 @@ pub fn apply_level(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::GraphState;
+    use crate::bridge::CubeGraphOutput;
+    use sway_graph::{NodeRuntime, PortArena};
+    use sway_nodes::Envelope;
 
     /// Headless app with assets but no renderer, enough to exercise the
     /// material write path.
@@ -86,9 +100,20 @@ mod tests {
             .add_plugins(AssetPlugin::default())
             .init_asset::<Mesh>()
             .init_asset::<StandardMaterial>()
-            .init_resource::<GraphState>()
             .add_systems(Update, apply_level);
+        let envelope = app.world_mut().spawn(NodeRuntime::default()).id();
+        let mut arena = PortArena::new(Envelope::OUT_VALUE as usize + 1, 0);
+        arena.continuous[Envelope::OUT_VALUE as usize] = Box::new(0.0_f32);
+        app.insert_resource(arena).insert_resource(CubeGraphOutput {
+            entity: envelope,
+            ordinal: Envelope::OUT_VALUE,
+        });
         app
+    }
+
+    fn set_level(app: &mut App, level: f32) {
+        app.world_mut().resource_mut::<PortArena>().continuous[Envelope::OUT_VALUE as usize] =
+            Box::new(level);
     }
 
     fn spawn_cube(app: &mut App) -> Handle<StandardMaterial> {
@@ -120,7 +145,7 @@ mod tests {
         let mut app = headless();
         let handle = spawn_cube(&mut app);
 
-        app.world_mut().resource_mut::<GraphState>().level = 1.0;
+        set_level(&mut app, 1.0);
         app.update();
 
         let materials = app.world().resource::<Assets<StandardMaterial>>();
@@ -133,7 +158,7 @@ mod tests {
         let mut app = headless();
         let _handle = spawn_cube(&mut app);
 
-        app.world_mut().resource_mut::<GraphState>().level = 0.5;
+        set_level(&mut app, 0.5);
         app.update();
 
         assert!(
@@ -147,7 +172,7 @@ mod tests {
         let mut app = headless();
         let _handle = spawn_cube(&mut app);
 
-        app.world_mut().resource_mut::<GraphState>().level = 0.5;
+        set_level(&mut app, 0.5);
         app.update();
         let _ = count_modified(&mut app);
 

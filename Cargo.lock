@@ -5262,7 +5262,9 @@ dependencies = [
  "peniko",
  "sway-editor",
  "sway-gpu",
+ "sway-graph",
  "sway-midi",
+ "sway-nodes",
  "sway-runtime",
  "winit",
 ]

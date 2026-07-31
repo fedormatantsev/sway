@@ -1,4 +1,4 @@
-mod graph;
+mod bridge;
 mod presenter;
 mod scene;
 mod shell;
@@ -7,8 +7,13 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::math::UVec2;
 use bevy::prelude::*;
 use bevy::window::Monitor;
-use graph::{graph_tick, GraphState, MidiRx, TICK_HZ};
+use bridge::{MidiRx, feed_midi, setup_cube_graph};
 use scene::{apply_level, setup_scene};
+use sway_graph::GraphPlugin;
+use sway_nodes::SignalNodesPlugin;
+
+/// Provisional graph tick rate pending the measurements specified in spec §11.
+const TICK_HZ: f64 = 120.0;
 
 /// Which M1 render spike (if any) to run instead of the M0 cube. See
 /// `main`'s demo-dispatch match for how each variant is wired up, and its
@@ -102,11 +107,7 @@ fn log_monitors(monitors: Query<&Monitor>, mut logged: Local<bool>) {
 /// Logs `FrameTimeDiagnosticsPlugin`'s smoothed FPS once per second. "At
 /// frame rate" is an M1 exit criterion and needs a measured number, not an
 /// impression — this is what produces that number in the run logs.
-fn log_fps(
-    diagnostics: Res<DiagnosticsStore>,
-    time: Res<Time>,
-    mut since_last_log: Local<f32>,
-) {
+fn log_fps(diagnostics: Res<DiagnosticsStore>, time: Res<Time>, mut since_last_log: Local<f32>) {
     *since_last_log += time.delta_secs();
     if *since_last_log < 1.0 {
         return;
@@ -165,12 +166,16 @@ fn main() {
     let build_app: shell::AppBuilder = Box::new(move |gpu, viewport, size: UVec2| {
         let mut app = sway_runtime::headless::build_app(gpu, viewport, size);
 
-        app.add_plugins(FrameTimeDiagnosticsPlugin::default())
-            .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
-            .insert_resource(MidiRx(rx))
-            .init_resource::<GraphState>()
-            .add_systems(FixedUpdate, graph_tick)
-            .add_systems(Update, (apply_level, log_monitors, log_fps));
+        app.add_plugins((
+            FrameTimeDiagnosticsPlugin::default(),
+            GraphPlugin,
+            SignalNodesPlugin,
+        ))
+        .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
+        .insert_resource(MidiRx(rx))
+        .add_systems(Startup, setup_cube_graph)
+        .add_systems(PreUpdate, feed_midi)
+        .add_systems(Update, (apply_level, log_monitors, log_fps));
 
         // Camera-collision hazard: `scene::setup_scene` (M0) and each demo's
         // own setup helper each spawn a camera, and Bevy renders every
@@ -193,19 +198,18 @@ fn main() {
                 app.add_systems(Startup, setup_scene);
             }
             Some(Demo::PointCloud) => {
-                app.add_plugins(sway_runtime::PointCloudPlugin).add_systems(
-                    Startup,
-                    sway_runtime::point_cloud::spawn_demo_point_cloud,
-                );
+                app.add_plugins(sway_runtime::PointCloudPlugin)
+                    .add_systems(Startup, sway_runtime::point_cloud::spawn_demo_point_cloud);
             }
             Some(Demo::Sprites) => {
-                app.add_plugins(sway_runtime::SpriteLayerPlugin).add_systems(
-                    Startup,
-                    (
-                        sway_runtime::sprite_layer::spawn_demo_sprite_layers,
-                        sway_runtime::sprite_layer::spawn_demo_camera,
-                    ),
-                );
+                app.add_plugins(sway_runtime::SpriteLayerPlugin)
+                    .add_systems(
+                        Startup,
+                        (
+                            sway_runtime::sprite_layer::spawn_demo_sprite_layers,
+                            sway_runtime::sprite_layer::spawn_demo_camera,
+                        ),
+                    );
             }
             Some(Demo::Scatter) => {
                 app.add_plugins(sway_runtime::ScatterPlugin)
