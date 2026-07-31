@@ -1,12 +1,16 @@
 //! The sway graph engine. Spec: docs/superpowers/specs/2026-07-31-m2a-graph-engine-design.md
 
 pub mod compile;
+pub mod edges;
 pub mod ports;
 pub mod registry;
 pub mod schema;
+#[cfg(test)]
+pub(crate) mod test_nodes;
 pub mod view;
 
-pub use compile::NodePlan;
+pub use compile::{compile, CompileError, CompiledGraph, NodePlan};
+pub use edges::{EdgeFrom, EdgeTo, GraphNode, InEdges, NodeId, NodeRuntime, OutEdges, ParamEdge, PortKind};
 pub use ports::{ContinuousIdx, Event, EventIdx, Occurrence, PortArena};
 pub use registry::{
     register_node_type, NodeSchema, NodeType, NodeTypeEntry, NodeTypeId, NodeTypeRegistry,
