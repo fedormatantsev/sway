@@ -65,7 +65,8 @@ If the derive rejects this, **read its error and the derive's source rather than
 - **No node fires observer triggers at M2a** (spec §6).
 - **All failure happens at compile; the tick is infallible** (spec §5). No `Result` in the tick path.
 - Every compiler error message **names the offending node** (spec §5).
-- `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` must be green at every commit.
+- `cargo test --workspace` must be green at every commit.
+- **Clippy is scoped to the crates this milestone owns**, because `cargo clippy --workspace` was already failing on `main` before M2a started — pre-existing `doc_lazy_continuation` lints in `sway-runtime` and `sway-editor`, which the "do not touch" rule above puts out of scope. Run `cargo clippy -p sway-graph -p sway-nodes --all-targets -- -D warnings`, adding `-p sway-app -p sway-midi` from Task 9 on. Do not fix the pre-existing lints; do not let them block a commit.
 
 ## File Structure
 
