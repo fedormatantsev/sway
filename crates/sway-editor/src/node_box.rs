@@ -247,7 +247,7 @@ impl Widget for NodeBox {
         };
         painter.fill(rect, fill).draw();
         painter
-            .stroke(&rect, &Stroke::new(1.5), Color::from_rgb8(200, 200, 210))
+            .stroke(rect, &Stroke::new(1.5), Color::from_rgb8(200, 200, 210))
             .draw();
 
         // Connector affordance: a small dot marking the drag-to-connect zone,

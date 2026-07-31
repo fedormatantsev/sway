@@ -29,7 +29,7 @@ use crate::presenter::{EditorPresenter, ShowPresenter, EDITOR_VIEWPORT_SIZE};
 /// (`ShellConfig::editor`) and never switched at runtime.
 enum Presenter {
     Show(ShowPresenter),
-    Editor(EditorPresenter),
+    Editor(Box<EditorPresenter>),
 }
 
 /// Builds the demo-specific Bevy `App` once the window, shared device, and
@@ -175,7 +175,7 @@ impl ApplicationHandler for Shell {
         // `EditorPresenter`, not the `ShowPresenter` fallback Task 3 left in
         // place.
         let presenter = if config.editor {
-            Presenter::Editor(EditorPresenter::new(&gpu, size, scale_factor))
+            Presenter::Editor(Box::new(EditorPresenter::new(&gpu, size, scale_factor)))
         } else {
             Presenter::Show(ShowPresenter)
         };

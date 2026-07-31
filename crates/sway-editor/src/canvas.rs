@@ -81,6 +81,12 @@ pub struct GraphCanvas {
 }
 
 // --- MARK: BUILDERS
+impl Default for GraphCanvas {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GraphCanvas {
     /// Creates an empty canvas: no nodes, no edges, no viewport.
     pub fn new() -> Self {
@@ -673,9 +679,11 @@ mod tests {
         let canvas = GraphCanvas::new().with_node(0, Point::new(100.0, 100.0), "a");
         let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
 
-        let mut state = PointerState::default();
-        state.scale_factor = 2.0;
-        state.position = PhysicalPosition { x: 100.0, y: 100.0 };
+        let state = PointerState {
+            scale_factor: 2.0,
+            position: PhysicalPosition { x: 100.0, y: 100.0 },
+            ..Default::default()
+        };
 
         harness.process_pointer_event(PointerEvent::Scroll(PointerScrollEvent {
             pointer: PRIMARY_MOUSE,
@@ -697,9 +705,11 @@ mod tests {
         let canvas = GraphCanvas::new().with_node(0, Point::new(100.0, 100.0), "a");
         let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
 
-        let mut state = PointerState::default();
-        state.scale_factor = 2.0;
-        state.position = PhysicalPosition { x: 100.0, y: 100.0 };
+        let state = PointerState {
+            scale_factor: 2.0,
+            position: PhysicalPosition { x: 100.0, y: 100.0 },
+            ..Default::default()
+        };
 
         harness.process_pointer_event(PointerEvent::Scroll(PointerScrollEvent {
             pointer: PRIMARY_MOUSE,

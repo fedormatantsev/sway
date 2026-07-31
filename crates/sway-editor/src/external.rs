@@ -76,6 +76,12 @@ use masonry_core::kurbo::{Axis, Size};
 /// since this host does not otherwise drive masonry's animation clock.
 pub struct ViewportPlaceholder;
 
+impl Default for ViewportPlaceholder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ViewportPlaceholder {
     /// Returns a fresh widget, ready for `.prepare()` (the usual
     /// `Widget::prepare` convenience, wrapping it in a `NewWidget`) and

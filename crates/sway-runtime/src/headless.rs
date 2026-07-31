@@ -163,6 +163,7 @@ mod tests {
     ///   session), as few as 3 sufficed. This is real, observed variance, not
     ///   a hypothetical -- so a hardcoded small constant would be flaky by
     ///   construction on a cold cache (e.g. CI, or a fresh machine).
+    ///
     /// The loop below is a bounded poll instead of a fixed count: it keeps
     /// calling `app.update()` and re-reading the texture until the pixels
     /// match (or a generous cap is hit), and reports back exactly how many
