@@ -55,6 +55,7 @@ pub struct CompiledGraph {
     pub plans: Vec<NodePlan>,
     pub continuous_len: usize,
     pub events_len: usize,
+    pub(crate) outputs_seeded: bool,
 }
 
 /// Everything that can go wrong at compile time. Spec §5's failure table —
@@ -259,14 +260,18 @@ pub fn compile(world: &mut World) -> Result<CompiledGraph, CompileError> {
         .map(|(entity, node)| (entity, node.id, node.node_type))
         .collect();
 
-    let registry = world.resource::<NodeTypeRegistry>();
     let mut collected: Vec<(Entity, NodeId, NodeTypeId, NodeSchema)> =
         Vec::with_capacity(raw_nodes.len());
     for (entity, id, node_type) in raw_nodes {
-        let entry = registry
-            .get(node_type)
-            .ok_or(CompileError::UnknownNodeType { node: entity, id: node_type })?;
-        collected.push((entity, id, node_type, entry.schema.clone()));
+        let (schema, insert_defaults) = {
+            let registry = world.resource::<NodeTypeRegistry>();
+            let entry = registry
+                .get(node_type)
+                .ok_or(CompileError::UnknownNodeType { node: entity, id: node_type })?;
+            (entry.schema.clone(), entry.insert_defaults)
+        };
+        insert_defaults(world, entity);
+        collected.push((entity, id, node_type, schema));
     }
     collected.sort_by_key(|(_, id, _, _)| *id);
 
@@ -505,13 +510,20 @@ pub fn compile(world: &mut World) -> Result<CompiledGraph, CompileError> {
         });
     }
 
-    Ok(CompiledGraph { plans, continuous_len, events_len })
+    Ok(CompiledGraph {
+        plans,
+        continuous_len,
+        events_len,
+        outputs_seeded: false,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_nodes::{probe_app, spawn_emitter, spawn_int_probe, spawn_probe};
+    use crate::test_nodes::{
+        ProbeParams, ProbeState, probe_app, spawn_emitter, spawn_int_probe, spawn_probe,
+    };
 
     fn edge(world: &mut World, from: Entity, to: Entity, sp: u16, tp: u16, kind: PortKind) -> Entity {
         world
@@ -544,6 +556,19 @@ mod tests {
         assert_ne!(pa.continuous_base, pb.continuous_base);
         assert_eq!(compiled.continuous_len, 6, "two probes, 3 continuous ports each");
         assert_eq!(compiled.events_len, 2);
+    }
+
+    #[test]
+    fn compile_inserts_missing_params_and_state_defaults() {
+        let mut app = probe_app();
+        let node = spawn_probe(app.world_mut());
+        app.world_mut().entity_mut(node).remove::<ProbeParams>();
+        app.world_mut().entity_mut(node).remove::<ProbeState>();
+
+        compile(app.world_mut()).expect("missing defaults are inserted");
+
+        assert!(app.world().get::<ProbeParams>(node).is_some());
+        assert!(app.world().get::<ProbeState>(node).is_some());
     }
 
     #[test]

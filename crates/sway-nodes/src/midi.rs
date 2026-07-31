@@ -219,9 +219,11 @@ mod tests {
     use bevy_ecs::resource::Resource;
     use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
     use sway_graph::{
-        GraphNode, GraphPlugin, NodeId, NodeRuntime, NodeType, NodeTypeRegistry, PortArena, compile,
+        EdgeFrom, EdgeTo, GraphNode, GraphPlugin, NodeId, NodeRuntime, NodeType, NodeTypeRegistry,
+        ParamEdge, PortArena, PortKind, compile,
     };
 
+    use crate::{RemapParams, RemapState};
     use super::*;
 
     const TICK_HZ: f64 = 120.0;
@@ -479,5 +481,61 @@ mod tests {
         assert_eq!(cc_value(&app), 1.0);
         app.update();
         assert_eq!(cc_value(&app), 1.0, "held, not reset");
+    }
+
+    #[test]
+    fn midi_cc_output_is_typed_before_the_first_matching_message() {
+        let mut app = midi_app();
+        let cc_type = node_type_id::<MidiCC>(&app);
+        let remap_type = node_type_id::<Remap>(&app);
+        let cc = app
+            .world_mut()
+            .spawn((
+                GraphNode {
+                    id: NodeId(0),
+                    node_type: cc_type,
+                },
+                MidiCCParams { channel: 0, cc: 74 },
+                MidiCCState,
+            ))
+            .id();
+        let remap = app
+            .world_mut()
+            .spawn((
+                GraphNode {
+                    id: NodeId(1),
+                    node_type: remap_type,
+                },
+                RemapParams {
+                    in_max: 1.0,
+                    out_max: 1.0,
+                    ..Default::default()
+                },
+                RemapState,
+            ))
+            .id();
+        app.world_mut().spawn((
+            ParamEdge {
+                source_port: MidiCC::OUT_VALUE,
+                target_port: Remap::VALUE,
+                kind: PortKind::Continuous,
+            },
+            EdgeFrom(cc),
+            EdgeTo(remap),
+        ));
+        compile_graph(&mut app);
+
+        app.update();
+
+        let base = app
+            .world()
+            .get::<NodeRuntime>(remap)
+            .expect("remap is compiled")
+            .continuous_base;
+        assert_eq!(
+            app.world().resource::<PortArena>().continuous[base + Remap::VALUE as usize]
+                .try_downcast_ref::<f32>(),
+            Some(&0.0),
+        );
     }
 }

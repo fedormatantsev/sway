@@ -25,11 +25,13 @@ pub struct NodeTypeId(pub u32);
 
 pub type TickFn = fn(&mut World, Entity, &mut PortView, &TickCtx);
 pub type PrefillFn = fn(&World, Entity, &mut PortArena, &NodePlan);
+pub type SeedOutputsFn = fn(&mut PortArena, &NodePlan);
+pub type InsertDefaultsFn = fn(&mut World, Entity);
 pub type TickOfFn = fn(&World, Entity) -> Option<Tick>;
 
 pub trait NodeType: 'static {
-    type Params: Reflect + Typed + GetTypeRegistration + Component;
-    type Outputs: Reflect + Typed + GetTypeRegistration;
+    type Params: Reflect + Typed + GetTypeRegistration + Component + Default;
+    type Outputs: Reflect + Typed + GetTypeRegistration + Default;
     type State: Component + Default;
 
     /// `(field name, the ordinal the node's index const uses)` for every
@@ -63,6 +65,8 @@ pub struct NodeTypeEntry {
     pub schema: NodeSchema,
     pub tick: TickFn,
     pub prefill: PrefillFn,
+    pub seed_outputs: SeedOutputsFn,
+    pub insert_defaults: InsertDefaultsFn,
     pub params_changed_tick: TickOfFn,
 }
 
@@ -110,6 +114,8 @@ pub fn register_node_type<N: NodeType>(app: &mut App) -> NodeTypeId {
         schema,
         tick: N::tick,
         prefill: prefill_of::<N>,
+        seed_outputs: seed_outputs_of::<N>,
+        insert_defaults: insert_defaults_of::<N>,
         params_changed_tick: params_changed_tick_of::<N>,
     };
 
@@ -195,6 +201,35 @@ fn prefill_of<N: NodeType>(world: &World, node: Entity, arena: &mut PortArena, p
                 )
             })
             .into_partial_reflect();
+    }
+}
+
+fn seed_outputs_of<N: NodeType>(arena: &mut PortArena, plan: &NodePlan) {
+    let outputs = N::Outputs::default();
+    let outputs: &dyn Struct = outputs.reflect_ref().as_struct().expect("Outputs is a struct");
+    let output_base = plan.continuous_base + plan.schema.inputs.continuous.len();
+    for (ordinal, field) in plan.schema.outputs.continuous.iter().enumerate() {
+        let value = outputs
+            .field_at(field.field_index)
+            .expect("field_index came from this type's own schema");
+        arena.continuous[output_base + ordinal] = value
+            .reflect_clone()
+            .unwrap_or_else(|error| {
+                panic!(
+                    "could not clone `{}` while seeding a node output: {error:?}",
+                    value.reflect_type_path()
+                )
+            })
+            .into_partial_reflect();
+    }
+}
+
+fn insert_defaults_of<N: NodeType>(world: &mut World, node: Entity) {
+    if world.get::<N::Params>(node).is_none() {
+        world.entity_mut(node).insert(N::Params::default());
+    }
+    if world.get::<N::State>(node).is_none() {
+        world.entity_mut(node).insert(N::State::default());
     }
 }
 

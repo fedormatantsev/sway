@@ -11,7 +11,7 @@ use bevy_time::{Fixed, Time};
 use crate::compile::CompiledGraph;
 use crate::edges::NodeRuntime;
 use crate::ports::{Occurrence, PortArena};
-use crate::registry::{NodeTypeRegistry, PrefillFn, TickFn, TickOfFn};
+use crate::registry::{NodeTypeRegistry, PrefillFn, SeedOutputsFn, TickFn, TickOfFn};
 use crate::view::{PortView, TickCtx};
 
 /// Ticks since the graph started running, incremented once per `graph_tick`
@@ -57,7 +57,7 @@ fn clone_slot(value: &dyn PartialReflect) -> Box<dyn PartialReflect> {
 /// a registry entry or downcast a slot below means the compiler failed to
 /// catch something it should have — not a condition to handle gracefully.
 pub fn graph_tick(world: &mut World) {
-    let Some(compiled) = world.remove_resource::<CompiledGraph>() else {
+    let Some(mut compiled) = world.remove_resource::<CompiledGraph>() else {
         return;
     };
 
@@ -79,10 +79,10 @@ pub fn graph_tick(world: &mut World) {
     };
 
     // The registry borrow: `world` is later borrowed mutably for `tick_fn`,
-    // so the three fn pointers per plan are copied out into locals here,
+    // so the four fn pointers per plan are copied out into locals here,
     // before the loop, rather than holding a `&NodeTypeEntry` across it. Fn
     // pointers are `Copy`, so this is a cheap, allocation-light snapshot.
-    let entries: Vec<(TickFn, PrefillFn, TickOfFn)> = {
+    let entries: Vec<(TickFn, PrefillFn, SeedOutputsFn, TickOfFn)> = {
         let registry = world.resource::<NodeTypeRegistry>();
         compiled
             .plans
@@ -95,15 +95,22 @@ pub fn graph_tick(world: &mut World) {
                         plan.entity, plan.node_type
                     )
                 });
-                (entry.tick, entry.prefill, entry.params_changed_tick)
+                (entry.tick, entry.prefill, entry.seed_outputs, entry.params_changed_tick)
             })
             .collect()
     };
 
     world.resource_scope(|world: &mut World, mut arena: Mut<PortArena>| {
+        if !compiled.outputs_seeded {
+            for (plan, &(_, _, seed_outputs_fn, _)) in compiled.plans.iter().zip(&entries) {
+                seed_outputs_fn(&mut arena, plan);
+            }
+            compiled.outputs_seeded = true;
+        }
+
         arena.clear_events();
 
-        for (plan, &(tick_fn, prefill_fn, params_changed_tick_fn)) in
+        for (plan, &(tick_fn, prefill_fn, _, params_changed_tick_fn)) in
             compiled.plans.iter().zip(&entries)
         {
             // Gather: copy each incoming edge's source slot into the input

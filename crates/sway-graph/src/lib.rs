@@ -16,8 +16,8 @@ pub use edges::{
 };
 pub use ports::{ContinuousIdx, Event, EventIdx, Occurrence, PortArena};
 pub use registry::{
-    NodeSchema, NodeType, NodeTypeEntry, NodeTypeId, NodeTypeRegistry, PrefillFn, TickFn, TickOfFn,
-    register_node_type,
+    InsertDefaultsFn, NodeSchema, NodeType, NodeTypeEntry, NodeTypeId, NodeTypeRegistry, PrefillFn,
+    SeedOutputsFn, TickFn, TickOfFn, register_node_type,
 };
 pub use schema::{
     PortField, ReflectEventPort, SchemaError, SchemaHalf, derive_schema, register_event_port,
