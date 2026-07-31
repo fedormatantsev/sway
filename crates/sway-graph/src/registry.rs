@@ -139,10 +139,22 @@ fn check_ordinals<N: NodeType>(schema: &NodeSchema) {
         expected.push((f.name, (schema.inputs.events.len() + i) as u16));
     }
 
-    for (name, want) in &expected {
-        match N::PORT_ORDINALS.iter().find(|(n, _)| n == name) {
-            Some((_, got)) if got == want => {}
-            Some((_, got)) => panic!(
+    let mut matched = vec![false; N::PORT_ORDINALS.len()];
+    for &(name, want) in &expected {
+        if let Some((index, _)) = N::PORT_ORDINALS
+            .iter()
+            .enumerate()
+            .find(|(index, entry)| !matched[*index] && **entry == (name, want))
+        {
+            matched[index] = true;
+            continue;
+        }
+        match N::PORT_ORDINALS
+            .iter()
+            .enumerate()
+            .find(|(index, (declared, _))| !matched[*index] && declared == &name)
+        {
+            Some((_, (_, got))) => panic!(
                 "{node}: port `{name}` is ordinal {want}, but PORT_ORDINALS declares {got} \
                  — a field was reordered, or the const is stale"
             ),
@@ -151,8 +163,8 @@ fn check_ordinals<N: NodeType>(schema: &NodeSchema) {
             ),
         }
     }
-    for (name, _) in N::PORT_ORDINALS {
-        if !expected.iter().any(|(n, _)| n == name) {
+    for (index, (name, _)) in N::PORT_ORDINALS.iter().enumerate() {
+        if !matched[index] {
             panic!("{node}: PORT_ORDINALS declares `{name}`, which is not a port");
         }
     }
@@ -353,5 +365,31 @@ mod tests {
         .unwrap_err();
         let msg = panic_message(&*err);
         assert!(msg.contains("does_not_exist"), "must name the bogus entry: {msg}");
+    }
+
+    #[test]
+    fn matching_input_and_output_names_are_checked_by_name_and_ordinal() {
+        #[derive(Reflect, Component, Default)]
+        struct SameNameParams {
+            value: f32,
+        }
+
+        #[derive(Reflect, Default)]
+        struct SameNameOutputs {
+            value: f32,
+        }
+
+        struct SameName;
+        impl NodeType for SameName {
+            type Params = SameNameParams;
+            type Outputs = SameNameOutputs;
+            type State = ProbeState;
+            const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("value", 0), ("value", 1)];
+            fn register(_app: &mut App) {}
+            fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
+        }
+
+        let mut app = App::new();
+        register_node_type::<SameName>(&mut app);
     }
 }

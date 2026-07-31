@@ -13,6 +13,8 @@ use sway_graph::{
     register_node_type,
 };
 
+use crate::{Envelope, LFO, Math, Remap, Select, Switch};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RawMidi {
     pub status: u8,
@@ -198,6 +200,12 @@ impl Plugin for SignalNodesPlugin {
     fn build(&self, app: &mut App) {
         register_node_type::<MidiNote>(app);
         register_node_type::<MidiCC>(app);
+        register_node_type::<LFO>(app);
+        register_node_type::<Envelope>(app);
+        register_node_type::<Math>(app);
+        register_node_type::<Remap>(app);
+        register_node_type::<Switch>(app);
+        register_node_type::<Select>(app);
         app.init_resource::<MidiInbox>()
             .init_resource::<TickMidi>()
             .add_systems(FixedUpdate, drain_inbox.before(graph_tick));
