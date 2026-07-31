@@ -5315,6 +5315,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sway-nodes"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "bevy_reflect",
+ "bevy_time",
+ "sway-graph",
+]
+
+[[package]]
 name = "sway-runtime"
 version = "0.1.0"
 dependencies = [
