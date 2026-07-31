@@ -2,6 +2,7 @@
 
 **Date:** 2026-07-31
 **Status:** Approved, pre-implementation
+**Revision:** implementation showed that ordinal checks must match `(name, ordinal)` when an input and output share a name, reflected prefill must use `reflect_clone()` rather than `to_dynamic()` to preserve concrete enums, `Envelope` needs a separate `release_trigger` event input, `PortView` needs explicit bounds, edge direction needs compile-time validation, Kahn's remainder is not exactly the cycle, and event fan-in still allocates temporary clones (see `docs/superpowers/reports/2026-07-31-m2a-graph-engine-findings.md`)
 **Parent spec:** `2026-07-25-sway-design.md` §2.1–§2.6, §2.11, §3, §4, §5 (M2), §7
 
 ## 1. What this milestone builds
@@ -100,9 +101,11 @@ declared next to its structs.
 
 Those consts are a hazard: reorder two fields and two ports silently swap. So
 `register` verifies them — it walks the reflect fields, computes the same
-per-kind ordinals, and fails at startup if a node's consts disagree. A startup
-panic is the right failure for a wiring mistake that would otherwise show up as
-an LFO modulating the wrong parameter.
+per-kind ordinals, and matches each declaration by `(name, ordinal)`, not name
+alone. The tuple is necessary because a node such as `Remap` can legitimately
+have an input and an output with the same name. Registration fails at startup if
+a node's consts disagree. A startup panic is the right failure for a wiring
+mistake that would otherwise show up as an LFO modulating the wrong parameter.
 
 A `#[derive(NodePorts)]` macro generating those consts is the obvious later
 cleanup. A proc-macro crate is not M2a scope, and the registration check makes
@@ -140,9 +143,12 @@ because nothing iterates slots kind-agnostically: clearing, gathering,
 prefilling and reading all branch on the kind, so an enum would buy a
 discriminant and a match arm at every access and nothing else. Separating them
 produces three concrete wins. Clearing is one pass over one collection that
-retains each vec's allocation, so per-tick event churn goes to zero after
-warm-up, and the continuous side is never touched. The edge plan splits into two
-branch-free loops instead of one that re-decides the kind per edge. And
+retains each destination vec's allocation, so clearing itself does not churn
+allocations after warm-up, and the continuous side is never touched. Event
+fan-in still uses a temporary `Vec<Occurrence>` and clones reflected payloads
+while gathering because source and destination borrow the same collection. The
+edge plan splits into two branch-free loops instead of one that re-decides the
+kind per edge. And
 "an event input has no authored value" becomes structural — the prefill code has
 no access to event storage — rather than an unreachable match arm someone could
 later make reachable.
@@ -163,8 +169,10 @@ The runner takes the arena out of the world for the tick's duration
 rather than components.
 
 `PortView` is **scoped to the node being ticked**: it carries the arena, that
-node's two bases, and its connected-mask. A node's indices are its own, and it
-cannot reach another node's ports by arithmetic accident.
+node's two bases, the per-kind lengths, and its connected-mask. The explicit
+length checks are necessary; bases alone would let an out-of-range ordinal land
+in the next node's slots. A node's indices are its own, and it cannot reach
+another node's ports by arithmetic accident.
 
 ```rust
 let hz: f32 = ports.read(Lfo::HZ);
@@ -211,6 +219,11 @@ Because continuous slots persist, a gated prefill that does not run leaves the
 correct value in place. Compilation resets `last_params_tick`, which is what
 makes a disconnect take effect on the next tick.
 
+Prefill clones reflected fields with `reflect_clone()`, which preserves the
+concrete type. `to_dynamic()` is not equivalent: for reflected structs and
+enums it can produce a `Dynamic*` proxy that no longer downcasts to the node's
+declared port type.
+
 ## 5. Param edges and compilation
 
 An edge is an entity carrying source and target relationship components with
@@ -255,9 +268,10 @@ Every one produces a message naming the offending node, per the parent spec's
 | Unknown node type | the node, and the unregistered type path |
 | Port index out of range | the node, the port, and the schema's arity |
 | Type mismatch across an edge | both nodes, both ports, both types |
+| Source is an input, or target is an output | the node, port, kind, name, and expected direction |
 | Second edge into a continuous input | the target node and port, and both sources |
 | Edge referencing an absent node | the edge and the missing endpoint |
-| Cycle | every node in the cycle, in order |
+| Cycle | every node left with nonzero in-degree after Kahn's algorithm (the cycle and possibly downstream nodes) |
 
 The topological sort is Kahn's, and ours. §2.5's reasoning against borrowing
 Bevy's `ScheduleGraph` — one system per node *instance*, and errors naming
@@ -355,7 +369,7 @@ rather than approximate.
 | `MidiNote` | `channel`, `note_range` | `note_on: Event<NoteMsg>`, `note_off: Event<NoteMsg>` |
 | `MidiCC` | `channel`, `cc` | `value: f32` (0..1) |
 | `LFO` | `hz`, `shape`, `phase`, `amplitude` | `value: f32` |
-| `Envelope` | `trigger: Event<NoteMsg>`, `attack`, `decay`, `sustain`, `release` | `value: f32` |
+| `Envelope` | `trigger: Event<NoteMsg>`, `release_trigger: Event<NoteMsg>`, `attack`, `decay`, `sustain`, `release` | `value: f32` |
 | `Math` | `op`, `a`, `b` | `value: f32` |
 | `Remap` | `value`, `in_min`, `in_max`, `out_min`, `out_max`, `clamp` | `value: f32` |
 | `Switch` | `select: bool`, `a`, `b` | `value: f32` |
