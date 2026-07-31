@@ -52,18 +52,15 @@ pub fn drain_inbox(
     let tick_end = tick_start + dt as f64;
 
     tick_midi.events.clear();
-    while inbox
-        .events
-        .front()
-        .is_some_and(|(event_time, _)| *event_time <= tick_end)
-    {
-        let (event_time, message) = inbox
-            .events
-            .pop_front()
-            .expect("front was checked immediately before pop");
-        let offset = (event_time - tick_start).clamp(0.0, dt as f64) as f32;
-        tick_midi.events.push((offset, message));
-    }
+    inbox.events.retain(|&(event_time, message)| {
+        if event_time <= tick_end {
+            let offset = (event_time - tick_start).clamp(0.0, dt as f64) as f32;
+            tick_midi.events.push((offset, message));
+            false
+        } else {
+            true
+        }
+    });
 }
 
 #[derive(Reflect, Component, Default)]
@@ -353,6 +350,26 @@ mod tests {
         let drained = &app.world().resource::<TickMidi>().events;
         assert_eq!(drained.len(), 1, "the 0.020 event belongs to a later tick");
         assert!((drained[0].0 - 0.002).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_eligible_event_is_not_blocked_by_an_earlier_future_event() {
+        let mut app = midi_app();
+        let future = note_on(64, 100);
+        let eligible = note_on(60, 100);
+        let inbox = &mut app.world_mut().resource_mut::<MidiInbox>();
+        inbox.push(0.020, future);
+        inbox.push(0.002, eligible);
+
+        app.update();
+
+        let drained = &app.world().resource::<TickMidi>().events;
+        assert_eq!(drained.len(), 1);
+        assert!((drained[0].0 - 0.002).abs() < 1e-6);
+        assert_eq!(drained[0].1, eligible);
+        let buffered = &app.world().resource::<MidiInbox>().events;
+        assert_eq!(buffered.len(), 1);
+        assert_eq!(buffered.front(), Some(&(0.020, future)));
     }
 
     #[test]
