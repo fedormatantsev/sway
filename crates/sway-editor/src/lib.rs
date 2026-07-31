@@ -11,9 +11,13 @@ pub mod node_box;
 use std::sync::Arc;
 use std::time::Instant;
 
-use masonry_core::app::{RenderRoot, RenderRootOptions, RenderRootSignal, VisualLayerPlan, WindowSizePolicy};
+use imaging::record::replay_transformed;
+use masonry_core::app::{
+    RenderRoot, RenderRootOptions, RenderRootSignal, VisualLayerKind, VisualLayerPlan,
+    WindowSizePolicy,
+};
 use masonry_core::core::{NewWidget, TextEvent, Widget, WindowEvent as MasonryWindowEvent};
-use masonry::kurbo::Point;
+use masonry::kurbo::{Affine, Point};
 use masonry::layout::AsUnit;
 use masonry::properties::Dimensions;
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
@@ -23,10 +27,9 @@ use crate::canvas::GraphCanvas;
 use crate::external::ViewportPlaceholder;
 
 /// The Bevy viewport's fixed footprint in the graph canvas, in logical
-/// pixels. Matches the size `EditorPresenter`'s Task 4 hardcoded rect used
-/// (`EDITOR_VIEWPORT_RECT`), purely for visual continuity across Tasks 5-6 --
-/// nothing requires this exact number now that masonry's widget tree decides
-/// the rect.
+/// pixels. Matches `EDITOR_VIEWPORT_SIZE` in `sway-app`, purely for visual
+/// continuity across Tasks 5-6 -- nothing requires this exact number now
+/// that masonry's widget tree decides the rect.
 const VIEWPORT_WIDTH: f64 = 640.0;
 const VIEWPORT_HEIGHT: f64 = 360.0;
 
@@ -132,11 +135,16 @@ impl EditorUi {
         }
     }
 
+    /// The window's current DPI scale factor (physical pixels per logical
+    /// pixel). Used by the host when painting / compositing into a physical
+    /// framebuffer.
+    pub fn scale_factor(&self) -> f64 {
+        self.scale_factor
+    }
+
     /// Tells the `RenderRoot` about a window resize (and, if it changed, a
-    /// scale-factor change). Masonry's own `masonry_winit` host sends
-    /// `WindowEvent::Rescale` only when the scale factor actually changes
-    /// (winit's `ScaleFactorChanged`), so this mirrors that rather than
-    /// unconditionally rescaling every frame.
+    /// scale-factor change). Prefer [`rescale`](Self::rescale) for
+    /// `ScaleFactorChanged` alone -- masonry_winit sends only `Rescale` then.
     pub fn resize(&mut self, size: PhysicalSize<u32>, scale_factor: f64) {
         if (scale_factor - self.scale_factor).abs() > f64::EPSILON {
             self.scale_factor = scale_factor;
@@ -145,6 +153,17 @@ impl EditorUi {
         }
         self.root
             .handle_window_event(MasonryWindowEvent::Resize(size));
+    }
+
+    /// Applies a DPI scale-factor change without resizing. Matches
+    /// `masonry_winit`'s handling of winit's `ScaleFactorChanged`.
+    pub fn rescale(&mut self, scale_factor: f64) {
+        if (scale_factor - self.scale_factor).abs() <= f64::EPSILON {
+            return;
+        }
+        self.scale_factor = scale_factor;
+        self.root
+            .handle_window_event(MasonryWindowEvent::Rescale(scale_factor));
     }
 
     /// Runs masonry's paint pass and returns the resulting visual-layer plan.
@@ -178,17 +197,69 @@ impl EditorUi {
         self.root.redraw().0
     }
 
-    /// Replays every scene layer into one window-space scene.
+    /// Replays every scene layer into one physical-pixel scene.
     ///
-    /// `replay_into` skips `External` layers by construction, which is
-    /// exactly wanted: the viewport's pixels come from Bevy, not from
-    /// masonry, and the hole they leave in this scene is what the compositor
-    /// fills. `imaging::record::Scene` implements `PaintSink` directly (see
-    /// `imaging-0.0.1`'s `record.rs:772`), so it can be the sink with no
-    /// `Painter` wrapper needed.
-    pub fn flatten(plan: &VisualLayerPlan) -> imaging::record::Scene {
+    /// Masonry's layer transforms are in logical window space; `scale_factor`
+    /// maps them into the physical framebuffer (same as masonry_imaging's
+    /// `PreparedFrame`). `External` layers are skipped: the viewport's
+    /// pixels come from Bevy, and the hole they leave is what the compositor
+    /// fills. `imaging::record::Scene` implements `PaintSink` directly, so
+    /// it can be the sink with no `Painter` wrapper needed.
+    pub fn flatten(plan: &VisualLayerPlan, scale_factor: f64) -> imaging::record::Scene {
         let mut scene = imaging::record::Scene::new();
-        plan.replay_into(&mut scene);
+        let scale = Affine::scale(scale_factor);
+        for layer in &plan.layers {
+            if let VisualLayerKind::Scene(layer_scene) = &layer.kind {
+                replay_transformed(layer_scene, &mut scene, scale * layer.transform);
+            }
+        }
         scene
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EditorUi;
+    use imaging::Painter;
+    use kurbo::{Affine, Rect};
+    use masonry_core::app::{VisualLayer, VisualLayerKind, VisualLayerPlan};
+    use masonry_core::core::{NewWidget, WidgetId};
+    use masonry::widgets::Label;
+    use peniko::Color;
+
+    fn dummy_widget_id() -> WidgetId {
+        NewWidget::new(Label::new("")).id()
+    }
+
+    fn filled_scene() -> imaging::record::Scene {
+        let mut scene = imaging::record::Scene::new();
+        {
+            let mut painter = Painter::new(&mut scene);
+            painter.fill_rect(Rect::new(0.0, 0.0, 10.0, 10.0), Color::WHITE);
+        }
+        scene
+    }
+
+    #[test]
+    fn flatten_applies_scale_factor() {
+        let layer_scene = filled_scene();
+        let unscaled = VisualLayerPlan {
+            layers: vec![VisualLayer {
+                kind: VisualLayerKind::Scene(layer_scene.clone()),
+                transform: Affine::IDENTITY,
+                widget_id: dummy_widget_id(),
+            }],
+        };
+        let pre_scaled = VisualLayerPlan {
+            layers: vec![VisualLayer {
+                kind: VisualLayerKind::Scene(layer_scene),
+                transform: Affine::scale(2.0),
+                widget_id: dummy_widget_id(),
+            }],
+        };
+        assert_eq!(
+            EditorUi::flatten(&unscaled, 2.0),
+            EditorUi::flatten(&pre_scaled, 1.0),
+        );
     }
 }

@@ -14,12 +14,17 @@
 use kurbo::Rect;
 use masonry_core::app::{VisualLayerKind, VisualLayerPlan};
 
-/// The window-space rectangle of the first external layer, if any.
+/// The window-space (logical / CSS pixel) rectangle of the first external
+/// layer, if any.
 ///
 /// Returns `None` when the widget tree contains no external boundary -- which
 /// is a legitimate state (the show presenter, or an editor layout with the
 /// viewport collapsed), not an error (controller dispatch ruling R2). The
 /// caller draws no viewport quad.
+///
+/// Hosts that composite into a physical-pixel framebuffer must multiply by
+/// the window `scale_factor` (e.g. `Affine::scale(sf).transform_rect_bbox`)
+/// before using this as a compositor destination or texture size.
 ///
 /// If several external layers exist, the first one wins (controller dispatch
 /// ruling R3) -- not an error, not a merge.
@@ -135,6 +140,16 @@ impl Widget for ViewportPlaceholder {
 
     fn children_ids(&self) -> ChildrenIds {
         ChildrenIds::new()
+    }
+
+    /// The Bevy viewport is composited by the host into this widget's layout
+    /// box; the placeholder itself has no pointer behavior. Returning false
+    /// lets hits fall through to overlapping `NodeBox`es (masonry picks the
+    /// last z-order child that accepts interaction -- this widget is
+    /// registered after the nodes, so accepting would steal the center of
+    /// the canvas).
+    fn accepts_pointer_interaction(&self) -> bool {
+        false
     }
 }
 

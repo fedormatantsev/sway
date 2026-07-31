@@ -40,13 +40,11 @@ impl ShowPresenter {
     }
 }
 
-/// The editor's viewport rect, in physical pixels, used only to size the
-/// viewport texture *before* the first `EditorPresenter::present` call (i.e.
-/// before masonry has laid out anything yet). Every frame after that,
-/// `present` reads the real rect from masonry's `External` visual layer via
-/// `sway_editor::external::viewport_rect` (Task 5) -- this constant no
-/// longer drives where the viewport is drawn, only this one bootstrap size.
-pub const EDITOR_VIEWPORT_RECT: kurbo::Rect = kurbo::Rect::new(40.0, 40.0, 40.0 + 640.0, 40.0 + 360.0);
+/// Bootstrap size for the editor's Bevy viewport texture (logical CSS
+/// pixels), matching `VIEWPORT_WIDTH`/`VIEWPORT_HEIGHT` in `sway_editor`.
+/// Only used before the first `EditorPresenter::present`; after that,
+/// `present` sizes from masonry's `External` layer via `viewport_rect`.
+pub const EDITOR_VIEWPORT_SIZE: kurbo::Size = kurbo::Size::new(640.0, 360.0);
 
 /// Masonry + vello UI, composited over the live Bevy viewport.
 ///
@@ -81,10 +79,16 @@ impl EditorPresenter {
     }
 
     /// Tells masonry about a window resize. Does *not* touch the viewport
-    /// texture -- that stays pinned at [`EDITOR_VIEWPORT_RECT`]'s size,
-    /// resized (if at all) inside `present`, not here.
+    /// texture -- that is resized inside `present` from masonry's current
+    /// `viewport_rect` (physical pixels).
     pub fn resize(&mut self, size: PhysicalSize<u32>, scale_factor: f64) {
         self.editor.resize(size, scale_factor);
+    }
+
+    /// Forwards a DPI scale-factor change without a size change (winit's
+    /// `ScaleFactorChanged`), matching `masonry_winit`.
+    pub fn rescale(&mut self, scale_factor: f64) {
+        self.editor.rescale(scale_factor);
     }
 
     /// One frame, in the fixed, load-bearing order (controller dispatch
@@ -107,15 +111,21 @@ impl EditorPresenter {
     ) {
         // 1. Masonry first.
         let plan = self.editor.redraw();
+        let scale = self.editor.scale_factor();
 
         // 2/3. The viewport rect now comes from masonry's widget tree
-        // (Task 5) instead of the old hardcoded `EDITOR_VIEWPORT_RECT`.
+        // (Task 5) instead of the old hardcoded bootstrap size.
+        // `viewport_rect` is logical window space; the compositor and the
+        // Bevy texture want physical pixels, so scale here.
         // `None` is a legitimate state -- no external boundary in the
         // current layout -- not an error (R2); in that case the viewport
         // texture is left alone and no viewport quad is drawn below.
-        let rect = sway_editor::external::viewport_rect(&plan);
+        let rect = sway_editor::external::viewport_rect(&plan).map(|logical| {
+            kurbo::Affine::scale(scale).transform_rect_bbox(logical)
+        });
         if let Some(rect) = rect {
-            let (rect_width, rect_height) = (rect.width() as u32, rect.height() as u32);
+            let rect_width = rect.width().round().max(1.0) as u32;
+            let rect_height = rect.height().round().max(1.0) as u32;
             viewport.resize(&gpu.device, rect_width, rect_height);
             // Resizing just recreated the texture (and its views) if the
             // size changed, invalidating whatever `ManualTextureViews` entry
@@ -137,10 +147,11 @@ impl EditorPresenter {
 
         // 5. Masonry's scene into the transparent UI texture, sized to the
         // whole surface (the UI layer covers the whole window; only the
-        // viewport quad it composites over is inset).
+        // viewport quad it composites over is inset). `flatten` applies
+        // `scale_factor` so logical masonry coords land in physical pixels.
         self.ui_texture
             .resize(&gpu.device, surface.width(), surface.height());
-        let scene = sway_editor::EditorUi::flatten(&plan);
+        let scene = sway_editor::EditorUi::flatten(&plan, scale);
         self.ui_renderer.render_scene(
             &scene,
             &self.ui_texture.view,

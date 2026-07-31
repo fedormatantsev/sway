@@ -23,7 +23,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::presenter::{EditorPresenter, ShowPresenter, EDITOR_VIEWPORT_RECT};
+use crate::presenter::{EditorPresenter, ShowPresenter, EDITOR_VIEWPORT_SIZE};
 
 /// Which presenter this run uses, selected once at window creation
 /// (`ShellConfig::editor`) and never switched at runtime.
@@ -138,14 +138,13 @@ impl ApplicationHandler for Shell {
         let surface = WindowSurface::new(&gpu.instance, &gpu.device, &gpu.adapter, window.clone());
 
         // The viewport texture's initial size differs by presenter: `Show`
-        // fills the whole window, `Editor` is pinned at `EDITOR_VIEWPORT_RECT`
-        // (R1) regardless of window size -- `EditorPresenter::present` keeps
-        // it there every frame, but starting it at the right size avoids an
-        // extra resize on the very first frame.
+        // fills the whole window; `Editor` bootstraps at the logical
+        // `EDITOR_VIEWPORT_SIZE` converted to physical pixels so the
+        // first `present` doesn't have to resize on Retina.
         let (viewport_width, viewport_height) = if config.editor {
             (
-                EDITOR_VIEWPORT_RECT.width() as u32,
-                EDITOR_VIEWPORT_RECT.height() as u32,
+                (EDITOR_VIEWPORT_SIZE.width * scale_factor).round().max(1.0) as u32,
+                (EDITOR_VIEWPORT_SIZE.height * scale_factor).round().max(1.0) as u32,
             )
         } else {
             (width, height)
@@ -237,6 +236,13 @@ impl ApplicationHandler for Shell {
                         let size = PhysicalSize::new(size.width.max(1), size.height.max(1));
                         presenter.resize(size, running.window.scale_factor());
                     }
+                }
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // Mirror masonry_winit: Rescale only. A `Resized` often
+                // follows when the OS also changes the physical size.
+                if let Presenter::Editor(presenter) = &mut running.presenter {
+                    presenter.rescale(scale_factor);
                 }
             }
             WindowEvent::RedrawRequested => running.redraw(),

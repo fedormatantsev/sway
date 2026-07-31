@@ -286,10 +286,23 @@ impl Widget for GraphCanvas {
                 self.panning = None;
             }
             PointerEvent::Scroll(PointerScrollEvent { delta, state, .. }) => {
-                let pixels = delta.to_pixel_delta(
-                    PhysicalPosition { x: 32.0, y: 32.0 },
-                    PhysicalPosition { x: 800.0, y: 800.0 },
+                // Line/page policy is in logical CSS px; multiply by DPR so
+                // `to_pixel_delta` yields physical, then convert back so pan/
+                // zoom stay in logical window space. PixelDelta is already
+                // physical and only needs `to_logical`.
+                let scale = state.scale_factor.max(f64::EPSILON);
+                let physical = delta.to_pixel_delta(
+                    PhysicalPosition {
+                        x: 32.0 * scale,
+                        y: 32.0 * scale,
+                    },
+                    PhysicalPosition {
+                        x: 800.0 * scale,
+                        y: 800.0 * scale,
+                    },
                 );
+                let logical = physical.to_logical(scale);
+                let pixels = Vec2::new(logical.x, logical.y);
                 if state.modifiers.contains(Modifiers::CONTROL) {
                     // Zoom about the cursor (brief step 4's formula, R1
                     // controller dispatch ruling doesn't apply here --
@@ -301,7 +314,7 @@ impl Widget for GraphCanvas {
                     self.pan = cursor - (cursor - self.pan) * (new_zoom / old_zoom);
                     self.zoom = new_zoom;
                 } else {
-                    self.pan -= Vec2::new(pixels.x, pixels.y);
+                    self.pan -= pixels;
                 }
                 self.retransform_all_from_event(ctx);
                 ctx.set_handled();
@@ -646,5 +659,90 @@ mod tests {
 
         assert_eq!(harness.root_widget().pan(), Vec2::new(20.0, 20.0));
         assert_eq!(harness.root_widget().selected_node(), None);
+    }
+
+    /// Scroll `PixelDelta` arrives in physical pixels; pan is logical. At
+    /// scale_factor 2, a physical (40, 20) wheel delta must pan by logical
+    /// (-20, -10), not the raw physical amount.
+    #[test]
+    fn scroll_pixel_delta_converts_physical_to_logical() {
+        use masonry::core::{PointerEvent, PointerScrollEvent, PointerState, ScrollDelta};
+        use masonry::dpi::PhysicalPosition;
+        use masonry_testing::PRIMARY_MOUSE;
+
+        let canvas = GraphCanvas::new().with_node(0, Point::new(100.0, 100.0), "a");
+        let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
+
+        let mut state = PointerState::default();
+        state.scale_factor = 2.0;
+        state.position = PhysicalPosition { x: 100.0, y: 100.0 };
+
+        harness.process_pointer_event(PointerEvent::Scroll(PointerScrollEvent {
+            pointer: PRIMARY_MOUSE,
+            delta: ScrollDelta::PixelDelta(PhysicalPosition { x: 40.0, y: 20.0 }),
+            state,
+        }));
+
+        assert_eq!(harness.root_widget().pan(), Vec2::new(-20.0, -10.0));
+    }
+
+    /// LineDelta policy is logical CSS px; one line at any DPR must pan by
+    /// the same logical amount (32 px here).
+    #[test]
+    fn scroll_line_delta_is_dpi_invariant() {
+        use masonry::core::{PointerEvent, PointerScrollEvent, PointerState, ScrollDelta};
+        use masonry::dpi::PhysicalPosition;
+        use masonry_testing::PRIMARY_MOUSE;
+
+        let canvas = GraphCanvas::new().with_node(0, Point::new(100.0, 100.0), "a");
+        let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
+
+        let mut state = PointerState::default();
+        state.scale_factor = 2.0;
+        state.position = PhysicalPosition { x: 100.0, y: 100.0 };
+
+        harness.process_pointer_event(PointerEvent::Scroll(PointerScrollEvent {
+            pointer: PRIMARY_MOUSE,
+            delta: ScrollDelta::LineDelta(0.0, 1.0),
+            state,
+        }));
+
+        assert_eq!(harness.root_widget().pan(), Vec2::new(0.0, -32.0));
+    }
+
+    /// The Bevy `ViewportPlaceholder` is registered after the nodes (last in
+    /// z-order). If it accepted pointer interaction it would steal every
+    /// press over the center of the canvas -- including a node dragged into
+    /// that rect. It must let hits fall through.
+    #[test]
+    fn press_on_node_overlapping_viewport_still_selects_the_node() {
+        use crate::external::ViewportPlaceholder;
+        use crate::node_box;
+        use masonry::kurbo::Size;
+        use masonry::layout::AsUnit;
+        use masonry::properties::Dimensions;
+
+        let viewport = ViewportPlaceholder::new()
+            .prepare()
+            .with_props(Dimensions::fixed(400.0.px(), 300.0.px()));
+        let canvas = GraphCanvas::new()
+            .with_node(0, Point::new(220.0, 40.0), "over_viewport")
+            .with_viewport(viewport, Point::new(200.0, 20.0), Size::new(400.0, 300.0));
+
+        let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
+
+        // Center of the node box, well inside the viewport's layout rect.
+        let click = Point::new(
+            220.0 + node_box::SIZE.width / 2.0,
+            40.0 + node_box::SIZE.height / 2.0,
+        );
+        harness.mouse_move(click);
+        harness.mouse_button_press(Some(PointerButton::Primary));
+
+        assert_eq!(
+            harness.root_widget().selected_node(),
+            Some(0),
+            "ViewportPlaceholder must not steal hits from overlapping nodes"
+        );
     }
 }
