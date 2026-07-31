@@ -1064,7 +1064,7 @@ pub struct InEdges(Vec<Entity>);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_nodes::{probe_app, spawn_probe, Probe};
+    use crate::test_nodes::{probe_app, spawn_emitter, spawn_int_probe, spawn_probe, Probe};
 
     fn edge(world: &mut World, from: Entity, to: Entity, sp: u16, tp: u16, kind: PortKind) -> Entity {
         world.spawn((ParamEdge { source_port: sp, target_port: tp, kind }, EdgeFrom(from), EdgeTo(to))).id()
@@ -1129,11 +1129,12 @@ mod tests {
     #[test]
     fn many_edges_into_an_event_input_are_allowed() {
         let mut app = probe_app();
-        let a = spawn_probe(app.world_mut());
-        let b = spawn_probe(app.world_mut());
+        // `Probe` has no event *output*, so the two sources are `Emitter`s
+        // (test_nodes), whose event output is ordinal 0. `Probe.trigger` is
+        // event ordinal 0 on the target side.
+        let a = spawn_emitter(app.world_mut());
+        let b = spawn_emitter(app.world_mut());
         let c = spawn_probe(app.world_mut());
-        // Probe has no event output, so drive the event input from two
-        // sources' event port 0 — see test_nodes for the emitter variant.
         edge(app.world_mut(), a, c, 0, 0, PortKind::Event);
         edge(app.world_mut(), b, c, 0, 0, PortKind::Event);
 
@@ -1376,7 +1377,21 @@ mod tests {
 }
 ```
 
-Write the `test_nodes` helpers (`gain_app`, `spawn_gain`, `connect`, `connect_event`, `recompile`, `port_value`, `event_count`, `sink_offsets`, plus the `Gain`, `Emitter` and `Sink` node types) in `crates/sway-graph/src/test_nodes.rs` behind `#[cfg(test)]`. `recompile` runs `compile`, inserts the result as a resource, and calls `PortArena::resize`.
+Write the `test_nodes` helpers in `crates/sway-graph/src/test_nodes.rs` behind `#[cfg(test)]`. The full inventory, shared across Tasks 3, 4 and 5 — whichever lands first creates the file, the others extend it:
+
+| Item | Shape |
+|---|---|
+| `Probe` | params `gain: f32`, `trigger: Event<NoteMsg>`, `bias: f32`; outputs `value: f32` |
+| `IntProbe` | params `count: u32`; outputs `count_out: u32` — exists only to make a type mismatch against `Probe.value: f32` |
+| `Gain` | params `gain: f32`, `bias: f32`; outputs `value: f32`; tick writes `gain * bias` |
+| `Emitter` | params `at: f32`; outputs `pulse: Event<NoteMsg>`; tick emits one occurrence at offset `at` |
+| `Sink` | params `pulse: Event<NoteMsg>`; outputs none; state records every occurrence's offset |
+| Spawners | `spawn_probe`, `spawn_int_probe`, `spawn_gain(w, gain, bias)`, `spawn_emitter`, `spawn_emitter_at(w, offset)`, `spawn_sink` |
+| App builders | `probe_app`, `gain_app`, `emitter_app` — each a `MinimalPlugins` app with `GraphPlugin`, the relevant node types registered, `Time::<Fixed>::from_hz(120.0)` and `TimeUpdateStrategy::FixedTimesteps(1)` |
+| Wiring | `connect(w, src, src_ord, dst, dst_ord)`, `connect_event(..)` — spawn a `ParamEdge` with the matching `PortKind` |
+| Assertions | `recompile(&mut App)`, `port_value(&App, Entity, u16) -> f32`, `event_count(&App, Entity, u16) -> usize`, `sink_offsets(&App, Entity) -> Vec<f32>` |
+
+`recompile` runs `compile`, inserts the result as a resource, and calls `PortArena::resize`. `recompile` runs `compile`, inserts the result as a resource, and calls `PortArena::resize`.
 
 - [ ] **Step 2: Run them to verify they fail**
 
