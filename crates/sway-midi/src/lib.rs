@@ -6,6 +6,12 @@ pub mod input;
 
 pub use input::{MidiEvent, MidiInput, open_input};
 
+/// Returns the current mach absolute host time in CoreMIDI's timestamp units.
+pub fn host_time_now() -> u64 {
+    // SAFETY: `mach_absolute_time` takes no pointers and has no preconditions.
+    unsafe { ffi::mach_absolute_time() }
+}
+
 /// Converts CoreMIDI's mach absolute host time to seconds.
 pub fn host_time_to_secs(host_time: u64) -> f64 {
     let mut info = ffi::MachTimebaseInfo { numer: 0, denom: 0 };

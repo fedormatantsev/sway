@@ -7,7 +7,7 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::math::UVec2;
 use bevy::prelude::*;
 use bevy::window::Monitor;
-use bridge::{MidiRx, feed_midi, setup_cube_graph};
+use bridge::{MidiRx, MidiTimeEpoch, feed_midi, setup_cube_graph};
 use scene::{apply_level, setup_scene};
 use sway_graph::GraphPlugin;
 use sway_nodes::SignalNodesPlugin;
@@ -173,6 +173,7 @@ fn main() {
         ))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
         .insert_resource(MidiRx(rx))
+        .init_resource::<MidiTimeEpoch>()
         .add_systems(Startup, setup_cube_graph)
         .add_systems(PreUpdate, feed_midi)
         .add_systems(Update, (apply_level, log_monitors, log_fps));

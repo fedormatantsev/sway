@@ -18,6 +18,10 @@ use sway_nodes::{
 #[derive(Resource)]
 pub struct MidiRx(pub Receiver<MidiEvent>);
 
+/// Offset from mach-absolute seconds to the graph's fixed-clock epoch.
+#[derive(Resource, Default)]
+pub struct MidiTimeEpoch(Option<f64>);
+
 /// Identifies the continuous arena slot that drives the M0 cube.
 #[derive(Resource)]
 pub struct CubeGraphOutput {
@@ -26,10 +30,18 @@ pub struct CubeGraphOutput {
 }
 
 /// Moves every CoreMIDI callback event into the graph's timestamped inbox.
-pub fn feed_midi(rx: Res<MidiRx>, mut inbox: ResMut<MidiInbox>) {
+pub fn feed_midi(
+    rx: Res<MidiRx>,
+    time: Res<Time<Fixed>>,
+    mut epoch: ResMut<MidiTimeEpoch>,
+    mut inbox: ResMut<MidiInbox>,
+) {
     while let Ok(event) = rx.0.try_recv() {
+        let epoch = *epoch.0.get_or_insert_with(|| {
+            sway_midi::host_time_to_secs(sway_midi::host_time_now()) - time.elapsed_secs_f64()
+        });
         inbox.push(
-            sway_midi::host_time_to_secs(event.host_time),
+            sway_midi::host_time_to_secs(event.host_time) - epoch,
             RawMidi {
                 status: event.status,
                 data1: event.data1,
@@ -113,9 +125,39 @@ pub fn setup_cube_graph(world: &mut World) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use sway_graph::{CompiledGraph, EdgeFrom, EdgeTo, ParamEdge, PortKind};
     use sway_nodes::{Envelope, MidiInbox, MidiNote, SignalNodesPlugin};
+
+    #[test]
+    fn host_time_near_now_maps_to_fixed_elapsed_time() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        tx.send(sway_midi::MidiEvent {
+            status: 0x90,
+            data1: 60,
+            data2: 100,
+            host_time: sway_midi::host_time_now(),
+        })
+        .unwrap();
+
+        let mut fixed = Time::<Fixed>::from_hz(120.0);
+        fixed.advance_by(Duration::from_secs_f64(42.0));
+        let mut app = App::new();
+        app.insert_resource(fixed)
+            .insert_resource(MidiRx(rx))
+            .init_resource::<MidiTimeEpoch>()
+            .init_resource::<MidiInbox>()
+            .add_systems(PreUpdate, feed_midi);
+        app.update();
+
+        let mapped = app.world().resource::<MidiInbox>().events[0].0;
+        assert!(
+            (mapped - 42.0).abs() < 0.05,
+            "near-now host timestamp mapped to {mapped}, expected near fixed elapsed 42s"
+        );
+    }
 
     #[test]
     fn feed_midi_drains_every_event_into_the_inbox() {
@@ -136,7 +178,9 @@ mod tests {
         .unwrap();
 
         let mut app = App::new();
-        app.insert_resource(MidiRx(rx))
+        app.insert_resource(Time::<Fixed>::from_hz(120.0))
+            .insert_resource(MidiRx(rx))
+            .init_resource::<MidiTimeEpoch>()
             .init_resource::<MidiInbox>()
             .add_systems(PreUpdate, feed_midi);
         app.update();

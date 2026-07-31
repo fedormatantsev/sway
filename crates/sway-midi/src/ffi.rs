@@ -22,6 +22,7 @@ pub type MIDINotifyProc = extern "C" fn(*const c_void, *mut c_void);
 pub type MIDIReadProc = extern "C" fn(*const MIDIPacketList, *mut c_void, *mut c_void);
 
 unsafe extern "C" {
+    pub fn mach_absolute_time() -> u64;
     pub fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
 }
 
