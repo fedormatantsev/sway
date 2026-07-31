@@ -1,0 +1,252 @@
+(
+    ports: [
+        "envelope.value",
+        "midinote.note_on",
+    ],
+    ticks: [
+        (0, [
+            Continuous(0.118635155),
+            Events([
+                (0.00079999986, "note_on(60,100)"),
+            ]),
+        ]),
+        (1, [
+            Continuous(0.24986874),
+            Events([]),
+        ]),
+        (2, [
+            Continuous(0.38110235),
+            Events([]),
+        ]),
+        (3, [
+            Continuous(0.51233596),
+            Events([]),
+        ]),
+        (4, [
+            Continuous(0.64356947),
+            Events([]),
+        ]),
+        (5, [
+            Continuous(0.7748031),
+            Events([]),
+        ]),
+        (6, [
+            Continuous(0.7429134),
+            Events([]),
+        ]),
+        (7, [
+            Continuous(0.6937008),
+            Events([]),
+        ]),
+        (8, [
+            Continuous(0.6444882),
+            Events([]),
+        ]),
+        (9, [
+            Continuous(0.5952756),
+            Events([]),
+        ]),
+        (10, [
+            Continuous(0.546063),
+            Events([]),
+        ]),
+        (11, [
+            Continuous(0.4968504),
+            Events([]),
+        ]),
+        (12, [
+            Continuous(0.44763783),
+            Events([]),
+        ]),
+        (13, [
+            Continuous(0.39842516),
+            Events([]),
+        ]),
+        (14, [
+            Continuous(0.050393652),
+            Events([
+                (0.0033333378, "note_on(60,64)"),
+            ]),
+        ]),
+        (15, [
+            Continuous(0.13438314),
+            Events([]),
+        ]),
+        (16, [
+            Continuous(0.21837264),
+            Events([]),
+        ]),
+        (17, [
+            Continuous(0.3023621),
+            Events([]),
+        ]),
+        (18, [
+            Continuous(0.38635164),
+            Events([]),
+        ]),
+        (19, [
+            Continuous(0.47034112),
+            Events([]),
+        ]),
+        (20, [
+            Continuous(0.48503938),
+            Events([]),
+        ]),
+        (21, [
+            Continuous(0.45354337),
+            Events([]),
+        ]),
+        (22, [
+            Continuous(0.4220473),
+            Events([]),
+        ]),
+        (23, [
+            Continuous(0.39055124),
+            Events([]),
+        ]),
+        (24, [
+            Continuous(0.35905516),
+            Events([]),
+        ]),
+        (25, [
+            Continuous(0.3275591),
+            Events([]),
+        ]),
+        (26, [
+            Continuous(0.29606304),
+            Events([]),
+        ]),
+        (27, [
+            Continuous(0.264567),
+            Events([]),
+        ]),
+        (28, [
+            Continuous(0.23307088),
+            Events([]),
+        ]),
+        (29, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (30, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (31, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (32, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (33, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (34, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (35, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (36, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (37, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (38, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (39, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (40, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (41, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (42, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (43, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (44, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (45, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (46, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (47, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (48, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (49, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (50, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (51, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (52, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (53, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (54, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (55, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (56, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (57, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (58, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+        (59, [
+            Continuous(0.2015748),
+            Events([]),
+        ]),
+    ],
+)

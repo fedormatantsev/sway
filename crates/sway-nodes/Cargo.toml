@@ -11,3 +11,7 @@ bevy_app.workspace = true
 bevy_ecs.workspace = true
 bevy_reflect.workspace = true
 bevy_time.workspace = true
+
+[dev-dependencies]
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }

@@ -5322,6 +5322,8 @@ dependencies = [
  "bevy_ecs",
  "bevy_reflect",
  "bevy_time",
+ "ron",
+ "serde",
  "sway-graph",
 ]
 

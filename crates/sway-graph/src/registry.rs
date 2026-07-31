@@ -186,7 +186,15 @@ fn prefill_of<N: NodeType>(world: &World, node: Entity, arena: &mut PortArena, p
         let value = params
             .field_at(field.field_index)
             .expect("field_index came from this type's own schema");
-        arena.continuous[plan.continuous_base + ordinal] = value.to_dynamic();
+        arena.continuous[plan.continuous_base + ordinal] = value
+            .reflect_clone()
+            .unwrap_or_else(|error| {
+                panic!(
+                    "could not clone `{}` while prefilling a node parameter: {error:?}",
+                    value.reflect_type_path()
+                )
+            })
+            .into_partial_reflect();
     }
 }
 
