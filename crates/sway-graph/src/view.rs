@@ -34,15 +34,52 @@ pub struct PortView<'a> {
     arena: &'a mut PortArena,
     continuous_base: usize,
     event_base: usize,
+    continuous_len: usize,
+    event_len: usize,
+    connected_continuous: &'a [bool],
 }
 
 impl<'a> PortView<'a> {
-    pub fn new(arena: &'a mut PortArena, continuous_base: usize, event_base: usize) -> Self {
+    pub fn new(
+        arena: &'a mut PortArena,
+        continuous_base: usize,
+        event_base: usize,
+        continuous_len: usize,
+        event_len: usize,
+        connected_continuous: &'a [bool],
+    ) -> Self {
         Self {
             arena,
             continuous_base,
             event_base,
+            continuous_len,
+            event_len,
+            connected_continuous,
         }
+    }
+
+    fn continuous_slot(&self, idx: ContinuousIdx) -> usize {
+        let ordinal = idx.0 as usize;
+        assert!(
+            ordinal < self.continuous_len,
+            "PortView: continuous port ordinal {} is out of range for this node's {} continuous \
+             ports ({} inputs in its connected mask)",
+            idx.0,
+            self.continuous_len,
+            self.connected_continuous.len()
+        );
+        self.continuous_base + ordinal
+    }
+
+    fn event_slot(&self, idx: EventIdx) -> usize {
+        let ordinal = idx.0 as usize;
+        assert!(
+            ordinal < self.event_len,
+            "PortView: event port ordinal {} is out of range for this node's {} event ports",
+            idx.0,
+            self.event_len
+        );
+        self.event_base + ordinal
     }
 
     /// Reads a continuous port's current value, downcast and cloned.
@@ -54,7 +91,7 @@ impl<'a> PortView<'a> {
     /// condition. Panicking (rather than silently skipping) is deliberate:
     /// the tick is documented infallible for genuinely valid graphs.
     pub fn read<T: Reflect + Clone>(&self, idx: ContinuousIdx) -> T {
-        let slot = self.continuous_base + idx.0 as usize;
+        let slot = self.continuous_slot(idx);
         self.arena.continuous[slot]
             .try_downcast_ref::<T>()
             .unwrap_or_else(|| {
@@ -71,14 +108,14 @@ impl<'a> PortView<'a> {
     /// Overwrites a continuous port's slot. Immediate — a node later in
     /// topological order sees this within the same tick (spec §6).
     pub fn write<T: Reflect>(&mut self, idx: ContinuousIdx, value: T) {
-        let slot = self.continuous_base + idx.0 as usize;
+        let slot = self.continuous_slot(idx);
         self.arena.continuous[slot] = Box::new(value);
     }
 
     /// Iterates this tick's occurrences on an event input, downcast to their
     /// payload type. Empty if nothing arrived this tick (spec §4).
     pub fn events<T: Reflect>(&self, idx: EventIdx) -> impl Iterator<Item = EventRef<'_, T>> {
-        let slot = self.event_base + idx.0 as usize;
+        let slot = self.event_slot(idx);
         self.arena.events[slot].iter().filter_map(|occ| {
             occ.value.try_downcast_ref::<T>().map(|value| EventRef {
                 offset: occ.offset,
@@ -89,10 +126,51 @@ impl<'a> PortView<'a> {
 
     /// Appends an occurrence to an event output's slot for this tick.
     pub fn emit<T: Reflect>(&mut self, idx: EventIdx, offset: f32, value: T) {
-        let slot = self.event_base + idx.0 as usize;
+        let slot = self.event_slot(idx);
         self.arena.events[slot].push(Occurrence {
             offset,
             value: Box::new(value),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use super::*;
+
+    #[test]
+    fn excessive_continuous_ordinal_cannot_cross_node_boundary() {
+        let mut arena = PortArena::new(2, 0);
+        arena.continuous[1] = Box::new(41.0_f32);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut view = PortView::new(&mut arena, 0, 0, 1, 0, &[false]);
+            view.write(ContinuousIdx(1), 99.0_f32);
+        }));
+
+        assert!(result.is_err(), "an ordinal outside the node must panic");
+        assert_eq!(
+            arena.continuous[1].try_downcast_ref::<f32>(),
+            Some(&41.0),
+            "the next node's slot must remain untouched"
+        );
+    }
+
+    #[test]
+    fn excessive_event_ordinal_cannot_cross_node_boundary() {
+        let mut arena = PortArena::new(0, 2);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut view = PortView::new(&mut arena, 0, 0, 0, 1, &[]);
+            view.emit(EventIdx(1), 0.0, 99_u32);
+        }));
+
+        assert!(result.is_err(), "an ordinal outside the node must panic");
+        assert!(
+            arena.events[1].is_empty(),
+            "the next node's slot must remain untouched"
+        );
     }
 }

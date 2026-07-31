@@ -149,7 +149,14 @@ pub fn graph_tick(world: &mut World) {
             }
 
             // Dispatch.
-            let mut view = PortView::new(&mut arena, plan.continuous_base, plan.event_base);
+            let mut view = PortView::new(
+                &mut arena,
+                plan.continuous_base,
+                plan.event_base,
+                plan.schema.continuous_len(),
+                plan.schema.events_len(),
+                &plan.connected_continuous,
+            );
             tick_fn(world, plan.entity, &mut view, &ctx);
         }
     });
