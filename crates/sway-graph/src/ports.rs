@@ -4,8 +4,11 @@
 //! kind-agnostically, so an enum would buy a discriminant and a match arm at
 //! every access and nothing else.
 
+use core::marker::PhantomData;
+
 use bevy_ecs::resource::Resource;
-use bevy_reflect::PartialReflect;
+use bevy_reflect::prelude::ReflectDefault;
+use bevy_reflect::{PartialReflect, Reflect, TypePath};
 
 /// Index of a continuous port, absolute within [`PortArena::continuous`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -59,6 +62,27 @@ impl PortArena {
         self.continuous
             .resize_with(continuous_len, || Box::new(()) as Box<dyn PartialReflect>);
         self.events.resize_with(events_len, Vec::new);
+    }
+}
+
+/// Marks a `Params`/`Outputs` field as an **event** port.
+///
+/// Zero-sized: the occurrences live in [`PortArena::events`], not in the
+/// struct. An event input has no authored value (spec §3), which is why this
+/// carries no data — there is nothing for an author to write.
+///
+/// `PhantomData<fn() -> T>` rather than `PhantomData<T>` so the marker is
+/// `Send + Sync + Default` regardless of `T`.
+#[derive(Reflect, Debug, Clone, Copy, PartialEq)]
+#[reflect(Default)]
+pub struct Event<T: Reflect + TypePath> {
+    #[reflect(ignore)]
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T: Reflect + TypePath> Default for Event<T> {
+    fn default() -> Self {
+        Self { _marker: PhantomData }
     }
 }
 
