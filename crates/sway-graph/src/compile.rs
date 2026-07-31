@@ -71,6 +71,21 @@ pub enum CompileError {
         kind: PortKind,
         arity: usize,
     },
+    /// A port ordinal was in range for its node's combined inputs+outputs
+    /// space, but named the wrong half for its role on the edge — a source
+    /// naming an input, or a target naming an output. A param edge must run
+    /// from a source's output to a target's input (parent spec, "Param
+    /// edges move values from output ports to input ports" —
+    /// `docs/superpowers/specs/2026-07-25-sway-design.md:621`).
+    WrongPortDirection {
+        node: Entity,
+        port: u16,
+        kind: PortKind,
+        name: &'static str,
+        /// What the edge required this port to be: `"an output"` for a
+        /// source, `"an input"` for a target.
+        expected: &'static str,
+    },
     TypeMismatch {
         source: Entity,
         source_port: &'static str,
@@ -116,6 +131,12 @@ impl fmt::Display for CompileError {
                 kind_name(*kind),
                 kind_name(*kind)
             ),
+            Self::WrongPortDirection { node, port, kind, name, expected } => write!(
+                f,
+                "node {node}: {} port {port} (`{name}`) is not {expected} — a param edge must \
+                 run from a source's output port to a target's input port",
+                kind_name(*kind)
+            ),
             Self::TypeMismatch {
                 source,
                 source_port,
@@ -139,7 +160,11 @@ impl fmt::Display for CompileError {
                 "edge {edge} references node {missing}, which does not exist in the world"
             ),
             Self::Cycle { nodes } => {
-                write!(f, "cycle detected among nodes: ")?;
+                // Kahn's only knows which nodes never reached in-degree
+                // zero — that set is every node genuinely in a cycle, plus
+                // anything downstream of one. Don't claim more than that:
+                // no SCC pass narrows this to the minimal cycle.
+                write!(f, "did not fully order — part of a cycle, or downstream of one: ")?;
                 for (i, node) in nodes.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -197,6 +222,22 @@ fn arity_of(schema: &NodeSchema, kind: PortKind) -> usize {
         PortKind::Continuous => schema.continuous_len(),
         PortKind::Event => schema.events_len(),
     }
+}
+
+/// The number of *input* ports of `kind` — the boundary `port_field`'s
+/// combined inputs-then-outputs space splits on. A port ordinal below this
+/// names an input; at or above it, an output.
+fn input_len(schema: &NodeSchema, kind: PortKind) -> usize {
+    match kind {
+        PortKind::Continuous => schema.inputs.continuous.len(),
+        PortKind::Event => schema.inputs.events.len(),
+    }
+}
+
+/// Whether `ordinal` (already known in-range via [`port_field`]) names an
+/// input rather than an output, within `kind`'s space.
+fn is_input(schema: &NodeSchema, kind: PortKind, ordinal: u16) -> bool {
+    (ordinal as usize) < input_len(schema, kind)
 }
 
 /// Compiles the world's graph of `GraphNode` entities and `ParamEdge`
@@ -298,6 +339,31 @@ pub fn compile(world: &mut World) -> Result<CompiledGraph, CompileError> {
                 kind: raw.kind,
                 arity: arity_of(&target_node.schema, raw.kind),
             })?;
+
+        // A param edge runs source-output → target-input (parent spec:
+        // "Param edges move values from output ports to input ports",
+        // `docs/superpowers/specs/2026-07-25-sway-design.md:621`). The
+        // bounds checks above only confirmed both ordinals are *somewhere*
+        // in their node's combined inputs+outputs space; check each lands
+        // in the correct half for its role.
+        if is_input(&source_node.schema, raw.kind, raw.source_port) {
+            return Err(CompileError::WrongPortDirection {
+                node: source_node.entity,
+                port: raw.source_port,
+                kind: raw.kind,
+                name: source_field.name,
+                expected: "an output",
+            });
+        }
+        if !is_input(&target_node.schema, raw.kind, raw.target_port) {
+            return Err(CompileError::WrongPortDirection {
+                node: target_node.entity,
+                port: raw.target_port,
+                kind: raw.kind,
+                name: target_field.name,
+                expected: "an input",
+            });
+        }
 
         if source_field.type_id != target_field.type_id {
             return Err(CompileError::TypeMismatch {
@@ -490,7 +556,10 @@ mod tests {
 
         let err = compile(app.world_mut()).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("cycle"), "{msg}");
+        // The message must not overclaim precision Kahn's doesn't have: it
+        // knows this set didn't fully order (cycle, or downstream of one),
+        // not that it isolated a minimal cycle.
+        assert!(msg.contains("did not fully order") && msg.contains("cycle"), "{msg}");
         assert!(msg.contains(&format!("{a}")) && msg.contains(&format!("{b}")), "{msg}");
     }
 
@@ -546,6 +615,37 @@ mod tests {
         let msg = compile(app.world_mut()).unwrap_err().to_string();
         assert!(msg.contains("99"), "{msg}");
         assert!(msg.contains('3'), "must state the schema's arity: {msg}");
+    }
+
+    #[test]
+    fn an_edge_targeting_an_output_port_is_rejected_not_a_panic() {
+        let mut app = probe_app();
+        let a = spawn_probe(app.world_mut());
+        let b = spawn_probe(app.world_mut());
+        // b.value (continuous ordinal 2) is an OUTPUT — not a legal edge
+        // target. Bounds-checking against the combined inputs+outputs space
+        // alone lets this through and `connected_continuous[2]` (sized to
+        // just the 2 inputs) then panics instead of erroring.
+        edge(app.world_mut(), a, b, 2, 2, PortKind::Continuous);
+
+        let msg = compile(app.world_mut()).unwrap_err().to_string();
+        assert!(msg.contains("value"), "must name the port: {msg}");
+        assert!(msg.contains(&format!("{b}")), "must name the node: {msg}");
+    }
+
+    #[test]
+    fn an_edge_sourced_from_an_input_port_is_rejected() {
+        let mut app = probe_app();
+        let a = spawn_probe(app.world_mut());
+        let b = spawn_probe(app.world_mut());
+        // a.gain (continuous ordinal 0) is an INPUT — not a legal edge
+        // source. Without a direction check this compiles clean and wires
+        // b's gain to a's *own authored* gain instead of anything a computed.
+        edge(app.world_mut(), a, b, 0, 0, PortKind::Continuous);
+
+        let msg = compile(app.world_mut()).unwrap_err().to_string();
+        assert!(msg.contains("gain"), "must name the port: {msg}");
+        assert!(msg.contains(&format!("{a}")), "must name the node: {msg}");
     }
 
     #[test]
