@@ -9,8 +9,8 @@ use bevy_ecs::world::World;
 use bevy_reflect::Reflect;
 use bevy_time::{Fixed, Time};
 use sway_graph::{
-    ContinuousIdx, Event, EventIdx, NodeType, PortView, TickCtx, graph_tick, register_event_port,
-    register_node_type,
+    ContinuousIdx, Event, EventIdx, NoSlots, NodeType, PortView, TickCtx, graph_tick,
+    register_event_port, register_node_type,
 };
 
 use crate::{Envelope, LFO, Math, Remap, Select, Switch};
@@ -94,6 +94,8 @@ impl MidiNote {
 impl NodeType for MidiNote {
     type Params = MidiNoteParams;
     type Outputs = MidiNoteOutputs;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = MidiNoteState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
@@ -163,6 +165,8 @@ impl MidiCC {
 impl NodeType for MidiCC {
     type Params = MidiCCParams;
     type Outputs = MidiCCOutputs;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = MidiCCState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
@@ -223,8 +227,8 @@ mod tests {
         ParamEdge, PortArena, PortKind, compile,
     };
 
-    use crate::{RemapParams, RemapState};
     use super::*;
+    use crate::{RemapParams, RemapState};
 
     const TICK_HZ: f64 = 120.0;
 

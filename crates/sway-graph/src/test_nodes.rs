@@ -26,6 +26,7 @@ use crate::edges::{EdgeFrom, EdgeTo, GraphNode, NodeId, NodeRuntime, ParamEdge, 
 use crate::ports::{ContinuousIdx, Event, EventIdx, PortArena};
 use crate::registry::{NodeType, NodeTypeId, NodeTypeRegistry, register_node_type};
 use crate::schema::register_event_port;
+use crate::slots::NoSlots;
 use crate::tick::GraphPlugin;
 use crate::view::{PortView, TickCtx};
 
@@ -74,6 +75,8 @@ impl Probe {
 impl NodeType for Probe {
     type Params = ProbeParams;
     type Outputs = ProbeOut;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = ProbeState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
@@ -118,6 +121,8 @@ impl IntProbe {
 impl NodeType for IntProbe {
     type Params = IntProbeParams;
     type Outputs = IntProbeOut;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = IntProbeState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
@@ -158,6 +163,8 @@ impl Emitter {
 impl NodeType for Emitter {
     type Params = EmitterParams;
     type Outputs = EmitterOut;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = EmitterState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] =
@@ -203,6 +210,8 @@ impl Gain {
 impl NodeType for Gain {
     type Params = GainParams;
     type Outputs = GainOut;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = GainState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
@@ -247,6 +256,8 @@ impl Sink {
 impl NodeType for Sink {
     type Params = SinkParams;
     type Outputs = SinkOut;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = SinkState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("pulse", Sink::IN_PULSE)];

@@ -27,4 +27,4 @@ pub use slots::{
     NoOutputs, NoSlots, ReflectSlot, Slot, SlotField, SlotSource, derive_slots, register_slot,
 };
 pub use tick::{GraphPlugin, GraphTickCount, graph_tick};
-pub use view::{EventRef, PortView, TickCtx};
+pub use view::{EventRef, PortView, SlotView, TickCtx};

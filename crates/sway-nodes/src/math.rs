@@ -6,7 +6,7 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
 use bevy_reflect::Reflect;
 use sway_graph::{
-    ContinuousIdx, Event, EventIdx, NodeType, PortView, TickCtx, register_event_port,
+    ContinuousIdx, Event, EventIdx, NoSlots, NodeType, PortView, TickCtx, register_event_port,
 };
 
 use crate::NoteMsg;
@@ -51,6 +51,8 @@ impl Math {
 impl NodeType for Math {
     type Params = MathParams;
     type Outputs = MathOutputs;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = MathState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
@@ -124,6 +126,8 @@ impl Remap {
 impl NodeType for Remap {
     type Params = RemapParams;
     type Outputs = RemapOutputs;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = RemapState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
@@ -191,6 +195,8 @@ impl Switch {
 impl NodeType for Switch {
     type Params = SwitchParams;
     type Outputs = SwitchOutputs;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = SwitchState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
@@ -249,6 +255,8 @@ impl Select {
 impl NodeType for Select {
     type Params = SelectParams;
     type Outputs = SelectOutputs;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = SelectState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[

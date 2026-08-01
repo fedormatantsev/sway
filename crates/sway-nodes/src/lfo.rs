@@ -7,7 +7,7 @@ use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
 use bevy_reflect::Reflect;
-use sway_graph::{ContinuousIdx, NodeType, PortView, TickCtx};
+use sway_graph::{ContinuousIdx, NoSlots, NodeType, PortView, TickCtx};
 
 #[derive(Reflect, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Waveform {
@@ -47,6 +47,8 @@ impl LFO {
 impl NodeType for LFO {
     type Params = LfoParams;
     type Outputs = LfoOutputs;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = LfoState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[

@@ -6,6 +6,7 @@
 //! `continuous_base`/`event_base` internally, which is what stops a node
 //! reaching another node's ports by arithmetic (spec §4).
 
+use bevy_ecs::entity::Entity;
 use bevy_reflect::Reflect;
 
 use crate::ports::{ContinuousIdx, EventIdx, Occurrence, PortArena};
@@ -131,6 +132,33 @@ impl<'a> PortView<'a> {
             offset,
             value: Box::new(value),
         });
+    }
+}
+
+/// A node's scoped window onto its `Feeds` sources — what `PortView` is to
+/// ports. Indices are the node's own slot ordinals, so a node cannot reach
+/// another node's slot table by arithmetic (design §7).
+pub struct SlotView<'a> {
+    sources: &'a [Option<crate::slots::SlotSource>],
+}
+
+impl<'a> SlotView<'a> {
+    pub fn new(sources: &'a [Option<crate::slots::SlotSource>]) -> Self {
+        Self { sources }
+    }
+
+    /// The entity feeding `slot`, or `None` if the slot is empty. Panics on
+    /// an out-of-range ordinal, for the same reason `PortView` does: a
+    /// compiled graph has already validated every slot ordinal, so this can
+    /// only be a stale index const.
+    pub fn source(&self, slot: u16) -> Option<Entity> {
+        let ordinal = slot as usize;
+        assert!(
+            ordinal < self.sources.len(),
+            "SlotView: slot ordinal {slot} is out of range for this node's {} slot(s)",
+            self.sources.len()
+        );
+        self.sources[ordinal].map(|source| source.entity)
     }
 }
 

@@ -6,7 +6,7 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
 use bevy_reflect::Reflect;
 use sway_graph::{
-    ContinuousIdx, Event, EventIdx, NodeType, PortView, TickCtx, register_event_port,
+    ContinuousIdx, Event, EventIdx, NoSlots, NodeType, PortView, TickCtx, register_event_port,
 };
 
 use crate::NoteMsg;
@@ -48,6 +48,8 @@ impl Envelope {
 impl NodeType for Envelope {
     type Params = EnvelopeParams;
     type Outputs = EnvelopeOutputs;
+    type Slots = NoSlots;
+    type Produces = ();
     type State = EnvelopeState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
