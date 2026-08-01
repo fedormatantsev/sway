@@ -15,10 +15,12 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use bevy_app::App;
+use bevy_ecs::change_detection::Tick;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
+use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
-use bevy_reflect::Reflect;
+use bevy_reflect::{Reflect, TypePath};
 use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
 
 use crate::compile::compile;
@@ -26,9 +28,9 @@ use crate::edges::{EdgeFrom, EdgeTo, GraphNode, NodeId, NodeRuntime, ParamEdge, 
 use crate::ports::{ContinuousIdx, Event, EventIdx, PortArena};
 use crate::registry::{NodeType, NodeTypeId, NodeTypeRegistry, register_node_type};
 use crate::schema::register_event_port;
-use crate::slots::NoSlots;
+use crate::slots::{NoOutputs, NoSlots, Slot, register_slot};
 use crate::tick::GraphPlugin;
-use crate::view::{PortView, TickCtx};
+use crate::view::{PortView, SlotView, TickCtx};
 
 /// Graph tick rate used by every headless test app. Matches
 /// `crates/sway-app/src/graph.rs`'s M0 provisional value (spec §11).
@@ -277,6 +279,153 @@ impl NodeType for Sink {
     }
 }
 
+// --- Blob / Source / SinkGeo / Group ----------------------------------------
+//
+// Task 4's structure-pass fixtures. `sway-graph` cannot depend on `sway-geo`,
+// so these carry their own capability marker and produced component rather
+// than the real `Geometry`/`Attribute` types.
+
+/// A stand-in capability. `sway-graph` cannot depend on `sway-geo`, so its
+/// structural tests carry their own marker and their own produced component.
+#[derive(TypePath)]
+pub(crate) struct Blob;
+
+/// What a `Source`/`SinkGeo` cook writes. Its change tick is what
+/// `produced_change_tick` reports.
+#[derive(Component, Default, Debug, Clone, PartialEq)]
+pub(crate) struct BlobData(pub u32);
+
+#[derive(Reflect, Component, Default)]
+pub(crate) struct SourceParams {
+    pub seed: f32,
+}
+
+#[derive(Component, Default)]
+pub(crate) struct SourceState;
+
+pub(crate) struct Source;
+
+impl Source {
+    pub(crate) const SEED: u16 = 0;
+}
+
+impl NodeType for Source {
+    type Params = SourceParams;
+    type Outputs = NoOutputs;
+    type Slots = NoSlots;
+    type Produces = Blob;
+    type State = SourceState;
+
+    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("seed", Self::SEED)];
+    const COOKS: bool = true;
+
+    fn register(_app: &mut App) {}
+
+    fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
+
+    fn cook(world: &mut World, node: Entity, _slots: &SlotView) {
+        let seed = world.get::<SourceParams>(node).map(|p| p.seed).unwrap_or(0.0);
+        world.entity_mut(node).insert(BlobData(seed as u32));
+        world.resource_mut::<CookCounter>().0 += 1;
+    }
+
+    fn produced_change_tick(world: &World, node: Entity) -> Option<Tick> {
+        world
+            .get_entity(node)
+            .ok()?
+            .get_change_ticks::<BlobData>()
+            .map(|t| t.changed)
+    }
+}
+
+#[derive(Reflect, Default)]
+pub(crate) struct SinkGeoSlots {
+    pub input: Slot<Blob>,
+}
+
+#[derive(Reflect, Component, Default)]
+pub(crate) struct SinkGeoParams {
+    pub scale: f32,
+}
+
+#[derive(Component, Default)]
+pub(crate) struct SinkGeoState;
+
+pub(crate) struct SinkGeo;
+
+impl SinkGeo {
+    pub(crate) const SCALE: u16 = 0;
+    pub(crate) const IN_INPUT: u16 = 0;
+}
+
+impl NodeType for SinkGeo {
+    type Params = SinkGeoParams;
+    type Outputs = NoOutputs;
+    type Slots = SinkGeoSlots;
+    type Produces = Blob;
+    type State = SinkGeoState;
+
+    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("scale", Self::SCALE)];
+    const SLOT_ORDINALS: &'static [(&'static str, u16)] = &[("input", Self::IN_INPUT)];
+    const COOKS: bool = true;
+
+    fn register(app: &mut App) {
+        register_slot::<Blob>(app);
+    }
+
+    fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
+
+    fn cook(world: &mut World, node: Entity, slots: &SlotView) {
+        let upstream = slots
+            .source(SinkGeo::IN_INPUT)
+            .and_then(|src| world.get::<BlobData>(src))
+            .map(|b| b.0)
+            .unwrap_or(0);
+        let scale = world.get::<SinkGeoParams>(node).map(|p| p.scale).unwrap_or(1.0);
+        world
+            .entity_mut(node)
+            .insert(BlobData(upstream * scale as u32));
+        world.resource_mut::<CookCounter>().0 += 1;
+    }
+
+    fn produced_change_tick(world: &World, node: Entity) -> Option<Tick> {
+        world
+            .get_entity(node)
+            .ok()?
+            .get_change_ticks::<BlobData>()
+            .map(|t| t.changed)
+    }
+}
+
+#[derive(Reflect, Component, Default)]
+pub(crate) struct GroupParams {
+    pub y: f32,
+}
+
+#[derive(Component, Default)]
+pub(crate) struct GroupState;
+
+pub(crate) struct Group;
+
+impl NodeType for Group {
+    type Params = GroupParams;
+    type Outputs = NoOutputs;
+    type Slots = NoSlots;
+    type Produces = ();
+    type State = GroupState;
+
+    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("y", 0)];
+    const SPATIAL: bool = true;
+
+    fn register(_app: &mut App) {}
+    fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
+}
+
+/// Counts cooks, so the gate's negative assertions have something to assert
+/// on rather than an output that merely happens to be unchanged (§7).
+#[derive(Resource, Default)]
+pub(crate) struct CookCounter(pub u32);
+
 // --- Spawning --------------------------------------------------------------
 
 /// Monotonically increasing across the whole test binary. `NodeId` only
@@ -362,6 +511,39 @@ pub(crate) fn spawn_gain(world: &mut World, gain: f32, bias: f32) -> Entity {
             },
             GainParams { gain, bias },
             GainState,
+        ))
+        .id()
+}
+
+pub(crate) fn spawn_source(world: &mut World) -> Entity {
+    let node_type = node_type_id::<Source>(world);
+    world
+        .spawn((
+            GraphNode { id: next_node_id(), node_type },
+            SourceParams { seed: 1.0 },
+            SourceState,
+        ))
+        .id()
+}
+
+pub(crate) fn spawn_sinkgeo(world: &mut World) -> Entity {
+    let node_type = node_type_id::<SinkGeo>(world);
+    world
+        .spawn((
+            GraphNode { id: next_node_id(), node_type },
+            SinkGeoParams { scale: 1.0 },
+            SinkGeoState,
+        ))
+        .id()
+}
+
+pub(crate) fn spawn_group(world: &mut World) -> Entity {
+    let node_type = node_type_id::<Group>(world);
+    world
+        .spawn((
+            GraphNode { id: next_node_id(), node_type },
+            GroupParams::default(),
+            GroupState,
         ))
         .id()
 }
@@ -524,5 +706,19 @@ pub(crate) fn emitter_app() -> App {
     register_node_type::<Emitter>(&mut app);
     register_node_type::<Sink>(&mut app);
     app.update();
+    app
+}
+
+/// App with `Probe`, `Source`, `SinkGeo` and `Group` registered — everything
+/// Task 4's structure-pass tests need. Tests only call `compile`, never
+/// `app.update()`, so no `TimePlugin`/fixed timestep is required.
+pub(crate) fn structure_app() -> App {
+    let mut app = App::new();
+    app.add_plugins(crate::tick::GraphPlugin);
+    app.init_resource::<CookCounter>();
+    register_node_type::<Probe>(&mut app);
+    register_node_type::<Source>(&mut app);
+    register_node_type::<SinkGeo>(&mut app);
+    register_node_type::<Group>(&mut app);
     app
 }

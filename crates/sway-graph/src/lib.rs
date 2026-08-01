@@ -6,6 +6,7 @@ pub mod ports;
 pub mod registry;
 pub mod schema;
 pub mod slots;
+mod structure;
 #[cfg(test)]
 pub(crate) mod test_nodes;
 pub mod tick;
@@ -13,7 +14,8 @@ pub mod view;
 
 pub use compile::{CompileError, CompiledGraph, NodePlan, compile};
 pub use edges::{
-    EdgeFrom, EdgeTo, GraphNode, InEdges, NodeId, NodeRuntime, OutEdges, ParamEdge, PortKind,
+    EdgeFrom, EdgeTo, FeedsEdge, GraphNode, InEdges, NodeId, NodeRuntime, OutEdges, ParamEdge,
+    ParentEdge, PortKind,
 };
 pub use ports::{ContinuousIdx, Event, EventIdx, Occurrence, PortArena};
 pub use registry::{

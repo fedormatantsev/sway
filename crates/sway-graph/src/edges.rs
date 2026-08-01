@@ -45,6 +45,28 @@ pub struct ParamEdge {
     pub kind: PortKind,
 }
 
+/// A hierarchy edge. **Source is the child, target is the parent** — dataflow
+/// runs leaf→root while parenting runs root→leaf (parent §2.10).
+///
+/// Authored as an edge entity rather than as Bevy's `ChildOf` directly, and
+/// compiled into `ChildOf` once validation passes. §2.5 requires a `ChildOf`
+/// fan-out to be a diagnosable error, and an entity holds exactly one
+/// `ChildOf` — inserting a second replaces the first silently, so the illegal
+/// state would be unrepresentable and the diagnostic unwritable (design §3).
+#[derive(Component)]
+pub struct ParentEdge;
+
+/// A structural input edge into a named, typed slot on the target.
+///
+/// Also an edge entity, for the same diagnostic reason plus one of its own: a
+/// node needs several slots at once (`Mesh` has `geo` and `material`) and one
+/// Bevy relationship component per entity cannot carry two targets.
+#[derive(Component)]
+pub struct FeedsEdge {
+    /// Ordinal within the target node type's `Slots` schema.
+    pub slot: u16,
+}
+
 #[derive(Component)]
 #[relationship(relationship_target = OutEdges)]
 pub struct EdgeFrom(#[entities] pub Entity);

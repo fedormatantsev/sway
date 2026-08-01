@@ -108,6 +108,47 @@ pub enum CompileError {
     Cycle {
         nodes: Vec<Entity>,
     },
+    DuplicateParent {
+        child: Entity,
+        first: Entity,
+        second: Entity,
+    },
+    NotSpatial {
+        node: Entity,
+        type_name: &'static str,
+        /// `"parented"` or `"used as a parent"`.
+        role: &'static str,
+    },
+    ParentCycle {
+        nodes: Vec<Entity>,
+    },
+    SlotOutOfRange {
+        node: Entity,
+        slot: u16,
+        arity: usize,
+    },
+    DuplicateSlot {
+        target: Entity,
+        slot: &'static str,
+        first: Entity,
+        second: Entity,
+    },
+    SlotTypeMismatch {
+        target: Entity,
+        slot: &'static str,
+        expected: &'static str,
+        source: Entity,
+        produces: &'static str,
+    },
+    SourceProducesNothing {
+        source: Entity,
+        type_name: &'static str,
+        target: Entity,
+        slot: &'static str,
+    },
+    FeedsCycle {
+        nodes: Vec<Entity>,
+    },
 }
 
 fn kind_name(kind: PortKind) -> &'static str {
@@ -166,6 +207,56 @@ impl fmt::Display for CompileError {
                 // anything downstream of one. Don't claim more than that:
                 // no SCC pass narrows this to the minimal cycle.
                 write!(f, "did not fully order — part of a cycle, or downstream of one: ")?;
+                for (i, node) in nodes.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{node}")?;
+                }
+                Ok(())
+            }
+            Self::DuplicateParent { child, first, second } => write!(
+                f,
+                "node {child} already has parent {first}; a second parent edge to {second} is \
+                 rejected — a scene node has exactly one parent"
+            ),
+            Self::NotSpatial { node, type_name, role } => write!(
+                f,
+                "node {node} (`{type_name}`) is not a scene node and cannot be {role} — only \
+                 node types carrying a Transform take part in the hierarchy"
+            ),
+            Self::ParentCycle { nodes } => {
+                write!(f, "parent edges form a cycle through: ")?;
+                for (i, node) in nodes.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{node}")?;
+                }
+                Ok(())
+            }
+            Self::SlotOutOfRange { node, slot, arity } => write!(
+                f,
+                "node {node}: Feeds slot {slot} is out of range — this node type declares \
+                 {arity} slot(s)"
+            ),
+            Self::DuplicateSlot { target, slot, first, second } => write!(
+                f,
+                "node {target}: Feeds slot `{slot}` is already filled by node {first}; a second \
+                 edge from node {second} is rejected — a slot takes exactly one input"
+            ),
+            Self::SlotTypeMismatch { target, slot, expected, source, produces } => write!(
+                f,
+                "node {target}: Feeds slot `{slot}` expects `{expected}`, but node {source} \
+                 produces `{produces}`"
+            ),
+            Self::SourceProducesNothing { source, type_name, target, slot } => write!(
+                f,
+                "node {source} (`{type_name}`) produces nothing and cannot feed node {target}'s \
+                 slot `{slot}`"
+            ),
+            Self::FeedsCycle { nodes } => {
+                write!(f, "Feeds edges did not fully order — a cycle, or downstream of one: ")?;
                 for (i, node) in nodes.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -291,6 +382,35 @@ pub fn compile(world: &mut World) -> Result<CompiledGraph, CompileError> {
 
     let index_of: HashMap<Entity, usize> =
         nodes.iter().enumerate().map(|(i, n)| (n.entity, i)).collect();
+
+    // --- Pass 2.5: structure validation (ParentEdge / FeedsEdge) -----------
+    //
+    // Runs before the dataflow pass below so a `ParentEdge`/`FeedsEdge`
+    // mistake is reported in its own vocabulary rather than as a param-edge
+    // failure. Task 5 owns applying `ChildOf` and storing `Structure`
+    // (cook_order, slot sources, parent links) on `CompiledGraph` — compile
+    // only needs to propagate a structural `Err` here.
+    let structure_nodes: Vec<crate::structure::StructureNode> = {
+        let registry = world.resource::<NodeTypeRegistry>();
+        nodes
+            .iter()
+            .map(|node| {
+                let entry = registry
+                    .get(node.node_type)
+                    .expect("node type resolved in pass 1");
+                crate::structure::StructureNode {
+                    entity: node.entity,
+                    type_name: entry.name,
+                    slots: entry.slots.clone(),
+                    produces: entry.produces,
+                    produces_path: entry.produces_path,
+                    spatial: entry.spatial,
+                }
+            })
+            .collect()
+    };
+    // Task 5 is this `Structure`'s consumer.
+    let _structure = crate::structure::validate(world, &structure_nodes, &index_of)?;
 
     // --- Pass 3: validate edges -----------------------------------------
     struct RawEdge {
