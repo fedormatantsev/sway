@@ -1,12 +1,16 @@
 mod envelope;
 mod lfo;
+mod material;
 mod math;
 mod midi;
+mod scene;
 
 pub use envelope::*;
 pub use lfo::*;
+pub use material::*;
 pub use math::*;
 pub use midi::*;
+pub use scene::*;
 
 #[cfg(test)]
 mod tests {

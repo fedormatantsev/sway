@@ -5332,6 +5332,7 @@ dependencies = [
 name = "sway-nodes"
 version = "0.1.0"
 dependencies = [
+ "bevy",
  "bevy_app",
  "bevy_ecs",
  "bevy_reflect",

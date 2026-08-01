@@ -3,10 +3,14 @@ name = "sway-nodes"
 version.workspace = true
 edition.workspace = true
 
-# Deliberately NOT sway-midi: RawMidi is defined here so this crate carries
-# no macOS-only FFI and is testable anywhere (spec §2, §7).
+# Scene nodes need Transform, meshes, materials and Color, so this crate
+# depends on the bevy facade from M2b onward. Parent §2.9's no-renderer rule
+# constrains sway-graph, not the node crates (design §2). Signal-node tests
+# still build a MinimalPlugins app — this costs compile time, not
+# testability.
 [dependencies]
 sway-graph.workspace = true
+bevy.workspace = true
 bevy_app.workspace = true
 bevy_ecs.workspace = true
 bevy_reflect.workspace = true
