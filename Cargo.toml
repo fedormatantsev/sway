@@ -13,6 +13,7 @@ bevy_ecs = "=0.19.0"
 bevy_math = "=0.19.0"
 bevy_reflect = "=0.19.0"
 bevy_time = "=0.19.0"
+bevy_transform = "=0.19.0"
 sway-geo = { path = "crates/sway-geo" }
 sway-graph = { path = "crates/sway-graph" }
 sway-nodes = { path = "crates/sway-nodes" }

@@ -26,6 +26,14 @@ pub struct NodeRuntime {
     /// forces a prefill, which is how a recompile makes a disconnect take
     /// effect.
     pub last_params_tick: Option<Tick>,
+    /// The cook gate (design §6). Sticky: set when a driven input changes,
+    /// when prefill fires, or when an upstream product's change tick moves;
+    /// cleared only by a cook that actually ran. Stickiness is what makes it
+    /// survive a skipped cadence, which a `Changed<T>` filter cannot.
+    pub cook_dirty: bool,
+    /// Per slot ordinal: the source's `produced_change_tick` at this node's
+    /// last cook.
+    pub last_slot_ticks: Vec<Option<Tick>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -27,10 +27,6 @@ pub(crate) struct StructureNode {
     pub spatial: bool,
 }
 
-// Task 5 is the first reader of these fields — `compile` currently discards
-// the whole `Structure` (see `_structure` in `compile.rs`), so `-D warnings`
-// would otherwise flag them as dead code between now and then.
-#[allow(dead_code)]
 pub(crate) struct Structure {
     /// Node indices in `Feeds`-topological order.
     pub cook_order: Vec<usize>,
@@ -242,25 +238,21 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Un-ignore in Task 5, which adds CompiledGraph::cook_order.
     fn a_feeds_chain_orders_producer_before_consumer() {
         let mut app = structure_app();
         let src = spawn_source(app.world_mut());
         let sink = spawn_sinkgeo(app.world_mut());
         feeds(app.world_mut(), src, sink, 0);
 
-        let _compiled = compile(app.world_mut()).expect("compiles");
-        // `compiled.cook_order` does not exist on `CompiledGraph` yet — Task 5
-        // adds it. Body neutralized so the crate compiles; see the #[ignore].
-        //
-        // let cooked: Vec<Entity> = compiled
-        //     .cook_order
-        //     .iter()
-        //     .map(|&i| compiled.plans[i].entity)
-        //     .collect();
-        // let src_at = cooked.iter().position(|&e| e == src).expect("source cooks");
-        // let sink_at = cooked.iter().position(|&e| e == sink).expect("sink cooks");
-        // assert!(src_at < sink_at, "a Feeds source must cook first");
+        let compiled = compile(app.world_mut()).expect("compiles");
+        let cooked: Vec<Entity> = compiled
+            .cook_order
+            .iter()
+            .map(|&i| compiled.plans[i].entity)
+            .collect();
+        let src_at = cooked.iter().position(|&e| e == src).expect("source cooks");
+        let sink_at = cooked.iter().position(|&e| e == sink).expect("sink cooks");
+        assert!(src_at < sink_at, "a Feeds source must cook first");
     }
 
     #[test]

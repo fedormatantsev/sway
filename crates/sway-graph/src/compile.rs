@@ -19,6 +19,7 @@ use bevy_ecs::world::World;
 use crate::edges::{EdgeFrom, EdgeTo, GraphNode, NodeId, NodeRuntime, ParamEdge, PortKind};
 use crate::registry::{NodeSchema, NodeTypeId, NodeTypeRegistry};
 use crate::schema::PortField;
+use crate::slots::SlotSource;
 
 /// The compiled, per-node-instance plan the runner and prefill step read.
 #[derive(Debug)]
@@ -45,6 +46,8 @@ pub struct NodePlan {
     /// node's position in the compiled order — the deterministic tiebreak
     /// for merged event streams that share an offset.
     pub event_merges: Vec<(usize, usize)>,
+    /// Per slot ordinal: the resolved source, or `None` if the slot is empty.
+    pub slots: Vec<Option<SlotSource>>,
 }
 
 /// The output of [`compile`]: the flat execution plan the tick runner walks,
@@ -56,6 +59,10 @@ pub struct CompiledGraph {
     pub continuous_len: usize,
     pub events_len: usize,
     pub(crate) outputs_seeded: bool,
+    /// Plan indices in `Feeds` order — the second of the tick's two orders
+    /// (design §7). Distinct from `plans`' own param order, and `ParentEdge`
+    /// enters neither.
+    pub cook_order: Vec<usize>,
 }
 
 /// Everything that can go wrong at compile time. Spec §5's failure table —
@@ -383,13 +390,11 @@ pub fn compile(world: &mut World) -> Result<CompiledGraph, CompileError> {
     let index_of: HashMap<Entity, usize> =
         nodes.iter().enumerate().map(|(i, n)| (n.entity, i)).collect();
 
-    // --- Pass 2.5: structure validation (ParentEdge / FeedsEdge) -----------
+    // --- Pass 2b: structure (design §4) ---------------------------------
     //
-    // Runs before the dataflow pass below so a `ParentEdge`/`FeedsEdge`
-    // mistake is reported in its own vocabulary rather than as a param-edge
-    // failure. Task 5 owns applying `ChildOf` and storing `Structure`
-    // (cook_order, slot sources, parent links) on `CompiledGraph` — compile
-    // only needs to propagate a structural `Err` here.
+    // Before the dataflow pass, and separate from it: structure edges are not
+    // param dependencies, and their failures need their own vocabulary
+    // (parent §2.5).
     let structure_nodes: Vec<crate::structure::StructureNode> = {
         let registry = world.resource::<NodeTypeRegistry>();
         nodes
@@ -409,8 +414,7 @@ pub fn compile(world: &mut World) -> Result<CompiledGraph, CompileError> {
             })
             .collect()
     };
-    // Task 5 is this `Structure`'s consumer.
-    let _structure = crate::structure::validate(world, &structure_nodes, &index_of)?;
+    let structure = crate::structure::validate(world, &structure_nodes, &index_of)?;
 
     // --- Pass 3: validate edges -----------------------------------------
     struct RawEdge {
@@ -609,6 +613,16 @@ pub fn compile(world: &mut World) -> Result<CompiledGraph, CompileError> {
         let event_merges: Vec<(usize, usize)> =
             ranked_event_merges.into_iter().map(|(_, pair)| pair).collect();
 
+        let slots: Vec<Option<SlotSource>> = structure.slots[idx]
+            .iter()
+            .map(|source| {
+                source.map(|source_idx| SlotSource {
+                    entity: nodes[source_idx].entity,
+                    plan_index: topo_rank[source_idx],
+                })
+            })
+            .collect();
+
         plans.push(NodePlan {
             entity: node.entity,
             node_type: node.node_type,
@@ -618,15 +632,31 @@ pub fn compile(world: &mut World) -> Result<CompiledGraph, CompileError> {
             connected_continuous,
             continuous_copies,
             event_merges,
+            slots,
         });
     }
 
-    // --- Pass 6: write NodeRuntime, resetting the prefill gate ------------
-    for node in &nodes {
+    // --- Pass 6: apply structure, write NodeRuntime -----------------------
+    for (idx, node) in nodes.iter().enumerate() {
+        match structure.parents[idx] {
+            Some(parent_idx) => {
+                let parent = nodes[parent_idx].entity;
+                world
+                    .entity_mut(node.entity)
+                    .insert(bevy_ecs::hierarchy::ChildOf(parent));
+            }
+            None => {
+                world.entity_mut(node.entity).remove::<bevy_ecs::hierarchy::ChildOf>();
+            }
+        }
         world.entity_mut(node.entity).insert(NodeRuntime {
             continuous_base: node.continuous_base,
             event_base: node.event_base,
             last_params_tick: None,
+            // Compilation dirties every node, so each cooks once after a load
+            // (design §6).
+            cook_dirty: true,
+            last_slot_ticks: vec![None; structure.slots[idx].len()],
         });
     }
 
@@ -635,12 +665,14 @@ pub fn compile(world: &mut World) -> Result<CompiledGraph, CompileError> {
         continuous_len,
         events_len,
         outputs_seeded: false,
+        cook_order: structure.cook_order.iter().map(|&i| topo_rank[i]).collect(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edges::{FeedsEdge, ParentEdge};
     use crate::test_nodes::{
         ProbeParams, ProbeState, probe_app, spawn_emitter, spawn_int_probe, spawn_probe,
     };
@@ -814,5 +846,142 @@ mod tests {
         let msg = compile(app.world_mut()).unwrap_err().to_string();
         assert!(msg.contains(&format!("{e}")), "{msg}");
         assert!(msg.contains("999"), "{msg}");
+    }
+
+    #[test]
+    fn a_valid_hierarchy_is_applied_as_bevy_child_of() {
+        use crate::test_nodes::{spawn_group, structure_app};
+        use bevy_ecs::hierarchy::ChildOf;
+
+        let mut app = structure_app();
+        let child = spawn_group(app.world_mut());
+        let root = spawn_group(app.world_mut());
+        app.world_mut()
+            .spawn((ParentEdge, EdgeFrom(child), EdgeTo(root)));
+
+        compile(app.world_mut()).expect("compiles");
+
+        assert_eq!(
+            app.world().get::<ChildOf>(child).map(|c| c.0),
+            Some(root),
+            "compile applies the hierarchy"
+        );
+    }
+
+    #[test]
+    fn a_rejected_hierarchy_applies_nothing() {
+        // Design §3: validation gates application, which is what M4's reload
+        // needs — a bad edit must leave the previous graph in force rather
+        // than half-applying itself.
+        use crate::test_nodes::{spawn_group, spawn_probe, structure_app};
+        use bevy_ecs::hierarchy::ChildOf;
+
+        let mut app = structure_app();
+        let good_child = spawn_group(app.world_mut());
+        let root = spawn_group(app.world_mut());
+        let bad_child = spawn_probe(app.world_mut()); // not SPATIAL
+        app.world_mut()
+            .spawn((ParentEdge, EdgeFrom(good_child), EdgeTo(root)));
+        app.world_mut()
+            .spawn((ParentEdge, EdgeFrom(bad_child), EdgeTo(root)));
+
+        assert!(compile(app.world_mut()).is_err());
+
+        assert!(
+            app.world().get::<ChildOf>(good_child).is_none(),
+            "a failed structure pass must not apply the edges that were legal"
+        );
+    }
+
+    #[test]
+    fn reparenting_removes_the_previous_child_of() {
+        use crate::test_nodes::{spawn_group, structure_app};
+        use bevy_ecs::hierarchy::ChildOf;
+
+        let mut app = structure_app();
+        let child = spawn_group(app.world_mut());
+        let first = spawn_group(app.world_mut());
+        let second = spawn_group(app.world_mut());
+        let edge = app
+            .world_mut()
+            .spawn((ParentEdge, EdgeFrom(child), EdgeTo(first)))
+            .id();
+        compile(app.world_mut()).expect("compiles");
+
+        app.world_mut().despawn(edge);
+        app.world_mut()
+            .spawn((ParentEdge, EdgeFrom(child), EdgeTo(second)));
+        compile(app.world_mut()).expect("recompiles");
+
+        assert_eq!(app.world().get::<ChildOf>(child).map(|c| c.0), Some(second));
+    }
+
+    #[test]
+    fn unparenting_removes_child_of_entirely() {
+        use crate::test_nodes::{spawn_group, structure_app};
+        use bevy_ecs::hierarchy::ChildOf;
+
+        let mut app = structure_app();
+        let child = spawn_group(app.world_mut());
+        let root = spawn_group(app.world_mut());
+        let edge = app
+            .world_mut()
+            .spawn((ParentEdge, EdgeFrom(child), EdgeTo(root)))
+            .id();
+        compile(app.world_mut()).expect("compiles");
+
+        app.world_mut().despawn(edge);
+        compile(app.world_mut()).expect("recompiles");
+
+        assert!(app.world().get::<ChildOf>(child).is_none());
+    }
+
+    #[test]
+    fn an_applied_hierarchy_propagates_global_transforms() {
+        // The point of compiling to Bevy's own hierarchy rather than to
+        // something of ours: propagation is free (parent §2.10). Assert it
+        // actually happens rather than assuming the component alone suffices.
+        use crate::test_nodes::{spawn_group, structure_app};
+        use bevy_transform::TransformPlugin;
+        use bevy_transform::prelude::{GlobalTransform, Transform};
+
+        let mut app = structure_app();
+        app.add_plugins(TransformPlugin);
+        let child = spawn_group(app.world_mut());
+        let root = spawn_group(app.world_mut());
+        app.world_mut()
+            .spawn((ParentEdge, EdgeFrom(child), EdgeTo(root)));
+        compile(app.world_mut()).expect("compiles");
+
+        app.world_mut()
+            .entity_mut(root)
+            .insert(Transform::from_xyz(10.0, 0.0, 0.0));
+        app.world_mut()
+            .entity_mut(child)
+            .insert(Transform::from_xyz(0.0, 5.0, 0.0));
+        app.update();
+
+        let global = app
+            .world()
+            .get::<GlobalTransform>(child)
+            .expect("propagation inserts GlobalTransform")
+            .translation();
+        assert_eq!(global, bevy_transform::prelude::Transform::from_xyz(10.0, 5.0, 0.0).translation);
+    }
+
+    #[test]
+    fn a_plan_carries_its_slot_sources() {
+        use crate::test_nodes::{spawn_sinkgeo, spawn_source, structure_app};
+
+        let mut app = structure_app();
+        let src = spawn_source(app.world_mut());
+        let sink = spawn_sinkgeo(app.world_mut());
+        app.world_mut()
+            .spawn((FeedsEdge { slot: 0 }, EdgeFrom(src), EdgeTo(sink)));
+
+        let compiled = compile(app.world_mut()).expect("compiles");
+        let plan = compiled.plans.iter().find(|p| p.entity == sink).unwrap();
+        assert_eq!(plan.slots.len(), 1);
+        assert_eq!(plan.slots[0].as_ref().map(|s| s.entity), Some(src));
     }
 }
