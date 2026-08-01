@@ -971,17 +971,50 @@ mod tests {
 
     #[test]
     fn a_plan_carries_its_slot_sources() {
-        use crate::test_nodes::{spawn_sinkgeo, spawn_source, structure_app};
+        // Spawned as sink, src, probe — deliberately neither in dependency
+        // order nor in `Feeds` order. `sink` depends on `src` via `Feeds`
+        // (the structure domain `NodePlan::slots` is resolved from) and,
+        // separately, on `probe` via a `ParamEdge` (the dataflow domain
+        // `topo_rank`/plan order comes from). The `ParamEdge` defers `sink`
+        // behind both in the compiled plan order, making `topo_rank` a
+        // genuine permutation: node index 0 (sink) lands at plan index 2,
+        // node index 1 (src) lands at plan index 0. Without this
+        // divergence, `topo_rank[i] == i` throughout and `plan_index` could
+        // hold a raw node index without any assertion here noticing.
+        use crate::test_nodes::{
+            Probe, SinkGeo, spawn_probe, spawn_sinkgeo, spawn_source, structure_app,
+        };
 
         let mut app = structure_app();
-        let src = spawn_source(app.world_mut());
         let sink = spawn_sinkgeo(app.world_mut());
+        let src = spawn_source(app.world_mut());
+        let probe = spawn_probe(app.world_mut());
+        edge(app.world_mut(), probe, sink, Probe::OUT_VALUE, SinkGeo::SCALE, PortKind::Continuous);
         app.world_mut()
             .spawn((FeedsEdge { slot: 0 }, EdgeFrom(src), EdgeTo(sink)));
 
         let compiled = compile(app.world_mut()).expect("compiles");
+
+        // Confirm the setup actually produces divergent node-index and
+        // plan-index domains, or the assertions below would pass vacuously
+        // (which is exactly how the finding this covers slipped through).
+        let plan_order: Vec<Entity> = compiled.plans.iter().map(|p| p.entity).collect();
+        assert_ne!(
+            plan_order,
+            vec![sink, src, probe],
+            "test setup must make plan order diverge from spawn order"
+        );
+
         let plan = compiled.plans.iter().find(|p| p.entity == sink).unwrap();
         assert_eq!(plan.slots.len(), 1);
-        assert_eq!(plan.slots[0].as_ref().map(|s| s.entity), Some(src));
+        let slot = plan.slots[0].as_ref().expect("slot filled");
+        assert_eq!(slot.entity, src);
+
+        // `plan_index` must be src's position in `compiled.plans` (a plan
+        // index) — not its position among the raw spawned nodes (a node
+        // index). The two differ here by construction.
+        let expected_plan_index =
+            compiled.plans.iter().position(|p| p.entity == src).expect("src has a plan");
+        assert_eq!(slot.plan_index, expected_plan_index);
     }
 }

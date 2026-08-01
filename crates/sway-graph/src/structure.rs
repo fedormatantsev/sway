@@ -239,12 +239,48 @@ mod tests {
 
     #[test]
     fn a_feeds_chain_orders_producer_before_consumer() {
+        // Spawned as sink, src, probe — not in `Feeds` order and not in
+        // dependency order either. `probe` drives `sink`'s `scale` input via
+        // a `ParamEdge`, a dataflow dependency that lives in a completely
+        // separate graph from the `Feeds` edge below (the one `cook_order`
+        // is computed over). The `ParamEdge` defers `sink` in the compiled
+        // plan order, making `topo_rank` a genuine permutation rather than
+        // the identity. With that permutation in place, using
+        // `compiled.cook_order`'s entries as raw node indices into
+        // `compiled.plans` (i.e. skipping the `topo_rank` conversion)
+        // wouldn't merely fail to help — on this exact graph it inverts
+        // `src_at`/`sink_at`, so the assertion below actively catches it
+        // rather than passing vacuously (see the review finding this
+        // covers).
+        use crate::edges::{ParamEdge, PortKind};
+        use crate::test_nodes::{Probe, SinkGeo};
+
         let mut app = structure_app();
-        let src = spawn_source(app.world_mut());
         let sink = spawn_sinkgeo(app.world_mut());
+        let src = spawn_source(app.world_mut());
+        let probe = spawn_probe(app.world_mut());
+        app.world_mut().spawn((
+            ParamEdge {
+                source_port: Probe::OUT_VALUE,
+                target_port: SinkGeo::SCALE,
+                kind: PortKind::Continuous,
+            },
+            EdgeFrom(probe),
+            EdgeTo(sink),
+        ));
         feeds(app.world_mut(), src, sink, 0);
 
         let compiled = compile(app.world_mut()).expect("compiles");
+
+        // Confirm the setup actually diverges node-index order from plan
+        // order, or the assertions below would pass vacuously.
+        let plan_order: Vec<Entity> = compiled.plans.iter().map(|p| p.entity).collect();
+        assert_ne!(
+            plan_order,
+            vec![sink, src, probe],
+            "test setup must make plan order diverge from spawn order"
+        );
+
         let cooked: Vec<Entity> = compiled
             .cook_order
             .iter()
