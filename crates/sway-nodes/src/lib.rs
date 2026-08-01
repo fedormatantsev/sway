@@ -2,6 +2,7 @@ mod envelope;
 mod lfo;
 mod material;
 mod math;
+mod mesh;
 mod midi;
 mod scene;
 
@@ -9,8 +10,21 @@ pub use envelope::*;
 pub use lfo::*;
 pub use material::*;
 pub use math::*;
+pub use mesh::*;
 pub use midi::*;
 pub use scene::*;
+
+/// Registers the M2b scene node set.
+pub struct SceneNodesPlugin;
+
+impl bevy_app::Plugin for SceneNodesPlugin {
+    fn build(&self, app: &mut bevy_app::App) {
+        sway_graph::register_node_type::<Group>(app);
+        sway_graph::register_node_type::<Rgb>(app);
+        sway_graph::register_node_type::<StandardMaterialNode>(app);
+        sway_graph::register_node_type::<MeshNode>(app);
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -5339,6 +5339,7 @@ dependencies = [
  "bevy_time",
  "ron",
  "serde",
+ "sway-geo",
  "sway-graph",
 ]
 

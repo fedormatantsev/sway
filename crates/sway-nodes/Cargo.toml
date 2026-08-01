@@ -10,6 +10,7 @@ edition.workspace = true
 # testability.
 [dependencies]
 sway-graph.workspace = true
+sway-geo.workspace = true
 bevy.workspace = true
 bevy_app.workspace = true
 bevy_ecs.workspace = true
