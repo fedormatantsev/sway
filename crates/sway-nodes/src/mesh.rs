@@ -66,6 +66,16 @@ pub struct MeshNodeOutputs {}
 /// freed and a new, differently-sized buffer reusing the same address.
 /// The pointer is stored as `usize` and never dereferenced — only ever
 /// compared — so this carries no aliasing or lifetime hazard.
+///
+/// It also tracks `P` only: a change to `N`, `uv`, or the index buffer that
+/// leaves `P`'s `Arc` untouched will *not* trigger a re-upload, even though
+/// `geometry_to_mesh` bakes all four into the same `Mesh`. That failure mode
+/// runs the other way from the ones above — toward a stale mesh silently
+/// rendered, not toward a wasted upload. Nothing in today's operator set
+/// exercises it (`Grid` rewrites every attribute; `Displace` rewrites only
+/// `P`), but nothing stops a future operator — a "recompute normals" or "UV
+/// project" node — from rewriting `N` or `uv` while passing `P` through
+/// unchanged, and this fingerprint would miss it.
 type GeometryFingerprint = (usize, usize);
 
 #[derive(Component, Default)]
@@ -168,11 +178,24 @@ impl NodeType for MeshNode {
         };
 
         let existing_handle = world.get::<MeshNodeState>(node).and_then(|s| s.mesh.clone());
-        match existing_handle {
+        // Only the `None` arm (a fresh `Assets::add`) is infallible. The
+        // `Some(handle)` arm's `get_mut` can return `None` if the asset was
+        // removed out from under a still-strong handle (unusual, but
+        // reachable via a direct `Assets::remove`); when that happens the
+        // write silently does nothing, and `uploaded` must say so — recording
+        // the fingerprint regardless would tell the node this cook's write
+        // succeeded when it did not, and a later cook against the same
+        // (never-actually-written) geometry would then skip retrying it
+        // forever.
+        let uploaded = match existing_handle {
             Some(handle) => {
                 let mut meshes = world.resource_mut::<Assets<Mesh>>();
-                if let Some(mut slot) = meshes.get_mut(&handle) {
-                    *slot = mesh;
+                match meshes.get_mut(&handle) {
+                    Some(mut slot) => {
+                        *slot = mesh;
+                        true
+                    }
+                    None => false,
                 }
             }
             None => {
@@ -183,9 +206,10 @@ impl NodeType for MeshNode {
                 if let Some(mut state) = world.get_mut::<MeshNodeState>(node) {
                     state.mesh = Some(handle);
                 }
+                true
             }
-        }
-        if let Some(mut state) = world.get_mut::<MeshNodeState>(node) {
+        };
+        if uploaded && let Some(mut state) = world.get_mut::<MeshNodeState>(node) {
             state.fingerprint = Some(fingerprint);
         }
     }
@@ -323,6 +347,38 @@ mod tests {
         cook(&mut app, node, source);
 
         assert_eq!(count_modified(&mut app), 0);
+    }
+
+    #[test]
+    fn a_failed_asset_write_does_not_falsely_record_the_new_fingerprint() {
+        // If the mesh handle's asset has been removed out from under a
+        // still-strong handle (reachable via a direct `Assets::remove`),
+        // `Assets::get_mut` returns `None` and `cook`'s write silently does
+        // nothing. The fingerprint must stay at the last value that was
+        // actually written — recording the attempted one anyway would make
+        // the node believe an unwritten geometry had been uploaded, and a
+        // later cook against that same geometry would then never retry.
+        let (mut app, source, node) = app_with_mesh();
+        cook(&mut app, node, source);
+        let original_fingerprint = app.world().get::<MeshNodeState>(node).unwrap().fingerprint;
+
+        let handle = app
+            .world()
+            .get::<MeshNodeState>(node)
+            .and_then(|s| s.mesh.clone())
+            .expect("the first cook created a mesh handle");
+        app.world_mut().resource_mut::<Assets<Mesh>>().remove(&handle);
+
+        // A geometry with a different `P` buffer, so cook does not just skip
+        // on the fingerprint check before ever attempting the write.
+        app.world_mut().entity_mut(source).insert(quad());
+        cook(&mut app, node, source);
+
+        assert_eq!(
+            app.world().get::<MeshNodeState>(node).unwrap().fingerprint,
+            original_fingerprint,
+            "a failed write must not be recorded as if it succeeded"
+        );
     }
 
     #[test]
