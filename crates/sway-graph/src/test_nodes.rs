@@ -772,17 +772,25 @@ pub(crate) fn emitter_app() -> App {
 }
 
 /// App with `Probe`, `Source`, `SludgeSource`, `SinkGeo` and `Group`
-/// registered — everything Task 4's structure-pass tests need. Tests only
-/// call `compile`, never `app.update()`, so no `TimePlugin`/fixed timestep is
-/// required.
+/// registered — everything Task 4's structure-pass tests need, plus Task 7's
+/// cook-pass tests, which do call `app.update()` and need `graph_tick` to
+/// actually run. `TimePlugin` plus a single-step `Fixed` timestep is
+/// `headless_app`'s recipe (see its doc comment for why `bevy_app` alone does
+/// not supply this); the warm-up `update()` burns frame 0's empty
+/// accumulator so the caller's first `app.update()` runs exactly one fixed
+/// tick.
 pub(crate) fn structure_app() -> App {
     let mut app = App::new();
-    app.add_plugins(crate::tick::GraphPlugin);
+    app.add_plugins(TimePlugin)
+        .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
+        .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
+        .add_plugins(crate::tick::GraphPlugin);
     app.init_resource::<CookCounter>();
     register_node_type::<Probe>(&mut app);
     register_node_type::<Source>(&mut app);
     register_node_type::<SludgeSource>(&mut app);
     register_node_type::<SinkGeo>(&mut app);
     register_node_type::<Group>(&mut app);
+    app.update();
     app
 }

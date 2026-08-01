@@ -2,7 +2,7 @@
 //! compiled plan. Spec §6.
 
 use bevy_app::{App, FixedUpdate, Plugin};
-use bevy_ecs::change_detection::Mut;
+use bevy_ecs::change_detection::{Mut, Tick};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use bevy_reflect::PartialReflect;
@@ -11,8 +11,10 @@ use bevy_time::{Fixed, Time};
 use crate::compile::CompiledGraph;
 use crate::edges::NodeRuntime;
 use crate::ports::{Occurrence, PortArena};
-use crate::registry::{NodeTypeRegistry, PrefillFn, SeedOutputsFn, TickFn, TickOfFn};
-use crate::view::{PortView, TickCtx};
+use crate::registry::{
+    CookFn, NodeTypeRegistry, PrefillFn, ProducedTickFn, SeedOutputsFn, TickFn, TickOfFn,
+};
+use crate::view::{PortView, SlotView, TickCtx};
 
 /// Ticks since the graph started running, incremented once per `graph_tick`
 /// call. Exposed as `TickCtx::tick_index`.
@@ -79,10 +81,17 @@ pub fn graph_tick(world: &mut World) {
     };
 
     // The registry borrow: `world` is later borrowed mutably for `tick_fn`,
-    // so the four fn pointers per plan are copied out into locals here,
+    // so the six fn pointers per plan are copied out into locals here,
     // before the loop, rather than holding a `&NodeTypeEntry` across it. Fn
     // pointers are `Copy`, so this is a cheap, allocation-light snapshot.
-    let entries: Vec<(TickFn, PrefillFn, SeedOutputsFn, TickOfFn)> = {
+    let entries: Vec<(
+        TickFn,
+        PrefillFn,
+        SeedOutputsFn,
+        TickOfFn,
+        Option<CookFn>,
+        ProducedTickFn,
+    )> = {
         let registry = world.resource::<NodeTypeRegistry>();
         compiled
             .plans
@@ -95,14 +104,21 @@ pub fn graph_tick(world: &mut World) {
                         plan.entity, plan.node_type
                     )
                 });
-                (entry.tick, entry.prefill, entry.seed_outputs, entry.params_changed_tick)
+                (
+                    entry.tick,
+                    entry.prefill,
+                    entry.seed_outputs,
+                    entry.params_changed_tick,
+                    entry.cook,
+                    entry.produced_change_tick,
+                )
             })
             .collect()
     };
 
     world.resource_scope(|world: &mut World, mut arena: Mut<PortArena>| {
         if !compiled.outputs_seeded {
-            for (plan, &(_, _, seed_outputs_fn, _)) in compiled.plans.iter().zip(&entries) {
+            for (plan, &(_, _, seed_outputs_fn, _, _, _)) in compiled.plans.iter().zip(&entries) {
                 seed_outputs_fn(&mut arena, plan);
             }
             compiled.outputs_seeded = true;
@@ -110,7 +126,7 @@ pub fn graph_tick(world: &mut World) {
 
         arena.clear_events();
 
-        for (plan, &(tick_fn, prefill_fn, _, params_changed_tick_fn)) in
+        for (plan, &(tick_fn, prefill_fn, _, params_changed_tick_fn, _, _)) in
             compiled.plans.iter().zip(&entries)
         {
             // `dirty` accumulates this tick's reasons to cook; it is OR-ed
@@ -187,6 +203,47 @@ pub fn graph_tick(world: &mut World) {
                 &plan.connected_continuous,
             );
             tick_fn(world, plan.entity, &mut view, &ctx);
+        }
+
+        // --- Pass 2: cooks, in Feeds order (design §7) --------------------
+        //
+        // Ticks precede cooks globally, so a cook always sees its own node's
+        // effective params already applied — parent §2.11's step B before its
+        // step C. Inside the resource_scope, so the arena is provably out of
+        // the world here too: a cook has no business touching ports.
+        for &plan_idx in &compiled.cook_order {
+            let Some(cook_fn) = entries[plan_idx].4 else {
+                continue;
+            };
+            let plan = &compiled.plans[plan_idx];
+
+            // Stored ticks, kept for the geometry side only — a product is
+            // large and not usefully value-compared (design §6). A source
+            // whose `produced_change_tick` is None never dirties its
+            // consumers, which is exactly right for a material handle.
+            let current: Vec<Option<Tick>> = plan
+                .slots
+                .iter()
+                .map(|slot| {
+                    slot.and_then(|source| (entries[source.plan_index].5)(world, source.entity))
+                })
+                .collect();
+
+            let dirty = match world.get::<NodeRuntime>(plan.entity) {
+                Some(rt) => rt.cook_dirty || rt.last_slot_ticks != current,
+                None => false,
+            };
+            if !dirty {
+                continue;
+            }
+
+            let view = SlotView::new(&plan.slots);
+            cook_fn(world, plan.entity, &view);
+
+            if let Some(mut rt) = world.get_mut::<NodeRuntime>(plan.entity) {
+                rt.cook_dirty = false;
+                rt.last_slot_ticks = current;
+            }
         }
     });
 
@@ -426,5 +483,107 @@ mod tests {
         app.update();
 
         assert!(app.world().get::<NodeRuntime>(a).unwrap().cook_dirty);
+    }
+
+    mod cooking {
+        use super::*;
+        use bevy_ecs::entity::Entity;
+        use crate::edges::{EdgeFrom, EdgeTo, FeedsEdge};
+        use crate::test_nodes::{
+            BlobData, CookCounter, SinkGeoParams, SourceParams, spawn_sinkgeo, spawn_source,
+            structure_app,
+        };
+
+        fn cooks(app: &App) -> u32 {
+            app.world().resource::<CookCounter>().0
+        }
+
+        fn chain(app: &mut App) -> (Entity, Entity) {
+            let src = spawn_source(app.world_mut());
+            let sink = spawn_sinkgeo(app.world_mut());
+            app.world_mut()
+                .spawn((FeedsEdge { slot: 0 }, EdgeFrom(src), EdgeTo(sink)));
+            recompile(app);
+            (src, sink)
+        }
+
+        #[test]
+        fn every_node_cooks_exactly_once_after_compilation() {
+            let mut app = structure_app();
+            let (_src, sink) = chain(&mut app);
+
+            app.update();
+
+            assert_eq!(cooks(&app), 2, "one cook each");
+            assert!(app.world().get::<BlobData>(sink).is_some());
+        }
+
+        #[test]
+        fn a_steady_graph_cooks_nothing_after_the_first_tick() {
+            // The negative assertion §10 asks for, on a counter rather than
+            // on an output that merely happens to be unchanged.
+            let mut app = structure_app();
+            let _ = chain(&mut app);
+            app.update();
+            let after_first = cooks(&app);
+
+            for _ in 0..10 {
+                app.update();
+            }
+
+            assert_eq!(cooks(&app), after_first, "an idle graph must not cook");
+        }
+
+        #[test]
+        fn an_upstream_cook_propagates_to_its_feeds_consumer_in_the_same_tick() {
+            let mut app = structure_app();
+            let (src, sink) = chain(&mut app);
+            app.update();
+            let baseline = cooks(&app);
+
+            app.world_mut().get_mut::<SourceParams>(src).unwrap().seed = 7.0;
+            app.update();
+
+            assert_eq!(cooks(&app), baseline + 2, "both ends re-cook");
+            assert_eq!(app.world().get::<BlobData>(sink), Some(&BlobData(7)));
+        }
+
+        #[test]
+        fn a_param_change_on_one_node_does_not_cook_its_upstream() {
+            // Dirt flows with Feeds direction only. A downstream param edit
+            // must not re-cook the operator above it.
+            let mut app = structure_app();
+            let (_src, sink) = chain(&mut app);
+            app.update();
+            let baseline = cooks(&app);
+
+            app.world_mut().get_mut::<SinkGeoParams>(sink).unwrap().scale = 2.0;
+            app.update();
+
+            assert_eq!(cooks(&app), baseline + 1, "only the edited node cooks");
+        }
+
+        #[test]
+        fn a_node_added_after_an_upstream_cook_still_cooks_against_it() {
+            // §2.11's robustness case: the gate must survive a node joining
+            // mid-session, which a `Changed<T>` filter would not.
+            let mut app = structure_app();
+            let src = spawn_source(app.world_mut());
+            recompile(&mut app);
+            app.update();
+            for _ in 0..5 {
+                app.update();
+            }
+            let baseline = cooks(&app);
+
+            let sink = spawn_sinkgeo(app.world_mut());
+            app.world_mut()
+                .spawn((FeedsEdge { slot: 0 }, EdgeFrom(src), EdgeTo(sink)));
+            recompile(&mut app);
+            app.update();
+
+            assert!(cooks(&app) > baseline, "the new node must cook");
+            assert!(app.world().get::<BlobData>(sink).is_some());
+        }
     }
 }
