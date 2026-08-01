@@ -70,6 +70,10 @@ pub struct SchemaHalf {
 pub enum SchemaError {
     NotAStruct { type_path: &'static str },
     UnregisteredEventField { type_path: &'static str, field: &'static str },
+    UnregisteredSlotField {
+        type_path: &'static str,
+        field: &'static str,
+    },
 }
 
 impl fmt::Display for SchemaError {
@@ -84,6 +88,12 @@ impl fmt::Display for SchemaError {
                 "`{type_path}.{field}` looks like an event port but its type is not \
                  registered as one — call `register_event_port::<Payload>(app)` in \
                  this node type's `register`"
+            ),
+            Self::UnregisteredSlotField { type_path, field } => write!(
+                f,
+                "`{type_path}.{field}` looks like a Feeds slot but its type is not \
+                 registered as one — call `register_slot::<Capability>(app)` in this \
+                 node type's `register`"
             ),
         }
     }
