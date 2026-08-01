@@ -113,11 +113,25 @@ pub fn graph_tick(world: &mut World) {
         for (plan, &(tick_fn, prefill_fn, _, params_changed_tick_fn)) in
             compiled.plans.iter().zip(&entries)
         {
+            // `dirty` accumulates this tick's reasons to cook; it is OR-ed
+            // into the sticky flag below rather than assigned, so a reason
+            // raised on an earlier tick is not lost (design §6).
+            let mut dirty = false;
+
             // Gather: copy each incoming edge's source slot into the input
             // slot. Continuous overwrites; events append (already merged in
             // source-rank order by the compiler).
             for &(src, dst) in &plan.continuous_copies {
-                arena.continuous[dst] = clone_slot(&*arena.continuous[src]);
+                let incoming = clone_slot(&*arena.continuous[src]);
+                // `reflect_partial_eq` returns None for values that cannot be
+                // compared — including the `()` a freshly-resized arena slot
+                // holds — and None must mean "changed", never "unchanged".
+                let changed = arena.continuous[dst]
+                    .reflect_partial_eq(&*incoming)
+                    .map(|equal| !equal)
+                    .unwrap_or(true);
+                arena.continuous[dst] = incoming;
+                dirty |= changed;
             }
             for &(src, dst) in &plan.event_merges {
                 // `arena.events[src]` and `arena.events[dst]` alias the same
@@ -150,9 +164,17 @@ pub fn graph_tick(world: &mut World) {
                 .and_then(|r| r.last_params_tick);
             if last != current {
                 prefill_fn(world, plan.entity, &mut arena, plan);
+                dirty = true;
                 if let Some(mut rt) = world.get_mut::<NodeRuntime>(plan.entity) {
                     rt.last_params_tick = current;
                 }
+            }
+
+            // Only touch NodeRuntime when there is something to record —
+            // an unconditional `get_mut` would churn its change tick every
+            // tick for every node.
+            if dirty && let Some(mut rt) = world.get_mut::<NodeRuntime>(plan.entity) {
+                rt.cook_dirty = true;
             }
 
             // Dispatch.
@@ -336,5 +358,73 @@ mod tests {
         app.update();
 
         assert_eq!(sink_offsets(&app, sink), vec![0.001, 0.006]);
+    }
+
+    #[test]
+    fn a_changed_driven_input_dirties_the_node() {
+        // The case that fails if the gate reads Params change ticks: a
+        // connected port shadows the authored value, so Params never moves
+        // while the effective parameter changes every tick (design §6).
+        use crate::test_nodes::{Gain, spawn_gain};
+
+        let mut app = gain_app();
+        // bias must be nonzero: Gain::tick writes `gain * bias`, so with
+        // bias == 0.0 the output would be pinned at 0.0 for every value of
+        // gain and this test could never distinguish "changed" from "not".
+        let src = spawn_gain(app.world_mut(), 2.0, 1.0);
+        let dst = spawn_gain(app.world_mut(), 1.0, 0.0);
+        connect(app.world_mut(), src, Gain::OUT_VALUE, dst, Gain::GAIN);
+        recompile(&mut app);
+
+        app.update();
+        // Clear the compile-time dirty so the next assertion is about gather.
+        app.world_mut().get_mut::<NodeRuntime>(dst).unwrap().cook_dirty = false;
+
+        app.world_mut().get_mut::<GainParams>(src).unwrap().gain = 5.0;
+        app.update();
+
+        assert!(
+            app.world().get::<NodeRuntime>(dst).unwrap().cook_dirty,
+            "a driven input that changed must dirty its node"
+        );
+    }
+
+    #[test]
+    fn a_steady_driven_input_does_not_dirty_the_node() {
+        use crate::test_nodes::{Gain, spawn_gain};
+
+        let mut app = gain_app();
+        let src = spawn_gain(app.world_mut(), 2.0, 0.0);
+        let dst = spawn_gain(app.world_mut(), 1.0, 0.0);
+        connect(app.world_mut(), src, Gain::OUT_VALUE, dst, Gain::GAIN);
+        recompile(&mut app);
+
+        app.update();
+        app.world_mut().get_mut::<NodeRuntime>(dst).unwrap().cook_dirty = false;
+
+        for _ in 0..5 {
+            app.update();
+        }
+
+        assert!(
+            !app.world().get::<NodeRuntime>(dst).unwrap().cook_dirty,
+            "an unchanged value must not dirty its node every tick"
+        );
+    }
+
+    #[test]
+    fn an_authored_param_edit_dirties_the_node() {
+        use crate::test_nodes::{spawn_gain};
+
+        let mut app = gain_app();
+        let a = spawn_gain(app.world_mut(), 1.0, 0.0);
+        recompile(&mut app);
+        app.update();
+        app.world_mut().get_mut::<NodeRuntime>(a).unwrap().cook_dirty = false;
+
+        app.world_mut().get_mut::<GainParams>(a).unwrap().gain = 3.0;
+        app.update();
+
+        assert!(app.world().get::<NodeRuntime>(a).unwrap().cook_dirty);
     }
 }
