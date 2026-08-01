@@ -42,10 +42,11 @@ pub(crate) extern "C" fn read_proc(
     _src: *mut c_void,
 ) {
     // SAFETY: `refcon` is the boxed Sender pointer handed to
-    // MIDIInputPortCreate. `Drop for MidiInput` disposes the CoreMIDI port
-    // (and client) before the `Box<Sender>` it points at is freed, so as long
-    // as this callback can only run while the port is alive, the pointer is
-    // valid here. `list` is owned by CoreMIDI for the duration of the call.
+    // MIDIInputPortCreate / MIDIDestinationCreate. `Drop for MidiInput`
+    // disposes the CoreMIDI destination and port (and client) before the
+    // `Box<Sender>` it points at is freed, so as long as this callback can
+    // only run while those are alive, the pointer is valid here. `list` is
+    // owned by CoreMIDI for the duration of the call.
     unsafe {
         let tx = &*(refcon as *const Sender<MidiEvent>);
         let n = (*list).num_packets;
@@ -84,35 +85,54 @@ pub(crate) extern "C" fn read_proc(
     }
 }
 
-/// Keeps the CoreMIDI client, port, and the boxed sender the callback points
-/// at alive. Dropping it disposes the CoreMIDI port and client first (so
-/// `read_proc` can no longer be invoked), then frees the boxed sender.
+/// Display name of the virtual CoreMIDI destination published for other apps
+/// (e.g. Ableton Live MIDI To).
+pub const VIRTUAL_DESTINATION_NAME: &str = "Sway";
+
+/// Stable CoreMIDI unique ID for the virtual destination (`'SWAY'`).
+/// Persisting this across launches lets Ableton keep a saved MIDI To routing.
+const VIRTUAL_DESTINATION_UNIQUE_ID: i32 = 0x5357_4159;
+
+/// Non-zero advance schedule (µs). With 0, CoreMIDI holds DAW packets until
+/// their timestamp; Ableton then often appears to send into a black hole.
+/// Non-zero means we receive ASAP and schedule via `MidiInbox` timestamps.
+const VIRTUAL_DESTINATION_ADVANCE_SCHEDULE_US: i32 = 100_000;
+
+/// Keeps the CoreMIDI client, input port, virtual destination, and the boxed
+/// sender the callback points at alive. Dropping it disposes CoreMIDI objects
+/// first (so `read_proc` can no longer be invoked), then frees the boxed sender.
 pub struct MidiInput {
     _client: MIDIClientRef,
     _port: MIDIPortRef,
+    _dest: MIDIEndpointRef,
     _tx: Box<Sender<MidiEvent>>,
 }
 
 impl Drop for MidiInput {
     fn drop(&mut self) {
-        // SAFETY: `_port` and `_client` were created together in `open_input`
-        // and are only ever disposed here. Rust drops struct fields in
-        // declaration order after `Drop::drop` returns, so disposing the port
-        // (which stops CoreMIDI from invoking `read_proc` with this port's
-        // refcon) and the client here, before `_tx` is freed below, is what
-        // guarantees `read_proc` never dereferences a dangling `Box<Sender>`.
+        // SAFETY: `_dest`, `_port`, and `_client` were created together in
+        // `open_input` and are only ever disposed here. Rust drops struct
+        // fields in declaration order after `Drop::drop` returns, so disposing
+        // the destination and port (which stops CoreMIDI from invoking
+        // `read_proc` with this refcon) and the client here, before `_tx` is
+        // freed below, is what guarantees `read_proc` never dereferences a
+        // dangling `Box<Sender>`.
         unsafe {
+            MIDIEndpointDispose(self._dest);
             MIDIPortDispose(self._port);
             MIDIClientDispose(self._client);
         }
     }
 }
 
-/// Opens every source whose display name contains `filter` and streams events
-/// into `tx`. An empty filter connects every source.
+/// Opens MIDI input: publishes a virtual destination named
+/// [`VIRTUAL_DESTINATION_NAME`], connects every source whose display name
+/// contains `filter`, and streams events into `tx`. An empty filter connects
+/// every source.
 pub fn open_input(filter: &str, tx: Sender<MidiEvent>) -> Result<MidiInput, OSStatus> {
     let client_name = CfString::new("sway");
     let port_name = CfString::new("sway-in");
+    let dest_name = CfString::new(VIRTUAL_DESTINATION_NAME);
 
     let mut client: MIDIClientRef = 0;
     // SAFETY: `client_name` outlives the call; `client` is a valid out slot.
@@ -125,13 +145,41 @@ pub fn open_input(filter: &str, tx: Sender<MidiEvent>) -> Result<MidiInput, OSSt
     let refcon = (&*tx) as *const Sender<MidiEvent> as *mut c_void;
     let mut port: MIDIPortRef = 0;
     // SAFETY: `refcon` points into the Box returned inside `MidiInput`, which
-    // the caller must keep alive for the lifetime of the port.
+    // the caller must keep alive for the lifetime of the port and destination.
     let st = unsafe { MIDIInputPortCreate(client, port_name.0, read_proc, refcon, &mut port) };
     if st != 0 {
         // SAFETY: `client` was just created above and is otherwise unused;
         // dispose it so it is not leaked on this error path.
         unsafe { MIDIClientDispose(client) };
         return Err(st);
+    }
+
+    let mut dest: MIDIEndpointRef = 0;
+    // SAFETY: same `refcon` lifetime as the input port; `dest` is a valid out
+    // slot. On failure we dispose the port and client created above.
+    let st =
+        unsafe { MIDIDestinationCreate(client, dest_name.0, read_proc, refcon, &mut dest) };
+    if st != 0 {
+        unsafe {
+            MIDIPortDispose(port);
+            MIDIClientDispose(client);
+        }
+        return Err(st);
+    }
+
+    // Best-effort destination properties for DAW clients. Failures here are
+    // non-fatal: the destination still exists and can receive MIDISend.
+    unsafe {
+        let _ = MIDIObjectSetIntegerProperty(
+            dest,
+            kMIDIPropertyUniqueID,
+            VIRTUAL_DESTINATION_UNIQUE_ID,
+        );
+        let _ = MIDIObjectSetIntegerProperty(
+            dest,
+            kMIDIPropertyAdvanceScheduleTimeMuSec,
+            VIRTUAL_DESTINATION_ADVANCE_SCHEDULE_US,
+        );
     }
 
     // SAFETY: enumeration plus connect against a port we just created.
@@ -159,6 +207,7 @@ pub fn open_input(filter: &str, tx: Sender<MidiEvent>) -> Result<MidiInput, OSSt
     Ok(MidiInput {
         _client: client,
         _port: port,
+        _dest: dest,
         _tx: tx,
     })
 }

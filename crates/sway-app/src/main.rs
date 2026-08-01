@@ -135,16 +135,46 @@ fn main() {
         }
     }
     if args.list_only {
+        // Briefly publish the virtual destination so `--list` shows what
+        // Ableton will see while sway is running.
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let _midi = sway_midi::open_input("", tx).ok();
+        let destinations = sway_midi::list_destinations();
+        if destinations.is_empty() {
+            eprintln!("no CoreMIDI destinations found");
+        } else {
+            eprintln!("CoreMIDI destinations:");
+            for (i, name) in &destinations {
+                eprintln!("  {i}: {name}");
+            }
+        }
         return;
     }
 
+    let destinations = sway_midi::list_destinations();
+    if destinations.is_empty() {
+        eprintln!("no CoreMIDI destinations found");
+    } else {
+        eprintln!("CoreMIDI destinations:");
+        for (i, name) in &destinations {
+            eprintln!("  {i}: {name}");
+        }
+    }
+
     let (tx, rx) = crossbeam_channel::unbounded();
-    // Held for the process lifetime: dropping it closes the port and frees the
-    // sender the CoreMIDI callback points at. `shell::run` below blocks until
-    // the window closes, so this stays alive on `main`'s stack for exactly as
-    // long as it needs to.
+    // Held for the process lifetime: dropping it closes the port/destination
+    // and frees the sender the CoreMIDI callback points at. `shell::run`
+    // below blocks until the window closes, so this stays alive on `main`'s
+    // stack for exactly as long as it needs to.
     let _midi = match sway_midi::open_input(&args.midi_filter, tx) {
-        Ok(conn) => Some(conn),
+        Ok(conn) => {
+            eprintln!(
+                "virtual MIDI destination '{}' published (Ableton: MIDI To → {})",
+                sway_midi::VIRTUAL_DESTINATION_NAME,
+                sway_midi::VIRTUAL_DESTINATION_NAME,
+            );
+            Some(conn)
+        }
         Err(status) => {
             eprintln!("could not open MIDI input (OSStatus {status}); continuing without MIDI");
             None

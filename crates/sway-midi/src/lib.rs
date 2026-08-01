@@ -4,7 +4,7 @@ pub mod ffi;
 
 pub mod input;
 
-pub use input::{MidiEvent, MidiInput, open_input};
+pub use input::{MidiEvent, MidiInput, VIRTUAL_DESTINATION_NAME, open_input};
 
 /// Returns the current mach absolute host time in CoreMIDI's timestamp units.
 pub fn host_time_now() -> u64 {
@@ -32,6 +32,24 @@ pub fn list_sources() -> Vec<(usize, String)> {
             (
                 i,
                 ffi::object_display_name(ep).unwrap_or_else(|| format!("<source {i}>")),
+            )
+        })
+        .collect()
+}
+
+/// Lists every CoreMIDI destination by index and display name, for preflight
+/// output (includes other apps' destinations and, while sway holds an open
+/// input, the virtual [`VIRTUAL_DESTINATION_NAME`] endpoint).
+pub fn list_destinations() -> Vec<(usize, String)> {
+    // SAFETY: plain enumeration; no pointer is retained across the call.
+    let n = unsafe { ffi::MIDIGetNumberOfDestinations() };
+    (0..n)
+        .map(|i| {
+            // SAFETY: `i` is below the count returned above.
+            let ep = unsafe { ffi::MIDIGetDestination(i) };
+            (
+                i,
+                ffi::object_display_name(ep).unwrap_or_else(|| format!("<destination {i}>")),
             )
         })
         .collect()
@@ -129,14 +147,96 @@ mod tests {
 
     /// Opens an input with a filter that matches no source (or every source,
     /// on a machine with none present) and drops it immediately. This
-    /// exercises the `Drop for MidiInput` path — port and client disposal —
-    /// without needing real MIDI hardware, and without ever reaching
-    /// `read_proc` since nothing is connected.
+    /// exercises the `Drop for MidiInput` path — destination, port, and
+    /// client disposal — without needing real MIDI hardware, and without
+    /// ever reaching `read_proc` since nothing is connected.
     #[test]
     fn dropping_an_unmatched_input_does_not_crash() {
         let (tx, _rx) = crossbeam_channel::unbounded::<MidiEvent>();
         let input = crate::input::open_input("no-such-source-xyz", tx).expect("open_input");
         drop(input);
+    }
+
+    /// While an input is held open, the virtual destination must appear in
+    /// CoreMIDI's destination list under [`VIRTUAL_DESTINATION_NAME`].
+    #[test]
+    fn open_input_publishes_virtual_destination() {
+        let (tx, _rx) = crossbeam_channel::unbounded::<MidiEvent>();
+        let input = crate::input::open_input("no-such-source-xyz", tx).expect("open_input");
+        let destinations = list_destinations();
+        assert!(
+            destinations
+                .iter()
+                .any(|(_, name)| name.contains(VIRTUAL_DESTINATION_NAME)),
+            "expected a destination containing {VIRTUAL_DESTINATION_NAME:?}, got {destinations:?}"
+        );
+        drop(input);
+    }
+
+    /// Ableton (and other DAWs) send to virtual destinations via MIDISend.
+    /// If our destination callback never fires for those packets, Live will
+    /// show "Sway" in MIDI To but the cube will never move.
+    #[test]
+    fn virtual_destination_receives_midisend_note_on() {
+        use crate::ffi::{
+            MIDIClientCreate, MIDIClientDispose, MIDIOutputPortCreate, MIDIPacket,
+            MIDIPacketList, MIDIPortDispose, MIDISend, CfString,
+        };
+        use std::time::Duration;
+
+        let (tx, rx) = crossbeam_channel::unbounded::<MidiEvent>();
+        let input = crate::input::open_input("no-such-source-xyz", tx).expect("open_input");
+
+        let dest = list_destinations()
+            .into_iter()
+            .find(|(_, name)| name.contains(VIRTUAL_DESTINATION_NAME))
+            .map(|(i, _)| unsafe { crate::ffi::MIDIGetDestination(i) })
+            .expect("Sway destination must be published");
+
+        let client_name = CfString::new("sway-midi-test-out");
+        let port_name = CfString::new("sway-midi-test-out-port");
+        let mut client = 0;
+        let mut port = 0;
+        unsafe {
+            assert_eq!(
+                MIDIClientCreate(client_name.0, None, std::ptr::null_mut(), &mut client),
+                0
+            );
+            assert_eq!(MIDIOutputPortCreate(client, port_name.0, &mut port), 0);
+
+            let mut list = MIDIPacketList {
+                num_packets: 1,
+                packet: [MIDIPacket {
+                    time_stamp: host_time_now(),
+                    length: 3,
+                    data: [0; 256],
+                }],
+            };
+            list.packet[0].data[0] = 0x90;
+            list.packet[0].data[1] = 60;
+            list.packet[0].data[2] = 100;
+
+            assert_eq!(MIDISend(port, dest, &list), 0);
+        }
+
+        let event = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("virtual destination must deliver MIDISend note-on to read_proc");
+        assert_eq!((event.status, event.data1, event.data2), (0x90, 60, 100));
+
+        unsafe {
+            MIDIPortDispose(port);
+            MIDIClientDispose(client);
+        }
+        drop(input);
+    }
+
+    #[test]
+    fn enumerating_destinations_does_not_crash() {
+        let destinations = list_destinations();
+        for (i, name) in &destinations {
+            assert!(!name.is_empty(), "destination {i} has an empty name");
+        }
     }
 
     /// Pins `MIDIPacket`/`MIDIPacketList` to the exact layout CoreMIDI uses,

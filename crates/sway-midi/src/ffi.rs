@@ -73,13 +73,41 @@ unsafe extern "C" {
 
     pub fn MIDIPortDispose(port: MIDIPortRef) -> OSStatus;
     pub fn MIDIClientDispose(client: MIDIClientRef) -> OSStatus;
+    pub fn MIDIEndpointDispose(endpt: MIDIEndpointRef) -> OSStatus;
+
+    pub fn MIDIDestinationCreate(
+        client: MIDIClientRef,
+        name: CFStringRef,
+        read_proc: MIDIReadProc,
+        refcon: *mut c_void,
+        out_dest: *mut MIDIEndpointRef,
+    ) -> OSStatus;
 
     pub fn MIDIGetNumberOfSources() -> ItemCount;
     pub fn MIDIGetSource(index: ItemCount) -> MIDIEndpointRef;
+    pub fn MIDIGetNumberOfDestinations() -> ItemCount;
+    pub fn MIDIGetDestination(index: ItemCount) -> MIDIEndpointRef;
     pub fn MIDIObjectGetStringProperty(
         obj: MIDIObjectRef,
         property: CFStringRef,
         out: *mut CFStringRef,
+    ) -> OSStatus;
+    pub fn MIDIObjectSetIntegerProperty(
+        obj: MIDIObjectRef,
+        property: CFStringRef,
+        value: i32,
+    ) -> OSStatus;
+
+    pub fn MIDIOutputPortCreate(
+        client: MIDIClientRef,
+        port_name: CFStringRef,
+        out_port: *mut MIDIPortRef,
+    ) -> OSStatus;
+
+    pub fn MIDISend(
+        port: MIDIPortRef,
+        dest: MIDIEndpointRef,
+        packet_list: *const MIDIPacketList,
     ) -> OSStatus;
 }
 
@@ -98,6 +126,8 @@ unsafe extern "C" {
     ) -> bool;
     pub fn CFRelease(cf: *const c_void);
     pub static kMIDIPropertyDisplayName: CFStringRef;
+    pub static kMIDIPropertyAdvanceScheduleTimeMuSec: CFStringRef;
+    pub static kMIDIPropertyUniqueID: CFStringRef;
 }
 
 pub const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
