@@ -3673,7 +3673,7 @@ mod tests {
     use bevy::prelude::*;
     use sway_geo::{Geometry, GeoNodesPlugin};
     use sway_graph::{CompiledGraph, GraphPlugin};
-    use sway_nodes::{SceneNodesPlugin, SignalNodesPlugin};
+    use sway_nodes::{GroupState, SceneNodesPlugin, SignalNodesPlugin};
 
     fn app() -> App {
         let mut app = App::new();
@@ -3707,19 +3707,29 @@ mod tests {
     #[test]
     fn the_mesh_is_parented_under_the_root_group() {
         use bevy::ecs::hierarchy::ChildOf;
+        use sway_nodes::MeshNodeState;
 
         let mut app = app();
         setup_demo_graph(app.world_mut());
 
-        let mut meshes = app.world_mut().query_filtered::<Entity, With<Mesh3d>>();
-        // Mesh3d appears only after the first cook, so parenting is checked
-        // through the ChildOf compile applied, not through the drawn mesh.
-        let mut parented = app.world_mut().query::<&ChildOf>();
+        // Exactly one ChildOf in the demo graph, and it must run from the
+        // Mesh node to the root Group — the one place a Feeds chain enters
+        // the ChildOf tree (design §8).
+        let mut children = app
+            .world_mut()
+            .query_filtered::<(Entity, &ChildOf), With<MeshNodeState>>();
+        let found: Vec<(Entity, Entity)> = children
+            .iter(app.world())
+            .map(|(entity, parent)| (entity, parent.0))
+            .collect();
+        assert_eq!(found.len(), 1, "exactly one Mesh node, and it is parented");
+
+        let (mesh_entity, parent_entity) = found[0];
         assert!(
-            parented.iter(app.world()).count() >= 1,
-            "compile must have applied the hierarchy"
+            app.world().get::<GroupState>(parent_entity).is_some(),
+            "the Mesh node's parent must be the root Group"
         );
-        let _ = meshes;
+        assert_ne!(mesh_entity, parent_entity);
     }
 }
 ```
