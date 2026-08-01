@@ -8,6 +8,7 @@ use core::any::TypeId;
 use core::fmt;
 
 use bevy_app::App;
+use bevy_reflect::structs::StructInfo;
 use bevy_reflect::{FromType, Reflect, TypePath, TypeRegistry, Typed};
 
 use crate::ports::Event;
@@ -101,11 +102,22 @@ impl fmt::Display for SchemaError {
 
 impl core::error::Error for SchemaError {}
 
-pub fn derive_schema<T: Typed>(registry: &TypeRegistry) -> Result<SchemaHalf, SchemaError> {
+/// Casts `T`'s reflected [`TypeInfo`] to its [`StructInfo`], or reports the
+/// one error both `derive_schema` and `derive_slots` share: `T` must be a
+/// struct to derive a schema from it. Both callers go on to walk the result
+/// with `field_len`/`field_at`, so a `&'static StructInfo` — not a
+/// `dyn`-erased view — is exactly what each needs.
+///
+/// [`TypeInfo`]: bevy_reflect::TypeInfo
+pub(crate) fn struct_info<T: Typed>() -> Result<&'static StructInfo, SchemaError> {
     let info = T::type_info();
-    let s = info.as_struct().map_err(|_| SchemaError::NotAStruct {
+    info.as_struct().map_err(|_| SchemaError::NotAStruct {
         type_path: info.type_path(),
-    })?;
+    })
+}
+
+pub fn derive_schema<T: Typed>(registry: &TypeRegistry) -> Result<SchemaHalf, SchemaError> {
+    let s = struct_info::<T>()?;
 
     let mut half = SchemaHalf::default();
     for i in 0..s.field_len() {
@@ -124,7 +136,7 @@ pub fn derive_schema<T: Typed>(registry: &TypeRegistry) -> Result<SchemaHalf, Sc
                 // rather than letting it through silently.
                 if is_event_marker_path(field.type_path()) {
                     return Err(SchemaError::UnregisteredEventField {
-                        type_path: info.type_path(),
+                        type_path: s.type_path(),
                         field: field.name(),
                     });
                 }

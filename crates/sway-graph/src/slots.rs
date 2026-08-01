@@ -13,7 +13,7 @@ use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_reflect::prelude::ReflectDefault;
 use bevy_reflect::{FromType, Reflect, TypePath, TypeRegistry, Typed};
 
-use crate::schema::SchemaError;
+use crate::schema::{SchemaError, struct_info};
 
 /// Type data marking a type as a slot marker, carrying the capability the
 /// slot accepts.
@@ -95,10 +95,7 @@ pub struct SlotField {
 }
 
 pub fn derive_slots<T: Typed>(registry: &TypeRegistry) -> Result<Vec<SlotField>, SchemaError> {
-    let info = T::type_info();
-    let s = info.as_struct().map_err(|_| SchemaError::NotAStruct {
-        type_path: info.type_path(),
-    })?;
+    let s = struct_info::<T>()?;
 
     let mut slots = Vec::new();
     for i in 0..s.field_len() {
@@ -116,7 +113,7 @@ pub fn derive_slots<T: Typed>(registry: &TypeRegistry) -> Result<Vec<SlotField>,
                 // a slot at all.
                 if is_slot_marker_path(field.type_path()) {
                     return Err(SchemaError::UnregisteredSlotField {
-                        type_path: info.type_path(),
+                        type_path: s.type_path(),
                         field: field.name(),
                     });
                 }
