@@ -1,4 +1,5 @@
-mod bridge;
+mod demo_graph;
+mod midi_feed;
 mod presenter;
 mod scene;
 mod shell;
@@ -7,15 +8,17 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::math::UVec2;
 use bevy::prelude::*;
 use bevy::window::Monitor;
-use bridge::{MidiRx, MidiTimeEpoch, feed_midi, setup_cube_graph};
-use scene::{apply_level, setup_scene};
+use demo_graph::setup_demo_graph;
+use midi_feed::{MidiRx, MidiTimeEpoch, feed_midi};
+use scene::setup_scene;
+use sway_geo::GeoNodesPlugin;
 use sway_graph::GraphPlugin;
-use sway_nodes::SignalNodesPlugin;
+use sway_nodes::{SceneNodesPlugin, SignalNodesPlugin};
 
 /// Provisional graph tick rate pending the measurements specified in spec §11.
 const TICK_HZ: f64 = 120.0;
 
-/// Which M1 render spike (if any) to run instead of the M0 cube. See
+/// Which M1 render spike (if any) to run instead of the M2b demo graph. See
 /// `main`'s demo-dispatch match for how each variant is wired up, and its
 /// comment on the camera-collision hazard between these demos and
 /// `scene::setup_scene`.
@@ -200,21 +203,23 @@ fn main() {
             FrameTimeDiagnosticsPlugin::default(),
             GraphPlugin,
             SignalNodesPlugin,
+            GeoNodesPlugin,
+            SceneNodesPlugin,
         ))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
         .insert_resource(MidiRx(rx))
         .init_resource::<MidiTimeEpoch>()
-        .add_systems(Startup, setup_cube_graph)
+        .add_systems(Startup, setup_demo_graph)
         .add_systems(PreUpdate, feed_midi)
-        .add_systems(Update, (apply_level, log_monitors, log_fps));
+        .add_systems(Update, (log_monitors, log_fps));
 
-        // Camera-collision hazard: `scene::setup_scene` (M0) and each demo's
-        // own setup helper each spawn a camera, and Bevy renders every
-        // camera with the same (default) order to the same target -- the
-        // last one drawn wins and the rest are invisibly overdrawn. So
-        // exactly one of "M0 scene" or "a demo" runs per process, never
-        // both, and `all` is wired to end up with exactly one active camera
-        // too:
+        // Camera-collision hazard: `scene::setup_scene` (camera + light for
+        // the M2b demo graph) and each demo's own setup helper each spawn a
+        // camera, and Bevy renders every camera with the same (default)
+        // order to the same target -- the last one drawn wins and the rest
+        // are invisibly overdrawn. So exactly one of "the demo graph" or "a
+        // render spike demo" runs per process, never both, and `all` is
+        // wired to end up with exactly one active camera too:
         //   - `point-cloud` spawns its own camera (required: it carries
         //     `NoIndirectDrawing`, which the point-cloud pipeline needs).
         //   - `sprites` spawns its own dedicated camera via

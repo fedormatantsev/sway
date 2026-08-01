@@ -5261,6 +5261,7 @@ dependencies = [
  "kurbo",
  "peniko",
  "sway-editor",
+ "sway-geo",
  "sway-gpu",
  "sway-graph",
  "sway-midi",

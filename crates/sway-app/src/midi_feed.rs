@@ -1,18 +1,14 @@
-// THROWAWAY. M2b's scene nodes delete this file. It exists so M2a has a live
-// path: without it the engine is verified only by tests and never by an
-// Octatrack plugged into a real machine (spec §10).
+//! MIDI ingress: the CoreMIDI channel into the graph's timestamped inbox.
+//!
+//! Moved out of the throwaway `bridge.rs` at M2b unchanged — this is ingress,
+//! not the temporary cube graph (design §9). M2a's open finding travels with
+//! it: the epoch is sampled at first drain, and long-session mach-versus-fixed
+//! drift is uncorrected. That is M3's, with the transport.
 
 use bevy::prelude::*;
 use crossbeam_channel::Receiver;
-use sway_graph::{
-    EdgeFrom, EdgeTo, GraphNode, NodeId, NodeType, NodeTypeRegistry, ParamEdge, PortArena,
-    PortKind, compile,
-};
 use sway_midi::MidiEvent;
-use sway_nodes::{
-    Envelope, EnvelopeParams, EnvelopeState, MidiInbox, MidiNote, MidiNoteParams, MidiNoteState,
-    RawMidi,
-};
+use sway_nodes::{MidiInbox, RawMidi};
 
 /// The receiving end of the CoreMIDI channel.
 #[derive(Resource)]
@@ -21,13 +17,6 @@ pub struct MidiRx(pub Receiver<MidiEvent>);
 /// Offset from mach-absolute seconds to the graph's fixed-clock epoch.
 #[derive(Resource, Default)]
 pub struct MidiTimeEpoch(Option<f64>);
-
-/// Identifies the continuous arena slot that drives the M0 cube.
-#[derive(Resource)]
-pub struct CubeGraphOutput {
-    pub entity: Entity,
-    pub ordinal: u16,
-}
 
 /// Moves every CoreMIDI callback event into the graph's timestamped inbox.
 pub fn feed_midi(
@@ -67,85 +56,12 @@ pub fn feed_midi(
     }
 }
 
-fn node_type_id<N: NodeType>(world: &World) -> sway_graph::NodeTypeId {
-    world
-        .resource::<NodeTypeRegistry>()
-        .id_of(core::any::type_name::<N>())
-        .expect("signal node type registered")
-}
-
-/// Builds and compiles the temporary MIDI-note-to-envelope graph.
-pub fn setup_cube_graph(world: &mut World) {
-    let midi_type = node_type_id::<MidiNote>(world);
-    let envelope_type = node_type_id::<Envelope>(world);
-    let midi = world
-        .spawn((
-            GraphNode {
-                id: NodeId(0),
-                node_type: midi_type,
-            },
-            MidiNoteParams {
-                channel: 0,
-                note_lo: 0,
-                note_hi: 127,
-            },
-            MidiNoteState,
-        ))
-        .id();
-    let envelope = world
-        .spawn((
-            GraphNode {
-                id: NodeId(1),
-                node_type: envelope_type,
-            },
-            EnvelopeParams {
-                trigger: sway_graph::Event::default(),
-                release_trigger: sway_graph::Event::default(),
-                attack: 0.01,
-                decay: 0.1,
-                sustain: 0.7,
-                release: 0.3,
-            },
-            EnvelopeState::default(),
-        ))
-        .id();
-    world.spawn((
-        ParamEdge {
-            source_port: MidiNote::OUT_NOTE_ON,
-            target_port: Envelope::TRIGGER,
-            kind: PortKind::Event,
-        },
-        EdgeFrom(midi),
-        EdgeTo(envelope),
-    ));
-    world.spawn((
-        ParamEdge {
-            source_port: MidiNote::OUT_NOTE_OFF,
-            target_port: Envelope::RELEASE_TRIGGER,
-            kind: PortKind::Event,
-        },
-        EdgeFrom(midi),
-        EdgeTo(envelope),
-    ));
-
-    let compiled = compile(world).expect("temporary cube graph must compile");
-    world
-        .resource_mut::<PortArena>()
-        .resize(compiled.continuous_len, compiled.events_len);
-    world.insert_resource(compiled);
-    world.insert_resource(CubeGraphOutput {
-        entity: envelope,
-        ordinal: Envelope::OUT_VALUE,
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::*;
-    use sway_graph::{CompiledGraph, EdgeFrom, EdgeTo, ParamEdge, PortKind};
-    use sway_nodes::{Envelope, MidiInbox, MidiNote, SignalNodesPlugin};
+    use sway_nodes::MidiInbox;
 
     #[test]
     fn host_time_near_now_maps_to_fixed_elapsed_time() {
@@ -234,41 +150,5 @@ mod tests {
             (mapped - 7.0).abs() < 1e-9,
             "zero host_time must mean now; got {mapped}"
         );
-    }
-
-    #[test]
-    fn cube_graph_compiles_note_on_and_note_off_edges() {
-        let mut app = App::new();
-        app.add_plugins((sway_graph::GraphPlugin, SignalNodesPlugin));
-
-        setup_cube_graph(app.world_mut());
-
-        let output = app.world().resource::<CubeGraphOutput>();
-        let output_entity = output.entity;
-        assert_eq!(output.ordinal, Envelope::OUT_VALUE);
-        assert!(
-            app.world()
-                .get::<sway_graph::NodeRuntime>(output_entity)
-                .is_some()
-        );
-        assert_eq!(app.world().resource::<CompiledGraph>().plans.len(), 2);
-
-        let mut edges = app
-            .world_mut()
-            .query::<(&ParamEdge, &EdgeFrom, &EdgeTo)>()
-            .iter(app.world())
-            .map(|(edge, from, to)| (edge.source_port, edge.target_port, edge.kind, from.0, to.0))
-            .collect::<Vec<_>>();
-        edges.sort_by_key(|edge| edge.0);
-        assert_eq!(edges.len(), 2);
-        assert_eq!(edges[0].0, MidiNote::OUT_NOTE_ON);
-        assert_eq!(edges[0].1, Envelope::TRIGGER);
-        assert_eq!(edges[0].2, PortKind::Event);
-        assert_eq!(edges[0].4, output_entity);
-        assert_eq!(edges[1].0, MidiNote::OUT_NOTE_OFF);
-        assert_eq!(edges[1].1, Envelope::RELEASE_TRIGGER);
-        assert_eq!(edges[1].2, PortKind::Event);
-        assert_eq!(edges[1].4, output_entity);
-        assert_eq!(edges[0].3, edges[1].3);
     }
 }
