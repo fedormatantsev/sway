@@ -226,7 +226,7 @@ mod tests {
     use super::*;
     use crate::compile::compile;
     use crate::test_nodes::{
-        spawn_group, spawn_probe, spawn_sinkgeo, spawn_source, structure_app,
+        spawn_group, spawn_probe, spawn_sinkgeo, spawn_sludge_source, spawn_source, structure_app,
     };
 
     fn feeds(world: &mut World, from: Entity, to: Entity, slot: u16) -> Entity {
@@ -294,6 +294,21 @@ mod tests {
     }
 
     #[test]
+    fn parenting_under_a_non_spatial_node_is_rejected() {
+        // The child-spatial check runs first in `validate`, so a spatial
+        // child (`Group`) is required here to actually reach the
+        // parent-spatial branch and its distinct "used as a parent" wording.
+        let mut app = structure_app();
+        let child = spawn_group(app.world_mut()); // SPATIAL = true
+        let lfo_like = spawn_probe(app.world_mut()); // SPATIAL = false
+        parent(app.world_mut(), child, lfo_like);
+
+        let msg = compile(app.world_mut()).unwrap_err().to_string();
+        assert!(msg.contains("used as a parent"), "{msg}");
+        assert!(msg.contains(&format!("{lfo_like}")), "must name the non-spatial node: {msg}");
+    }
+
+    #[test]
     fn a_parenting_cycle_is_rejected() {
         let mut app = structure_app();
         let a = spawn_group(app.world_mut());
@@ -325,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn a_slot_type_mismatch_names_the_capability_on_both_sides() {
+    fn a_source_that_produces_nothing_is_rejected() {
         let mut app = structure_app();
         // `Group` produces nothing; feeding it into a Blob slot must not be
         // reported as a generic "cycle" or "out of range".
@@ -336,6 +351,40 @@ mod tests {
         let msg = compile(app.world_mut()).unwrap_err().to_string();
         assert!(msg.contains(&format!("{group}")), "must name the source: {msg}");
         assert!(msg.contains("input"), "must name the slot: {msg}");
+    }
+
+    #[test]
+    fn a_slot_type_mismatch_names_the_capability_on_both_sides() {
+        let mut app = structure_app();
+        // `SludgeSource` produces `Sludge`, a real (non-unit) capability
+        // distinct from the `Blob` `SinkGeo.input` expects — unlike `Group`,
+        // which produces nothing and would instead trip
+        // `SourceProducesNothing` before this check is ever reached.
+        let sludge = spawn_sludge_source(app.world_mut());
+        let sink = spawn_sinkgeo(app.world_mut());
+        feeds(app.world_mut(), sludge, sink, 0);
+
+        let msg = compile(app.world_mut()).unwrap_err().to_string();
+        assert!(msg.contains(&format!("{sludge}")), "must name the source: {msg}");
+        assert!(msg.contains("input"), "must name the slot: {msg}");
+
+        // Tied to the real `TypePath::type_path()` values (rather than a
+        // hardcoded guess at their format) and checked in their distinct
+        // positions — "expects `Blob`" vs. "produces `Sludge`" — so a bug
+        // that swapped the `expected`/`produces` fields in `SlotTypeMismatch`
+        // would fail this test instead of slipping through on a bare
+        // "message contains both names somewhere" check.
+        use bevy_reflect::TypePath;
+        let blob_path = <crate::test_nodes::Blob as TypePath>::type_path();
+        let sludge_path = <crate::test_nodes::Sludge as TypePath>::type_path();
+        assert!(
+            msg.contains(&format!("expects `{blob_path}`")),
+            "must name the slot's expected capability: {msg}"
+        );
+        assert!(
+            msg.contains(&format!("produces `{sludge_path}`")),
+            "must name the source's produced capability: {msg}"
+        );
     }
 
     #[test]

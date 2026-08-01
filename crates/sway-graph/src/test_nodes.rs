@@ -338,6 +338,57 @@ impl NodeType for Source {
     }
 }
 
+/// A second, distinct capability — never equal to `Blob`. Exists so a
+/// genuine `SlotTypeMismatch` (two non-unit capabilities that simply differ)
+/// can be tested, as opposed to `SourceProducesNothing` (a `()` producer),
+/// which the check order in `structure::validate` reaches first for any
+/// non-producing source.
+#[derive(TypePath)]
+pub(crate) struct Sludge;
+
+#[derive(Reflect, Component, Default)]
+pub(crate) struct SludgeSourceParams {
+    pub seed: f32,
+}
+
+#[derive(Component, Default)]
+pub(crate) struct SludgeSourceState;
+
+pub(crate) struct SludgeSource;
+
+impl SludgeSource {
+    pub(crate) const SEED: u16 = 0;
+}
+
+impl NodeType for SludgeSource {
+    type Params = SludgeSourceParams;
+    type Outputs = NoOutputs;
+    type Slots = NoSlots;
+    type Produces = Sludge;
+    type State = SludgeSourceState;
+
+    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("seed", Self::SEED)];
+    const COOKS: bool = true;
+
+    fn register(_app: &mut App) {}
+
+    fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
+
+    fn cook(world: &mut World, node: Entity, _slots: &SlotView) {
+        let seed = world.get::<SludgeSourceParams>(node).map(|p| p.seed).unwrap_or(0.0);
+        world.entity_mut(node).insert(BlobData(seed as u32));
+        world.resource_mut::<CookCounter>().0 += 1;
+    }
+
+    fn produced_change_tick(world: &World, node: Entity) -> Option<Tick> {
+        world
+            .get_entity(node)
+            .ok()?
+            .get_change_ticks::<BlobData>()
+            .map(|t| t.changed)
+    }
+}
+
 #[derive(Reflect, Default)]
 pub(crate) struct SinkGeoSlots {
     pub input: Slot<Blob>,
@@ -526,6 +577,17 @@ pub(crate) fn spawn_source(world: &mut World) -> Entity {
         .id()
 }
 
+pub(crate) fn spawn_sludge_source(world: &mut World) -> Entity {
+    let node_type = node_type_id::<SludgeSource>(world);
+    world
+        .spawn((
+            GraphNode { id: next_node_id(), node_type },
+            SludgeSourceParams { seed: 1.0 },
+            SludgeSourceState,
+        ))
+        .id()
+}
+
 pub(crate) fn spawn_sinkgeo(world: &mut World) -> Entity {
     let node_type = node_type_id::<SinkGeo>(world);
     world
@@ -709,15 +771,17 @@ pub(crate) fn emitter_app() -> App {
     app
 }
 
-/// App with `Probe`, `Source`, `SinkGeo` and `Group` registered — everything
-/// Task 4's structure-pass tests need. Tests only call `compile`, never
-/// `app.update()`, so no `TimePlugin`/fixed timestep is required.
+/// App with `Probe`, `Source`, `SludgeSource`, `SinkGeo` and `Group`
+/// registered — everything Task 4's structure-pass tests need. Tests only
+/// call `compile`, never `app.update()`, so no `TimePlugin`/fixed timestep is
+/// required.
 pub(crate) fn structure_app() -> App {
     let mut app = App::new();
     app.add_plugins(crate::tick::GraphPlugin);
     app.init_resource::<CookCounter>();
     register_node_type::<Probe>(&mut app);
     register_node_type::<Source>(&mut app);
+    register_node_type::<SludgeSource>(&mut app);
     register_node_type::<SinkGeo>(&mut app);
     register_node_type::<Group>(&mut app);
     app
