@@ -260,6 +260,7 @@ impl Plugin for GraphPlugin {
         app.insert_resource(PortArena::new(0, 0))
             .init_resource::<NodeTypeRegistry>()
             .init_resource::<GraphTickCount>()
+            .register_type::<crate::edges::EditorPos>()
             .add_systems(FixedUpdate, graph_tick);
     }
 }

@@ -11,8 +11,8 @@
 use bevy::prelude::*;
 use sway_geo::{Displace, DisplaceParams, DisplaceState, Grid, GridParams, GridState};
 use sway_graph::{
-    EdgeFrom, EdgeTo, FeedsEdge, GraphNode, NodeId, NodeType, NodeTypeRegistry, ParamEdge,
-    ParentEdge, PortArena, PortKind, compile,
+    EdgeFrom, EdgeTo, EditorPos, FeedsEdge, GraphNode, NodeId, NodeType, NodeTypeRegistry,
+    ParamEdge, ParentEdge, PortArena, PortKind, compile,
 };
 use sway_nodes::{
     Envelope, EnvelopeParams, EnvelopeState, Group, GroupParams, GroupState, LFO, LfoParams,
@@ -48,6 +48,7 @@ pub fn setup_demo_graph(world: &mut World) {
             GraphNode { id: id(), node_type: node_type_id::<Grid>(world) },
             GridParams { rows: 48, cols: 48, width: 4.0, height: 4.0 },
             GridState,
+            EditorPos(Vec2::new(20.0, 380.0)),
         ))
         .id();
     let displace = world
@@ -55,6 +56,7 @@ pub fn setup_demo_graph(world: &mut World) {
             GraphNode { id: id(), node_type: node_type_id::<Displace>(world) },
             DisplaceParams { amount: 0.2, frequency: 3.0 },
             DisplaceState,
+            EditorPos(Vec2::new(240.0, 380.0)),
         ))
         .id();
     let mesh = world
@@ -62,6 +64,7 @@ pub fn setup_demo_graph(world: &mut World) {
             GraphNode { id: id(), node_type: node_type_id::<MeshNode>(world) },
             MeshNodeParams::default(),
             MeshNodeState::default(),
+            EditorPos(Vec2::new(900.0, 200.0)),
         ))
         .id();
     let material = world
@@ -69,6 +72,7 @@ pub fn setup_demo_graph(world: &mut World) {
             GraphNode { id: id(), node_type: node_type_id::<StandardMaterialNode>(world) },
             StandardMaterialParams::default(),
             MaterialState::default(),
+            EditorPos(Vec2::new(680.0, 20.0)),
         ))
         .id();
     let rgb = world
@@ -76,6 +80,7 @@ pub fn setup_demo_graph(world: &mut World) {
             GraphNode { id: id(), node_type: node_type_id::<Rgb>(world) },
             RgbParams { r: 0.1, g: 0.2, b: 0.8 },
             RgbState,
+            EditorPos(Vec2::new(460.0, 20.0)),
         ))
         .id();
     let root = world
@@ -83,6 +88,7 @@ pub fn setup_demo_graph(world: &mut World) {
             GraphNode { id: id(), node_type: node_type_id::<Group>(world) },
             GroupParams::default(),
             GroupState,
+            EditorPos(Vec2::new(680.0, 260.0)),
         ))
         .id();
     let cc = world
@@ -90,6 +96,7 @@ pub fn setup_demo_graph(world: &mut World) {
             GraphNode { id: id(), node_type: node_type_id::<MidiCC>(world) },
             MidiCCParams { channel: 0, cc: 74 },
             MidiCCState,
+            EditorPos(Vec2::new(20.0, 140.0)),
         ))
         .id();
     let note = world
@@ -97,6 +104,7 @@ pub fn setup_demo_graph(world: &mut World) {
             GraphNode { id: id(), node_type: node_type_id::<MidiNote>(world) },
             MidiNoteParams { channel: 0, note_lo: 0, note_hi: 127 },
             MidiNoteState,
+            EditorPos(Vec2::new(20.0, 20.0)),
         ))
         .id();
     let envelope = world
@@ -111,6 +119,7 @@ pub fn setup_demo_graph(world: &mut World) {
                 release: 0.3,
             },
             EnvelopeState::default(),
+            EditorPos(Vec2::new(240.0, 20.0)),
         ))
         .id();
     let lfo = world
@@ -126,6 +135,7 @@ pub fn setup_demo_graph(world: &mut World) {
                 amplitude: core::f32::consts::PI,
             },
             LfoState,
+            EditorPos(Vec2::new(20.0, 260.0)),
         ))
         .id();
 

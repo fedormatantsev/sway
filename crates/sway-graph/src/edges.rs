@@ -3,6 +3,8 @@
 use bevy_ecs::change_detection::Tick;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
+use bevy_math::Vec2;
+use bevy_reflect::Reflect;
 
 use crate::registry::NodeTypeId;
 
@@ -64,6 +66,19 @@ pub struct ParamEdge {
 #[derive(Component)]
 pub struct ParentEdge;
 
+/// Where the editor draws this node, in graph-canvas space.
+///
+/// Authored in the graph builder today, serialized by M4's project format,
+/// and written back by drag at M7 — which is why it is a component on the
+/// node entity rather than a field in whatever built the graph.
+///
+/// The editor treats this as a *seed*, read once when a node box first
+/// appears and never again, so that a node dragged in-session is not snapped
+/// back by the next frame's snapshot. Absent means "no authored position":
+/// the editor falls back to a deterministic grid slot.
+#[derive(Component, Reflect, Clone, Copy, Debug, PartialEq)]
+pub struct EditorPos(pub Vec2);
+
 /// A structural input edge into a named, typed slot on the target.
 ///
 /// Also an edge entity, for the same diagnostic reason plus one of its own: a
@@ -90,3 +105,17 @@ pub struct EdgeTo(#[entities] pub Entity);
 #[derive(Component)]
 #[relationship_target(relationship = EdgeTo, linked_spawn)]
 pub struct InEdges(Vec<Entity>);
+
+#[cfg(test)]
+mod tests {
+    use super::EditorPos;
+    use bevy_ecs::world::World;
+    use bevy_math::Vec2;
+
+    #[test]
+    fn editor_pos_is_a_component_readable_off_a_node_entity() {
+        let mut world = World::new();
+        let entity = world.spawn(EditorPos(Vec2::new(20.0, 140.0))).id();
+        assert_eq!(world.get::<EditorPos>(entity).map(|p| p.0), Some(Vec2::new(20.0, 140.0)));
+    }
+}

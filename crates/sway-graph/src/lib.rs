@@ -14,8 +14,8 @@ pub mod view;
 
 pub use compile::{CompileError, CompiledGraph, NodePlan, compile};
 pub use edges::{
-    EdgeFrom, EdgeTo, FeedsEdge, GraphNode, InEdges, NodeId, NodeRuntime, OutEdges, ParamEdge,
-    ParentEdge, PortKind,
+    EdgeFrom, EdgeTo, EditorPos, FeedsEdge, GraphNode, InEdges, NodeId, NodeRuntime, OutEdges,
+    ParamEdge, ParentEdge, PortKind,
 };
 pub use ports::{ContinuousIdx, Event, EventIdx, Occurrence, PortArena};
 pub use registry::{
