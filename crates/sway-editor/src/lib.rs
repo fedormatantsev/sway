@@ -26,23 +26,64 @@ use masonry_core::app::{
     RenderRoot, RenderRootOptions, RenderRootSignal, VisualLayerKind, VisualLayerPlan,
     WindowSizePolicy,
 };
-use masonry_core::core::{NewWidget, TextEvent, Widget, WindowEvent as MasonryWindowEvent};
+use masonry_core::core::{NewWidget, TextEvent, Widget, WidgetTag, WindowEvent as MasonryWindowEvent};
 use masonry::kurbo::Affine;
+use masonry::layout::AsUnit;
+use masonry::widgets::{Portal, Split};
+use masonry_core::kurbo::Axis;
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use winit::dpi::PhysicalSize;
 
 use crate::canvas::GraphCanvas;
+use crate::external::ViewportPlaceholder;
+use crate::scene_tree::SceneTree;
+use crate::snapshot::WorldSnapshot;
 
-/// Builds the root widget.
+/// Reaches the hierarchy pane from `EditorUi::apply_snapshot`.
+pub const SCENE_TREE_TAG: WidgetTag<SceneTree> = WidgetTag::named("sway-scene-tree");
+/// Reaches the graph pane from `EditorUi::apply_snapshot`.
+pub const GRAPH_CANVAS_TAG: WidgetTag<GraphCanvas> = WidgetTag::named("sway-graph-canvas");
+
+/// Builds the root widget: three panes, split twice.
 ///
-/// Stopgap: an empty [`GraphCanvas`], content arriving through
-/// [`EditorUi::apply_snapshot`]. Task 7 replaces this with the real
-/// three-pane root (hierarchy / viewport / canvas, nested `Split`s) once
-/// `SceneTree` exists; until then the Bevy viewport has no seat in the tree,
-/// which is fine -- this state is never shipped, only an intermediate point
-/// within the same development branch.
+/// ```text
+/// +--------+------------------------------+
+/// | SCENE  |      bevy viewport           |
+/// |        |                              |
+/// | v root +------------------------------+
+/// |  v rig |  graph canvas (pan/zoom)     |
+/// +--------+------------------------------+
+/// ```
+///
+/// The Bevy viewport is a sibling of the graph canvas now, not a child of it
+/// at a hardcoded rect. `external::viewport_rect` locates it by scanning the
+/// `VisualLayerPlan` for the `External` layer, which does not care where in
+/// the tree the widget sits, so the presenter needs no change for this.
+///
+/// Both content panes carry a `WidgetTag` so `apply_snapshot` can reach them
+/// typed, without downcasting through the `Split`s.
 fn graph_root() -> NewWidget<dyn Widget> {
-    GraphCanvas::new().prepare().erased()
+    let tree = Portal::new(SceneTree::new().prepare().with_tag(SCENE_TREE_TAG))
+        .constrain_horizontal(true)
+        .prepare();
+
+    let viewport = ViewportPlaceholder::new().prepare();
+    let canvas = GraphCanvas::new().prepare().with_tag(GRAPH_CANVAS_TAG);
+
+    let right = Split::new(viewport, canvas)
+        .split_axis(Axis::Vertical)
+        .split_fraction(0.55)
+        .draggable(true)
+        .solid_bar(true)
+        .prepare();
+
+    Split::new(tree, right)
+        .split_axis(Axis::Horizontal)
+        .split_point_from_start(260.0.px())
+        .draggable(true)
+        .solid_bar(true)
+        .prepare()
+        .erased()
 }
 
 /// The masonry widget tree, driven by winit events, one `RenderRoot` per
@@ -136,6 +177,21 @@ impl EditorUi {
         self.scale_factor = scale_factor;
         self.root
             .handle_window_event(MasonryWindowEvent::Rescale(scale_factor));
+    }
+
+    /// Pushes one frame's world snapshot into both content panes.
+    ///
+    /// Called by the host immediately before [`redraw`](Self::redraw). Each
+    /// pane decides for itself whether the snapshot actually changed anything
+    /// -- `SceneTree` compares its row signature, `GraphCanvas` reconciles by
+    /// `NodeId` -- so calling this every frame is cheap in the steady state.
+    pub fn apply_snapshot(&mut self, snap: &WorldSnapshot) {
+        self.root.edit_widget_with_tag(SCENE_TREE_TAG, |mut tree| {
+            SceneTree::apply_snapshot(&mut tree, snap);
+        });
+        self.root.edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
+            GraphCanvas::apply_snapshot(&mut canvas, snap);
+        });
     }
 
     /// Runs masonry's paint pass and returns the resulting visual-layer plan.

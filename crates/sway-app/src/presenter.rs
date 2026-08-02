@@ -91,6 +91,21 @@ impl EditorPresenter {
         self.editor.rescale(scale_factor);
     }
 
+    /// Reads one frame's graph state out of the Bevy world and pushes it into
+    /// the widget tree.
+    ///
+    /// Called from `present` between the previous frame's `app.update()` and
+    /// this frame's masonry redraw, which is the one place the two halves of
+    /// the process meet. The snapshot therefore reflects the world as of the
+    /// *previous* frame's update: `present` redraws masonry first so a
+    /// viewport resize costs no frame of lag, and that ordering is
+    /// load-bearing. A one-frame lag in a diagnostic view is invisible;
+    /// reordering `present` for it would not be.
+    fn apply_snapshot(&mut self, app: &App) {
+        let snapshot = sway_editor::snapshot::capture(app.world());
+        self.editor.apply_snapshot(&snapshot);
+    }
+
     /// One frame, in the fixed, load-bearing order (controller dispatch
     /// ruling R5): masonry redraws first (so a viewport resize costs no
     /// frame of lag), then -- Task 5 -- the viewport rect is read from
@@ -109,6 +124,9 @@ impl EditorPresenter {
         viewport: &mut ViewportTexture,
         compositor: &mut Compositor,
     ) {
+        // 0. The world snapshot, from the previous frame's `app.update()`.
+        self.apply_snapshot(app);
+
         // 1. Masonry first.
         let plan = self.editor.redraw();
         let scale = self.editor.scale_factor();
