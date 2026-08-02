@@ -37,12 +37,12 @@ use masonry::accesskit::{Node, Role};
 use masonry::core::{
     AccessCtx, ChildrenIds, EventCtx, LayoutCtx, MeasureCtx, PaintCtx, PointerButton,
     PointerButtonEvent, PointerEvent, PointerState, PointerUpdate, PropertiesMut, PropertiesRef,
-    RegisterCtx, Widget, WidgetMut, WidgetPod,
+    RegisterCtx, Update, UpdateCtx, Widget, WidgetMut, WidgetPod,
 };
 use masonry::imaging::Painter;
 use masonry::layout::{LenReq, Length};
 use masonry::widgets::Label;
-use masonry_core::kurbo::{Axis, Point, RoundedRect, Size, Stroke};
+use masonry_core::kurbo::{Affine, Axis, Point, RoundedRect, Size, Stroke};
 use peniko::Color;
 
 /// Fixed footprint of every node box, in canvas-space logical pixels.
@@ -100,6 +100,18 @@ pub struct NodeBox {
     label_text: String,
     selected: bool,
     gesture: Gesture,
+    /// Applied to this widget's own transform on `Update::WidgetAdded`.
+    ///
+    /// A freshly created `WidgetPod` isn't yet registered in masonry's arena
+    /// (that happens during the update pass that immediately follows), so
+    /// `GraphCanvas` cannot reach into a brand-new `NodeBox` via
+    /// `get_mut`/`mutate_child_later` the moment it creates one -- both panic
+    /// ("child not found") or silently drop the callback. `Update::WidgetAdded`
+    /// is delivered to the widget itself once it *is* registered, which is
+    /// exactly the documented purpose of that event ("initial setup that
+    /// cannot be done when constructing the widget"), so `NodeBox` applies
+    /// its own seed transform there instead of waiting on its parent.
+    initial_transform: Affine,
 }
 
 impl NodeBox {
@@ -110,7 +122,17 @@ impl NodeBox {
             label_text: label,
             selected: false,
             gesture: Gesture::None,
+            initial_transform: Affine::IDENTITY,
         }
+    }
+
+    /// Sets the transform this box applies to itself the moment it's added to
+    /// the tree. Called by `GraphCanvas::apply_snapshot` before `.prepare()`,
+    /// since that's the only time it can hand a new box its seed position --
+    /// see `initial_transform`'s doc comment.
+    pub(crate) fn with_initial_transform(mut self, transform: Affine) -> Self {
+        self.initial_transform = transform;
+        self
     }
 
     /// The text this box currently displays.
@@ -230,6 +252,15 @@ impl Widget for NodeBox {
                 self.gesture = Gesture::None;
             }
             _ => {}
+        }
+    }
+
+    /// Applies `initial_transform` once this box is registered in the tree.
+    /// See that field's doc comment for why this can't happen synchronously
+    /// in `GraphCanvas::apply_snapshot` instead.
+    fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
+        if let Update::WidgetAdded = event {
+            ctx.set_transform(self.initial_transform);
         }
     }
 

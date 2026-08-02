@@ -2,36 +2,36 @@
 //!
 //! This is the piece that actually exercises the spec's case for masonry:
 //! each node is a real child widget (`node_box::NodeBox`) with its own
-//! `WidgetId`, held retained in `nodes`/`positions`/`edges`, rather than an
-//! immediate-mode `Vec` that gets painted from scratch every frame. Selection
-//! and drag state (Task 7) will live on those child widgets, not be
-//! re-derived here.
+//! `WidgetId`, retained across frames rather than rebuilt from scratch.
+//! Driven entirely by [`WorldSnapshot`] through [`GraphCanvas::apply_snapshot`];
+//! nodes are keyed by [`NodeId`], so a node that survives a snapshot keeps
+//! its `WidgetId` -- and therefore its dragged position and its selection.
+//! That identity model is what M7 needs.
 //!
 //! Modeled on `masonry::widgets::flex::Flex` for the container shape
 //! (`WidgetPod`, `register_children`, `run_layout`/`place_child` in
 //! `layout`), and on `masonry_core::properties::box_shadow::BoxShadow` and
 //! `masonry::widgets::canvas::Canvas` for how to reach `imaging::Painter`
 //! from a widget's own `paint`.
-//!
-//! No traits, no generics over node types, no serialization (controller
-//! dispatch ruling R1) -- this is throwaway code that M7 replaces once a real
-//! graph model exists. Nodes are a `Vec`, edges are `Vec<(usize, usize)>`.
+
+use std::collections::HashMap;
 
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
     AccessCtx, ActionCtx, ChildrenIds, ErasedAction, EventCtx, LayoutCtx, MeasureCtx, Modifiers,
-    NewWidget, NoAction, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent,
-    PointerScrollEvent, PointerState, PointerUpdate, PropertiesMut, PropertiesRef, RegisterCtx,
-    Update, UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod,
+    NoAction, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent, PointerScrollEvent,
+    PointerState, PointerUpdate, PropertiesMut, PropertiesRef, RegisterCtx, Widget, WidgetId,
+    WidgetMut, WidgetPod,
 };
 use masonry::dpi::PhysicalPosition;
 use masonry::imaging::Painter;
 use masonry_core::kurbo::{Affine, Axis, BezPath, Point, Size, Stroke, Vec2};
 use masonry::layout::{LenReq, Length};
 use peniko::Color;
+use sway_graph::NodeId;
 
-use crate::external::ViewportPlaceholder;
 use crate::node_box::{self, NodeBox, NodeBoxAction};
+use crate::snapshot::{EdgeKind, WorldSnapshot};
 
 /// Converts a [`PointerState`]'s position to a window-space (logical pixels)
 /// [`Point`]. Same helper as `node_box::window_point`, duplicated rather than
@@ -42,34 +42,52 @@ fn window_point(state: &PointerState) -> Point {
     Point::new(p.x, p.y)
 }
 
-/// The external-mode viewport, held separately from the `NodeBox` children
-/// because it is a different widget type (Task 5's `ViewportPlaceholder`,
-/// not a `NodeBox`) -- see `GraphCanvas::with_viewport`.
-struct ViewportSlot {
-    pod: WidgetPod<ViewportPlaceholder>,
+/// Fallback grid for nodes with no authored `EditorPos` (design §5): column
+/// `i / FALLBACK_ROWS`, row `i % FALLBACK_ROWS`, at the node box's own pitch.
+/// Deterministic, so an unpositioned node is misplaced rather than invisible,
+/// and two of them never land on top of each other.
+const FALLBACK_ROWS: usize = 6;
+const FALLBACK_PITCH: Size = Size::new(220.0, 120.0);
+
+/// One node box and everything the canvas knows about it.
+struct NodeSlot {
+    pod: WidgetPod<NodeBox>,
+    /// Canvas-space position. Seeded from the snapshot's `EditorPos` when the
+    /// slot is created and owned by the widget thereafter -- see
+    /// `apply_snapshot`.
     pos: Point,
-    size: Size,
+    label: String,
 }
 
-/// The node-editor canvas: owns pan/zoom, lays out its `NodeBox` children
-/// (plus, in this app, the Bevy viewport placeholder) at explicit
-/// canvas-space positions, and paints the bezier edges between them.
+/// One painted edge, resolved to node keys rather than snapshot indices so it
+/// survives a reordering.
+struct EdgeSlot {
+    from: NodeId,
+    to: NodeId,
+    kind: EdgeKind,
+    /// The source port's current value, or `None` when this edge carries no
+    /// readable activity (design §4).
+    value: Option<f32>,
+    /// Running observed range for this edge, used to normalise `value` into
+    /// 0..1. Auto-ranging avoids a per-node-type table of expected ranges,
+    /// which would be one more thing to keep in sync with the node set.
+    range: Option<(f32, f32)>,
+}
+
+/// The node-editor canvas: owns pan/zoom, lays out its `NodeBox` children at
+/// explicit canvas-space positions, and paints the edges between them.
+///
+/// Driven entirely by [`WorldSnapshot`] through [`GraphCanvas::apply_snapshot`].
+/// Nodes are keyed by [`NodeId`], not by insertion index, so a node that
+/// survives a snapshot keeps its `WidgetId` -- and therefore its dragged
+/// position and its selection. That identity model is what M7 needs.
 pub struct GraphCanvas {
-    nodes: Vec<WidgetPod<NodeBox>>,
-    positions: Vec<Point>,
-    edges: Vec<(usize, usize)>,
-    viewport: Option<ViewportSlot>,
-    /// Pan offset, applied to every node (and to edge painting) before zoom.
+    nodes: Vec<NodeId>,
+    slots: HashMap<NodeId, NodeSlot>,
+    edges: Vec<EdgeSlot>,
     pan: Vec2,
-    /// Zoom factor. `layout` places every child at `Point::ZERO` (see its
-    /// doc comment); the *real* position, pan and zoom are all folded into
-    /// each child's own `set_transform` (Task 7), since `LayoutCtx` has no
-    /// `set_transform` (fact independently verified for this task) and pan/
-    /// zoom must therefore be pushed from an event/mutate/update context.
     zoom: f64,
-    /// The currently selected node, by insertion index. `None` if nothing is
-    /// selected.
-    selected: Option<usize>,
+    selected: Option<NodeId>,
     /// A middle-drag pan in progress (brief step 4): the last-seen
     /// window-space (logical) pointer position. `None` when not panning.
     panning: Option<Point>,
@@ -83,72 +101,31 @@ impl Default for GraphCanvas {
 }
 
 impl GraphCanvas {
-    /// Creates an empty canvas: no nodes, no edges, no viewport.
+    /// Creates an empty canvas. Content arrives through `apply_snapshot`.
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
-            positions: Vec::new(),
+            slots: HashMap::new(),
             edges: Vec::new(),
-            viewport: None,
             pan: Vec2::ZERO,
             zoom: 1.0,
             selected: None,
             panning: None,
         }
     }
+}
 
-    /// Adds a node box at the given canvas-space position.
-    ///
-    /// `id` must equal the number of nodes already added (0, 1, 2, ...):
-    /// with no real graph model yet (R1), edges reference nodes purely by
-    /// their insertion index, and this assertion catches a mismatched `id`
-    /// immediately instead of silently drawing an edge to the wrong box.
-    pub fn with_node(mut self, id: usize, pos: Point, label: &str) -> Self {
-        assert_eq!(
-            id,
-            self.nodes.len(),
-            "GraphCanvas::with_node: id {id} does not match insertion index {} -- \
-             nodes must be added in order 0, 1, 2, ... (no graph model exists yet, R1)",
-            self.nodes.len()
-        );
-        self.nodes.push(NodeBox::new(label.to_string()).prepare().to_pod());
-        self.positions.push(pos);
-        self
-    }
-
-    /// Adds an edge between two previously-added nodes, by insertion index.
-    pub fn with_edge(mut self, from: usize, to: usize) -> Self {
-        self.edges.push((from, to));
-        self
-    }
-
-    /// Adds the external-mode viewport as a child, at the given canvas-space
-    /// position and size. Not part of the brief's minimal interface (`new`
-    /// / `with_node` / `with_edge`), but needed so `EditorUi` can still seat
-    /// Task 5's `ViewportPlaceholder` in the tree (R5, controller dispatch
-    /// ruling).
-    pub fn with_viewport(mut self, viewport: NewWidget<ViewportPlaceholder>, pos: Point, size: Size) -> Self {
-        self.viewport = Some(ViewportSlot {
-            pod: viewport.to_pod(),
-            pos,
-            size,
-        });
-        self
-    }
+/// Design §5's fallback grid slot for the node at snapshot index `index`.
+fn fallback_pos(index: usize) -> Point {
+    Point::new(
+        (index / FALLBACK_ROWS) as f64 * FALLBACK_PITCH.width,
+        (index % FALLBACK_ROWS) as f64 * FALLBACK_PITCH.height,
+    )
 }
 
 // --- MARK: IMPL WIDGET
 impl Widget for GraphCanvas {
     type Action = NoAction;
-
-    fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
-        for node in &mut self.nodes {
-            ctx.register_child(node);
-        }
-        if let Some(slot) = &mut self.viewport {
-            ctx.register_child(&mut slot.pod);
-        }
-    }
 
     fn measure(
         &mut self,
@@ -170,6 +147,14 @@ impl Widget for GraphCanvas {
         }
     }
 
+    fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
+        for id in &self.nodes {
+            if let Some(slot) = self.slots.get_mut(id) {
+                ctx.register_child(&mut slot.pod);
+            }
+        }
+    }
+
     /// Lays out every child at `Point::ZERO`.
     ///
     /// Every node's *real* position is now expressed entirely through its
@@ -177,52 +162,44 @@ impl Widget for GraphCanvas {
     /// transform for node `i` is
     /// `Affine::translate(pan) * Affine::scale(zoom) * Affine::translate(positions[i])`
     /// (see `child_transform`), applied via `WidgetMut::set_transform` from
-    /// `update` (`Update::WidgetAdded`, for the initial position),
-    /// `on_pointer_event` (pan/zoom, all nodes), `on_action`
-    /// (drag, one node), or the `WidgetMut`-based `set_zoom`/`set_pan`/
-    /// `set_selected` below -- never from here, because `LayoutCtx` has no
-    /// `set_transform` (independently verified fact for this task): pan/zoom
-    /// must be applied from an event/mutate/update context, never `layout`.
+    /// `apply_snapshot` (for the initial position), `on_pointer_event`
+    /// (pan/zoom, all nodes), `on_action` (drag, one node), or the
+    /// `WidgetMut`-based `set_zoom`/`set_pan`/`set_selected` below -- never
+    /// from here, because `LayoutCtx` has no `set_transform` (independently
+    /// verified fact for this task): pan/zoom must be applied from an
+    /// event/mutate/update context, never `layout`.
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, size: Size) {
-        for node in self.nodes.iter_mut() {
-            ctx.run_layout(node, node_box::SIZE);
-            ctx.place_child(node, Point::ZERO);
-        }
-        if let Some(slot) = &mut self.viewport {
-            ctx.run_layout(&mut slot.pod, slot.size);
-            ctx.place_child(&mut slot.pod, slot.pos);
+        for id in self.nodes.clone() {
+            if let Some(slot) = self.slots.get_mut(&id) {
+                ctx.run_layout(&mut slot.pod, node_box::SIZE);
+                ctx.place_child(&mut slot.pod, Point::ZERO);
+            }
         }
         ctx.set_clip_path(size.to_rect());
     }
 
-    /// Paints the bezier edges. Runs *before* children paint (R2, controller
-    /// dispatch ruling), so the edges sit behind the node boxes -- this is
-    /// the correct z-order for a node editor and is why this uses `paint`
-    /// rather than `post_paint`.
+    /// Paints the edges. Runs *before* children paint, so edges sit behind
+    /// the node boxes -- the correct z-order for a node editor, and why this
+    /// uses `paint` rather than `post_paint`.
     ///
-    /// Unlike the `NodeBox` children, `GraphCanvas` itself carries no
-    /// transform (it's the root), so edges are painted in the same window
-    /// frame the children's transforms map into -- `to_visual` applies
-    /// `pan`/`zoom` by hand to every point, exactly mirroring what each
-    /// child's `set_transform` does for itself (brief step 4: "Edge painting
-    /// applies the same affine to its own path").
+    /// `GraphCanvas` itself carries no transform (it's the root of its pane),
+    /// so edges are painted in the same window frame the children's
+    /// transforms map into: `to_visual` applies `pan`/`zoom` by hand to every
+    /// point, mirroring what each child's `set_transform` does for itself.
     fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
-        let edge_brush = Color::from_rgb8(140, 140, 155);
         let half_height = Vec2::new(0.0, node_box::SIZE.height / 2.0);
         let right_edge = Vec2::new(node_box::SIZE.width, 0.0) + half_height;
 
-        for &(from_idx, to_idx) in &self.edges {
-            let (Some(&from_pos), Some(&to_pos)) =
-                (self.positions.get(from_idx), self.positions.get(to_idx))
+        for edge in &self.edges {
+            let (Some(from_slot), Some(to_slot)) =
+                (self.slots.get(&edge.from), self.slots.get(&edge.to))
             else {
                 continue;
             };
-
-            // R4 (controller dispatch ruling): right edge of the source box
-            // to the left edge of the target box, vertically centred.
-            let from = self.to_visual(from_pos + right_edge);
-            let to = self.to_visual(to_pos + half_height);
-            self.paint_edge(painter, from, to, edge_brush);
+            let from = self.to_visual(from_slot.pos + right_edge);
+            let to = self.to_visual(to_slot.pos + half_height);
+            let (brush, width) = edge_style(edge);
+            self.paint_edge(painter, from, to, brush, width);
         }
     }
 
@@ -320,38 +297,28 @@ impl Widget for GraphCanvas {
         action: &ErasedAction,
         source: WidgetId,
     ) {
-        let Some(idx) = self.nodes.iter().position(|n| n.id() == source) else {
+        let Some(id) = self
+            .nodes
+            .iter()
+            .copied()
+            .find(|id| self.slots.get(id).is_some_and(|slot| slot.pod.id() == source))
+        else {
             return;
         };
         let Some(&action) = action.downcast_ref::<NodeBoxAction>() else {
             return;
         };
         match action {
-            NodeBoxAction::Selected => {
-                self.select_from_action(ctx, idx);
-            }
+            NodeBoxAction::Selected => self.select_from_action(ctx, id),
             NodeBoxAction::DraggedBy(delta) => {
-                self.positions[idx] += delta / self.zoom;
-                self.retransform_one_from_action(ctx, idx);
+                if let Some(slot) = self.slots.get_mut(&id) {
+                    slot.pos += delta / self.zoom;
+                }
+                self.retransform_one_from_action(ctx, id);
                 ctx.request_paint_only();
             }
         }
         ctx.set_handled();
-    }
-
-    /// Applies each node's initial pan/zoom/position transform once it's
-    /// added to the tree (same idiom as
-    /// `masonry::widgets::pagination::Pagination::update`'s
-    /// `Update::WidgetAdded` handler).
-    fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
-        if let Update::WidgetAdded = event {
-            for idx in 0..self.nodes.len() {
-                let transform = self.child_transform(idx);
-                ctx.mutate_child_later(&mut self.nodes[idx], move |mut node: WidgetMut<'_, NodeBox>| {
-                    node.set_transform(transform);
-                });
-            }
-        }
     }
 
     fn accessibility_role(&self) -> Role {
@@ -361,11 +328,10 @@ impl Widget for GraphCanvas {
     fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, _node: &mut Node) {}
 
     fn children_ids(&self) -> ChildrenIds {
-        let mut ids: ChildrenIds = self.nodes.iter().map(|n| n.id()).collect();
-        if let Some(slot) = &self.viewport {
-            ids.push(slot.pod.id());
-        }
-        ids
+        self.nodes
+            .iter()
+            .filter_map(|id| self.slots.get(id).map(|slot| slot.pod.id()))
+            .collect()
     }
 }
 
@@ -380,6 +346,112 @@ impl Widget for GraphCanvas {
 // own context (`MutateCtx`) exposes -- same idiom as
 // `masonry::widgets::selector::Selector::select_option`/`child_mut`.
 impl GraphCanvas {
+    /// Reconciles the canvas against one frame's snapshot.
+    ///
+    /// Nodes present in both keep their `WidgetId`, their dragged position,
+    /// and their selection; nodes only in the snapshot are created (seeded
+    /// from `EditorPos`, or the fallback grid); nodes only in the canvas are
+    /// removed. Edge geometry is rebuilt outright -- an edge has no identity
+    /// worth preserving -- but each edge's observed value range is carried
+    /// across by `(from, to, kind)` so auto-ranging does not restart.
+    pub fn apply_snapshot(this: &mut WidgetMut<'_, Self>, snap: &WorldSnapshot) {
+        let mut ranges: HashMap<(NodeId, NodeId, EdgeKind), (f32, f32)> = HashMap::new();
+        for edge in &this.widget.edges {
+            if let Some(range) = edge.range {
+                ranges.insert((edge.from, edge.to, edge.kind), range);
+            }
+        }
+
+        // Nodes: create, update, remove.
+        let wanted: Vec<NodeId> = snap.nodes.iter().map(|node| node.id).collect();
+        let stale: Vec<NodeId> = this
+            .widget
+            .nodes
+            .iter()
+            .copied()
+            .filter(|id| !wanted.contains(id))
+            .collect();
+        for id in stale {
+            if let Some(slot) = this.widget.slots.remove(&id) {
+                this.ctx.remove_child(slot.pod);
+            }
+            if this.widget.selected == Some(id) {
+                this.widget.selected = None;
+            }
+        }
+
+        for (index, view) in snap.nodes.iter().enumerate() {
+            match this.widget.slots.get_mut(&view.id) {
+                Some(slot) => {
+                    if slot.label != view.name {
+                        view.name.clone_into(&mut slot.label);
+                        let mut child = this.ctx.get_mut(&mut slot.pod);
+                        NodeBox::set_label(&mut child, &view.name);
+                    }
+                }
+                None => {
+                    // `EditorPos` seeds a *new* box only; an existing box owns
+                    // its position from here on (design §5).
+                    let pos = view.pos.unwrap_or_else(|| fallback_pos(index));
+                    // Baked into the box itself and self-applied on
+                    // `Update::WidgetAdded` -- a box this fresh isn't yet
+                    // registered in masonry's arena, so `GraphCanvas` can't
+                    // reach in and set its transform directly (see
+                    // `NodeBox::initial_transform`'s doc comment).
+                    let transform = Affine::translate(this.widget.pan)
+                        * Affine::scale(this.widget.zoom)
+                        * Affine::translate(pos.to_vec2());
+                    let pod = NodeBox::new(view.name.clone())
+                        .with_initial_transform(transform)
+                        .prepare()
+                        .to_pod();
+                    this.widget.slots.insert(
+                        view.id,
+                        NodeSlot { pod, pos, label: view.name.clone() },
+                    );
+                    this.ctx.children_changed();
+                }
+            }
+        }
+        this.widget.nodes = wanted;
+
+        // Edges: rebuilt outright, carrying observed ranges across.
+        this.widget.edges = snap
+            .edges
+            .iter()
+            .filter_map(|edge| {
+                let from = snap.nodes.get(edge.from)?.id;
+                let to = snap.nodes.get(edge.to)?.id;
+                let mut range = ranges.get(&(from, to, edge.kind)).copied();
+                if let Some(value) = edge.activity {
+                    range = Some(match range {
+                        Some((lo, hi)) => (lo.min(value), hi.max(value)),
+                        None => (value, value),
+                    });
+                }
+                Some(EdgeSlot { from, to, kind: edge.kind, value: edge.activity, range })
+            })
+            .collect();
+
+        this.ctx.request_render();
+    }
+
+    /// The `WidgetId` of a node's box, for tests and for M7's selection
+    /// plumbing. `None` if the canvas has no such node.
+    pub fn widget_id_of(&self, id: NodeId) -> Option<WidgetId> {
+        self.slots.get(&id).map(|slot| slot.pod.id())
+    }
+
+    /// A node's current canvas-space position.
+    pub fn position_of(&self, id: NodeId) -> Option<Point> {
+        self.slots.get(&id).map(|slot| slot.pos)
+    }
+
+    /// How many edges are currently painted.
+    pub fn edge_count(&self) -> usize {
+        self.edges.len()
+    }
+
     /// Sets the zoom factor and re-applies pan/zoom/position to every node.
     pub fn set_zoom(this: &mut WidgetMut<'_, Self>, zoom: f64) {
         this.widget.zoom = zoom;
@@ -393,33 +465,40 @@ impl GraphCanvas {
     }
 
     fn retransform_via_mutate_ctx(this: &mut WidgetMut<'_, Self>) {
-        for idx in 0..this.widget.nodes.len() {
-            let transform = this.widget.child_transform(idx);
-            let mut child = this.ctx.get_mut(&mut this.widget.nodes[idx]);
+        for id in this.widget.nodes.clone() {
+            if !this.widget.slots.contains_key(&id) {
+                continue;
+            }
+            let transform = this.widget.child_transform(id);
+            let mut child = this.ctx.get_mut(&mut this.widget.slots.get_mut(&id).unwrap().pod);
             child.set_transform(transform);
         }
     }
 
-    /// Sets which node is selected (by insertion index), updating both the
-    /// previously- and newly-selected `NodeBox`'s own `selected` flag.
-    pub fn set_selected(this: &mut WidgetMut<'_, Self>, selected: Option<usize>) {
+    /// Sets which node is selected, updating both the previously- and
+    /// newly-selected `NodeBox`'s own `selected` flag.
+    pub fn set_selected(this: &mut WidgetMut<'_, Self>, selected: Option<NodeId>) {
         let previous = this.widget.selected;
         if previous == selected {
             return;
         }
         this.widget.selected = selected;
-        if let Some(idx) = previous {
-            let mut child = this.ctx.get_mut(&mut this.widget.nodes[idx]);
+        if let Some(id) = previous
+            && let Some(slot) = this.widget.slots.get_mut(&id)
+        {
+            let mut child = this.ctx.get_mut(&mut slot.pod);
             NodeBox::set_selected(&mut child, false);
         }
-        if let Some(idx) = selected {
-            let mut child = this.ctx.get_mut(&mut this.widget.nodes[idx]);
+        if let Some(id) = selected
+            && let Some(slot) = this.widget.slots.get_mut(&id)
+        {
+            let mut child = this.ctx.get_mut(&mut slot.pod);
             NodeBox::set_selected(&mut child, true);
         }
     }
 
-    /// Returns the currently selected node's insertion index, if any.
-    pub fn selected_node(&self) -> Option<usize> {
+    /// Returns the currently selected node, if any.
+    pub fn selected_node(&self) -> Option<NodeId> {
         self.selected
     }
 
@@ -447,16 +526,17 @@ impl GraphCanvas {
     /// then this node's canvas-space position. `layout` places every child
     /// at `Point::ZERO`, so this is the *entire* mapping from a node's own
     /// local (0,0)-(160,72) box to the window.
-    fn child_transform(&self, idx: usize) -> Affine {
-        Affine::translate(self.pan) * Affine::scale(self.zoom) * Affine::translate(self.positions[idx].to_vec2())
+    fn child_transform(&self, id: NodeId) -> Affine {
+        let pos = self.slots.get(&id).map(|slot| slot.pos).unwrap_or_default();
+        Affine::translate(self.pan) * Affine::scale(self.zoom) * Affine::translate(pos.to_vec2())
     }
 
-    fn paint_edge(&self, painter: &mut Painter<'_>, from: Point, to: Point, brush: Color) {
+    fn paint_edge(&self, painter: &mut Painter<'_>, from: Point, to: Point, brush: Color, width: f64) {
         let dx = ((to.x - from.x) * 0.5).abs().max(30.0);
         let mut path = BezPath::new();
         path.move_to(from);
         path.curve_to(Point::new(from.x + dx, from.y), Point::new(to.x - dx, to.y), to);
-        painter.stroke(&path, &Stroke::new(2.0), brush).draw();
+        painter.stroke(&path, &Stroke::new(width), brush).draw();
     }
 
     /// Maps a canvas-space point to the window frame `GraphCanvas::paint`
@@ -468,8 +548,10 @@ impl GraphCanvas {
 
     /// `EventCtx` version of clearing the selection (background click).
     fn clear_selection(&mut self, ctx: &mut EventCtx<'_>) {
-        if let Some(idx) = self.selected.take() {
-            ctx.mutate_child_later(&mut self.nodes[idx], |mut node: WidgetMut<'_, NodeBox>| {
+        if let Some(id) = self.selected.take()
+            && let Some(slot) = self.slots.get_mut(&id)
+        {
+            ctx.mutate_child_later(&mut slot.pod, |mut node: WidgetMut<'_, NodeBox>| {
                 NodeBox::set_selected(&mut node, false);
             });
         }
@@ -477,50 +559,113 @@ impl GraphCanvas {
 
     /// `ActionCtx` version of selecting a node (a `NodeBox` reported
     /// `NodeBoxAction::Selected`).
-    fn select_from_action(&mut self, ctx: &mut ActionCtx<'_>, idx: usize) {
+    fn select_from_action(&mut self, ctx: &mut ActionCtx<'_>, id: NodeId) {
         let previous = self.selected;
-        if previous == Some(idx) {
+        if previous == Some(id) {
             return;
         }
-        self.selected = Some(idx);
-        if let Some(prev_idx) = previous {
-            ctx.mutate_child_later(&mut self.nodes[prev_idx], |mut node: WidgetMut<'_, NodeBox>| {
+        self.selected = Some(id);
+        if let Some(prev_id) = previous
+            && let Some(slot) = self.slots.get_mut(&prev_id)
+        {
+            ctx.mutate_child_later(&mut slot.pod, |mut node: WidgetMut<'_, NodeBox>| {
                 NodeBox::set_selected(&mut node, false);
             });
         }
-        ctx.mutate_child_later(&mut self.nodes[idx], |mut node: WidgetMut<'_, NodeBox>| {
-            NodeBox::set_selected(&mut node, true);
-        });
+        if let Some(slot) = self.slots.get_mut(&id) {
+            ctx.mutate_child_later(&mut slot.pod, |mut node: WidgetMut<'_, NodeBox>| {
+                NodeBox::set_selected(&mut node, true);
+            });
+        }
     }
 
     /// `EventCtx` version of re-applying pan/zoom/position to every node
     /// (scroll-driven pan/zoom affects all of them at once).
     fn retransform_all_from_event(&mut self, ctx: &mut EventCtx<'_>) {
-        for idx in 0..self.nodes.len() {
-            let transform = self.child_transform(idx);
-            ctx.mutate_child_later(&mut self.nodes[idx], move |mut node: WidgetMut<'_, NodeBox>| {
-                node.set_transform(transform);
-            });
+        for id in self.nodes.clone() {
+            let transform = self.child_transform(id);
+            if let Some(slot) = self.slots.get_mut(&id) {
+                ctx.mutate_child_later(&mut slot.pod, move |mut node: WidgetMut<'_, NodeBox>| {
+                    node.set_transform(transform);
+                });
+            }
         }
         ctx.request_paint_only();
     }
 
     /// `ActionCtx` version of re-applying pan/zoom/position to a single node
     /// (a drag only moves the one node being dragged).
-    fn retransform_one_from_action(&mut self, ctx: &mut ActionCtx<'_>, idx: usize) {
-        let transform = self.child_transform(idx);
-        ctx.mutate_child_later(&mut self.nodes[idx], move |mut node: WidgetMut<'_, NodeBox>| {
-            node.set_transform(transform);
-        });
+    fn retransform_one_from_action(&mut self, ctx: &mut ActionCtx<'_>, id: NodeId) {
+        let transform = self.child_transform(id);
+        if let Some(slot) = self.slots.get_mut(&id) {
+            ctx.mutate_child_later(&mut slot.pod, move |mut node: WidgetMut<'_, NodeBox>| {
+                node.set_transform(transform);
+            });
+        }
     }
+}
+
+/// Base colour per edge kind, brightened and thickened by activity.
+///
+/// An edge with no readable activity (every event edge, every `Feeds` edge,
+/// every continuous edge carrying something other than an `f32`) draws at the
+/// base weight. Design §4 -- that is a decision, not an omission.
+fn edge_style(edge: &EdgeSlot) -> (Color, f64) {
+    let base = match edge.kind {
+        EdgeKind::Param => Color::from_rgb8(140, 140, 155),
+        EdgeKind::Feeds => Color::from_rgb8(120, 165, 140),
+    };
+    let Some(t) = normalised(edge) else {
+        return (base, 2.0);
+    };
+    let lift = |c: u8| (c as f32 + (255.0 - c as f32) * t).round().clamp(0.0, 255.0) as u8;
+    let [r, g, b, _] = base.to_rgba8().to_u8_array();
+    (Color::from_rgb8(lift(r), lift(g), lift(b)), 2.0 + 3.0 * t as f64)
+}
+
+/// The edge's current value mapped into 0..1 through its observed range.
+/// `None` when there is no value; `0.5` when the range is degenerate (every
+/// sample so far identical), which is the only neutral answer available.
+fn normalised(edge: &EdgeSlot) -> Option<f32> {
+    let value = edge.value?;
+    let (lo, hi) = edge.range?;
+    if (hi - lo).abs() < f32::EPSILON {
+        return Some(0.5);
+    }
+    Some(((value - lo) / (hi - lo)).clamp(0.0, 1.0))
 }
 
 #[cfg(test)]
 mod tests {
     use super::GraphCanvas;
+    use crate::snapshot::{EdgeKind, EdgeView, NodeView, WorldSnapshot};
+    use bevy_ecs::entity::Entity;
     use masonry::core::{DefaultProperties, PointerButton, Widget};
     use masonry_core::kurbo::{Point, Vec2};
     use masonry_testing::TestHarness;
+    use sway_graph::NodeId;
+
+    fn node(id: u32, name: &str, pos: Option<Point>) -> NodeView {
+        NodeView {
+            entity: Entity::from_raw_u32(id).expect("valid entity id"),
+            id: NodeId(id),
+            name: name.to_string(),
+            pos,
+        }
+    }
+
+    fn snapshot(nodes: Vec<NodeView>, edges: Vec<EdgeView>) -> WorldSnapshot {
+        WorldSnapshot { tree: Vec::new(), nodes, edges }
+    }
+
+    fn harness_with(snap: WorldSnapshot) -> TestHarness<GraphCanvas> {
+        let mut harness =
+            TestHarness::create(DefaultProperties::default(), GraphCanvas::new().prepare());
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::apply_snapshot(&mut canvas, &snap);
+        });
+        harness
+    }
 
     /// The claim spec §2.8 makes for masonry, reduced to an assertion.
     ///
@@ -530,24 +675,15 @@ mod tests {
     /// masonry's `window_transform` inverse did not drive hit-testing, this
     /// press would land on whatever is at unscaled (210, 210) instead, and a
     /// node editor built on it would be subtly, unfixably wrong under zoom.
-    ///
-    /// Deviations from the brief's literal harness calls (all required to
-    /// compile against the pinned rev's real API -- see the task 7 report):
-    /// - `TestHarness::create` takes `(DefaultProperties, NewWidget<W>)`, not
-    ///   just the root widget; `GraphCanvas` doesn't use style properties, so
-    ///   `DefaultProperties::default()` (empty) is enough.
-    /// - `harness.root_widget()` already returns `WidgetRef<'_, GraphCanvas>`
-    ///   (it's generic over the harness's own `W`), so the brief's extra
-    ///   `.downcast::<GraphCanvas>()` doesn't type-check -- it would return
-    ///   `Option<WidgetRef<GraphCanvas>>` -- and is dropped.
-    /// - `mouse_button_press` takes `Option<PointerButton>`, not `PointerButton`.
     #[test]
     fn press_under_zoom_reaches_the_scaled_node() {
-        let canvas = GraphCanvas::new()
-            .with_node(0, Point::new(100.0, 100.0), "a")
-            .with_node(1, Point::new(400.0, 100.0), "b");
-
-        let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
+        let mut harness = harness_with(snapshot(
+            vec![
+                node(0, "a", Some(Point::new(100.0, 100.0))),
+                node(1, "b", Some(Point::new(400.0, 100.0))),
+            ],
+            vec![],
+        ));
         harness.edit_root_widget(|mut canvas| {
             GraphCanvas::set_zoom(&mut canvas, 2.0);
         });
@@ -555,34 +691,31 @@ mod tests {
         harness.mouse_move(Point::new(210.0, 210.0));
         harness.mouse_button_press(Some(PointerButton::Primary));
 
-        let selected = harness.root_widget().selected_node();
-        assert_eq!(selected, Some(0), "the press should have selected the node at canvas (100,100)");
+        assert_eq!(harness.root_widget().selected_node(), Some(NodeId(0)));
     }
 
     #[test]
     fn press_outside_any_node_clears_selection() {
-        let canvas = GraphCanvas::new().with_node(0, Point::new(100.0, 100.0), "a");
-        let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
-
+        let mut harness = harness_with(snapshot(
+            vec![node(0, "a", Some(Point::new(100.0, 100.0)))],
+            vec![],
+        ));
         harness.edit_root_widget(|mut canvas| {
-            GraphCanvas::set_selected(&mut canvas, Some(0));
+            GraphCanvas::set_selected(&mut canvas, Some(NodeId(0)));
         });
+
         harness.mouse_move(Point::new(20.0, 20.0));
         harness.mouse_button_press(Some(PointerButton::Primary));
 
         assert_eq!(harness.root_widget().selected_node(), None);
     }
 
-    /// Fix round 1: brief step 4's "Middle-drag ... pans directly", the
-    /// finding from the review that flagged it as unimplemented despite the
-    /// original report claiming pan was complete. Widget-level (not one of
-    /// the two gate tests, which stay untouched): presses the middle
-    /// button, drags, and checks `pan` moved by exactly the raw window-space
-    /// delta -- unscaled, unlike node dragging's `delta / zoom`.
     #[test]
     fn middle_drag_pans_the_canvas_by_the_raw_delta() {
-        let canvas = GraphCanvas::new().with_node(0, Point::new(100.0, 100.0), "a");
-        let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
+        let mut harness = harness_with(snapshot(
+            vec![node(0, "a", Some(Point::new(100.0, 100.0)))],
+            vec![],
+        ));
 
         harness.mouse_move(Point::new(50.0, 50.0));
         harness.mouse_button_press(Some(PointerButton::Auxiliary));
@@ -593,15 +726,14 @@ mod tests {
     }
 
     /// A middle-drag that starts *over* a node must still pan the canvas,
-    /// not drag the node -- `NodeBox` only claims the primary button (see
-    /// its `on_pointer_event`), so this exercises that the middle button
-    /// really does bubble up instead of being swallowed by the node.
+    /// not drag the node -- `NodeBox` only claims the primary button.
     #[test]
     fn middle_drag_over_a_node_pans_instead_of_dragging_it() {
-        let canvas = GraphCanvas::new().with_node(0, Point::new(100.0, 100.0), "a");
-        let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
+        let mut harness = harness_with(snapshot(
+            vec![node(0, "a", Some(Point::new(100.0, 100.0)))],
+            vec![],
+        ));
 
-        // (150, 130) is inside node 0's unscaled border box (100,100)-(260,172).
         harness.mouse_move(Point::new(150.0, 130.0));
         harness.mouse_button_press(Some(PointerButton::Auxiliary));
         harness.mouse_move(Point::new(170.0, 150.0));
@@ -611,18 +743,16 @@ mod tests {
         assert_eq!(harness.root_widget().selected_node(), None);
     }
 
-    /// Scroll `PixelDelta` arrives in physical pixels; pan is logical. At
-    /// scale_factor 2, a physical (40, 20) wheel delta must pan by logical
-    /// (-20, -10), not the raw physical amount.
     #[test]
     fn scroll_pixel_delta_converts_physical_to_logical() {
         use masonry::core::{PointerEvent, PointerScrollEvent, PointerState, ScrollDelta};
         use masonry::dpi::PhysicalPosition;
         use masonry_testing::PRIMARY_MOUSE;
 
-        let canvas = GraphCanvas::new().with_node(0, Point::new(100.0, 100.0), "a");
-        let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
-
+        let mut harness = harness_with(snapshot(
+            vec![node(0, "a", Some(Point::new(100.0, 100.0)))],
+            vec![],
+        ));
         let state = PointerState {
             scale_factor: 2.0,
             position: PhysicalPosition { x: 100.0, y: 100.0 },
@@ -638,17 +768,16 @@ mod tests {
         assert_eq!(harness.root_widget().pan(), Vec2::new(-20.0, -10.0));
     }
 
-    /// LineDelta policy is logical CSS px; one line at any DPR must pan by
-    /// the same logical amount (32 px here).
     #[test]
     fn scroll_line_delta_is_dpi_invariant() {
         use masonry::core::{PointerEvent, PointerScrollEvent, PointerState, ScrollDelta};
         use masonry::dpi::PhysicalPosition;
         use masonry_testing::PRIMARY_MOUSE;
 
-        let canvas = GraphCanvas::new().with_node(0, Point::new(100.0, 100.0), "a");
-        let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
-
+        let mut harness = harness_with(snapshot(
+            vec![node(0, "a", Some(Point::new(100.0, 100.0)))],
+            vec![],
+        ));
         let state = PointerState {
             scale_factor: 2.0,
             position: PhysicalPosition { x: 100.0, y: 100.0 },
@@ -664,39 +793,95 @@ mod tests {
         assert_eq!(harness.root_widget().pan(), Vec2::new(0.0, -32.0));
     }
 
-    /// The Bevy `ViewportPlaceholder` is registered after the nodes (last in
-    /// z-order). If it accepted pointer interaction it would steal every
-    /// press over the center of the canvas -- including a node dragged into
-    /// that rect. It must let hits fall through.
     #[test]
-    fn press_on_node_overlapping_viewport_still_selects_the_node() {
-        use crate::external::ViewportPlaceholder;
-        use crate::node_box;
-        use masonry::kurbo::Size;
-        use masonry::layout::AsUnit;
-        use masonry::properties::Dimensions;
+    fn a_node_surviving_a_snapshot_keeps_its_widget_id() {
+        let first = snapshot(vec![node(0, "a", Some(Point::new(10.0, 10.0)))], vec![]);
+        let mut harness = harness_with(first);
+        let before = harness.root_widget().widget_id_of(NodeId(0)).unwrap();
 
-        let viewport = ViewportPlaceholder::new()
-            .prepare()
-            .with_props(Dimensions::fixed(400.0.px(), 300.0.px()));
-        let canvas = GraphCanvas::new()
-            .with_node(0, Point::new(220.0, 40.0), "over_viewport")
-            .with_viewport(viewport, Point::new(200.0, 20.0), Size::new(400.0, 300.0));
-
-        let mut harness = TestHarness::create(DefaultProperties::default(), canvas.prepare());
-
-        // Center of the node box, well inside the viewport's layout rect.
-        let click = Point::new(
-            220.0 + node_box::SIZE.width / 2.0,
-            40.0 + node_box::SIZE.height / 2.0,
+        let second = snapshot(
+            vec![
+                node(0, "a", Some(Point::new(10.0, 10.0))),
+                node(1, "b", Some(Point::new(300.0, 10.0))),
+            ],
+            vec![],
         );
-        harness.mouse_move(click);
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::apply_snapshot(&mut canvas, &second);
+        });
+
+        assert_eq!(harness.root_widget().widget_id_of(NodeId(0)), Some(before));
+        assert!(harness.root_widget().widget_id_of(NodeId(1)).is_some());
+    }
+
+    #[test]
+    fn a_node_dropped_from_a_snapshot_is_removed() {
+        let mut harness = harness_with(snapshot(
+            vec![node(0, "a", None), node(1, "b", None)],
+            vec![],
+        ));
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::apply_snapshot(&mut canvas, &snapshot(vec![node(1, "b", None)], vec![]));
+        });
+
+        assert_eq!(harness.root_widget().widget_id_of(NodeId(0)), None);
+        assert!(harness.root_widget().widget_id_of(NodeId(1)).is_some());
+    }
+
+    /// Design §5: `EditorPos` is a *seed*, read when a node box first appears
+    /// and never again. Without this, the next frame's snapshot would snap a
+    /// dragged node straight back to its authored position.
+    #[test]
+    fn a_dragged_node_is_not_snapped_back_by_the_next_snapshot() {
+        let snap = snapshot(vec![node(0, "a", Some(Point::new(100.0, 100.0)))], vec![]);
+        let mut harness = harness_with(snap.clone());
+
+        harness.mouse_move(Point::new(150.0, 130.0));
         harness.mouse_button_press(Some(PointerButton::Primary));
+        harness.mouse_move(Point::new(200.0, 180.0));
+        harness.mouse_button_release(Some(PointerButton::Primary));
+        let dragged = harness.root_widget().position_of(NodeId(0)).unwrap();
+        assert_ne!(dragged, Point::new(100.0, 100.0), "the drag must have moved it");
 
-        assert_eq!(
-            harness.root_widget().selected_node(),
-            Some(0),
-            "ViewportPlaceholder must not steal hits from overlapping nodes"
-        );
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::apply_snapshot(&mut canvas, &snap);
+        });
+
+        assert_eq!(harness.root_widget().position_of(NodeId(0)), Some(dragged));
+    }
+
+    /// A node with no `EditorPos` lands on the fallback grid, and two such
+    /// nodes never collide.
+    #[test]
+    fn unpositioned_nodes_land_on_distinct_fallback_slots() {
+        let harness = harness_with(snapshot(
+            vec![node(0, "a", None), node(1, "b", None)],
+            vec![],
+        ));
+
+        let a = harness.root_widget().position_of(NodeId(0)).unwrap();
+        let b = harness.root_widget().position_of(NodeId(1)).unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn edges_are_kept_only_when_both_endpoints_exist() {
+        let harness = harness_with(snapshot(
+            vec![node(0, "a", None), node(1, "b", None)],
+            vec![EdgeView { from: 0, to: 1, kind: EdgeKind::Param, activity: Some(0.5) }],
+        ));
+        assert_eq!(harness.root_widget().edge_count(), 1);
+
+        let mut harness = harness;
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::apply_snapshot(
+                &mut canvas,
+                &snapshot(
+                    vec![node(0, "a", None)],
+                    vec![EdgeView { from: 0, to: 9, kind: EdgeKind::Param, activity: None }],
+                ),
+            );
+        });
+        assert_eq!(harness.root_widget().edge_count(), 0);
     }
 }

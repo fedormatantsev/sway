@@ -24,7 +24,7 @@ use sway_graph::{
 /// Which kind of edge this is. `ParentEdge` is deliberately absent: the tree
 /// pane shows parenting already, and drawing it twice makes the canvas harder
 /// to read for no gain (design §9).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum EdgeKind {
     Param,
     Feeds,

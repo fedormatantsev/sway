@@ -27,60 +27,22 @@ use masonry_core::app::{
     WindowSizePolicy,
 };
 use masonry_core::core::{NewWidget, TextEvent, Widget, WindowEvent as MasonryWindowEvent};
-use masonry::kurbo::{Affine, Point};
-use masonry::layout::AsUnit;
-use masonry::properties::Dimensions;
+use masonry::kurbo::Affine;
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use winit::dpi::PhysicalSize;
 
 use crate::canvas::GraphCanvas;
-use crate::external::ViewportPlaceholder;
 
-/// The Bevy viewport's fixed footprint in the graph canvas, in logical
-/// pixels. Matches `EDITOR_VIEWPORT_SIZE` in `sway-app`, purely for visual
-/// continuity across Tasks 5-6 -- nothing requires this exact number now
-/// that masonry's widget tree decides the rect.
-const VIEWPORT_WIDTH: f64 = 640.0;
-const VIEWPORT_HEIGHT: f64 = 360.0;
-
-/// Builds the root widget: a [`GraphCanvas`] carrying a handful of
-/// placeholder node boxes and edges around Task 5's [`ViewportPlaceholder`],
-/// which keeps its seat in the tree as one of the canvas's children so the
-/// Bevy viewport still appears (`sway_editor::external::viewport_rect` reads
-/// its layout box back out of the `VisualLayerPlan`, same as before).
+/// Builds the root widget.
 ///
-/// Deviation from a stale claim this function's predecessor's doc comment
-/// made: the previous placeholder root relied on `Dimensions::MAX` to fill
-/// the window, attributing that to `RenderRoot`'s `LayerStack` also using
-/// `Dimensions::MAX` internally. That was wrong -- under
-/// `WindowSizePolicy::User`, `run_layout_pass` resolves the root via
-/// `SizeDef::fixed(window_size)` and `LayerStack::layout` forwards it
-/// unconditionally, so `Dimensions::MAX` was inert on that path the whole
-/// time. `GraphCanvas` below sets no `Dimensions` property at all and fills
-/// the window regardless, which is the actual mechanism at work.
+/// Stopgap: an empty [`GraphCanvas`], content arriving through
+/// [`EditorUi::apply_snapshot`]. Task 7 replaces this with the real
+/// three-pane root (hierarchy / viewport / canvas, nested `Split`s) once
+/// `SceneTree` exists; until then the Bevy viewport has no seat in the tree,
+/// which is fine -- this state is never shipped, only an intermediate point
+/// within the same development branch.
 fn graph_root() -> NewWidget<dyn Widget> {
-    let viewport = ViewportPlaceholder::new()
-        .prepare()
-        .with_props(Dimensions::fixed(VIEWPORT_WIDTH.px(), VIEWPORT_HEIGHT.px()));
-
-    GraphCanvas::new()
-        .with_node(0, Point::new(20.0, 20.0), "Source")
-        .with_node(1, Point::new(20.0, 160.0), "Filter")
-        .with_node(2, Point::new(20.0, 300.0), "Transform")
-        .with_node(3, Point::new(860.0, 20.0), "Output")
-        .with_node(4, Point::new(860.0, 160.0), "Debug View")
-        .with_node(5, Point::new(860.0, 300.0), "Camera")
-        .with_edge(0, 1)
-        .with_edge(1, 2)
-        .with_edge(3, 4)
-        .with_edge(4, 5)
-        .with_viewport(
-            viewport,
-            Point::new(200.0, 20.0),
-            masonry::kurbo::Size::new(VIEWPORT_WIDTH, VIEWPORT_HEIGHT),
-        )
-        .prepare()
-        .erased()
+    GraphCanvas::new().prepare().erased()
 }
 
 /// The masonry widget tree, driven by winit events, one `RenderRoot` per
