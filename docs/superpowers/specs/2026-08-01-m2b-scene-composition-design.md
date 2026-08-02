@@ -2,6 +2,7 @@
 
 **Date:** 2026-08-01
 **Status:** Approved, pre-implementation
+**Revision:** implementation showed that the cook gate is one bit per node rather than one per reason, so a node owning an expensive resource needs a second node-local gate inside its cook (§6, §7); that `Produces` needs a companion `produced_change_tick` and a `TypePath` bound rather than bare `'static` (§4); that slots need their own `SLOT_ORDINALS` const (§4); and that `Group` and `Mesh` carry three scalar rotation ports rather than one `rotation` (§8). See `docs/superpowers/reports/2026-08-01-m2b-scene-composition-findings.md`
 **Parent spec:** `2026-07-25-sway-design.md` §2.1, §2.4, §2.5, §2.9, §2.10, §2.11, §3, §4, §5 (M2), §7
 **Predecessor:** `2026-07-31-m2a-graph-engine-design.md`, and the findings at
 `docs/superpowers/reports/2026-07-31-m2a-graph-engine-findings.md`
@@ -150,10 +151,22 @@ project → spawn node entities
 trait NodeType: 'static {
     type Params:  Reflect + Component;
     type Outputs: Reflect;
-    type Slots:   Reflect;    // named Feeds inputs; () when the node has none
-    type Produces: 'static;   // what a Feeds edge from this node carries; ()
+    type Slots:   Reflect;    // named Feeds inputs; NoSlots when it has none
+    // What a Feeds edge from this node carries; () for none.
+    // REVISED: bounded `TypePath + Send + Sync + 'static`, not bare `'static`.
+    // `Slot<T>` needs `T: TypePath` to populate `ReflectSlot::capability_path`,
+    // and error messages use `type_path()` rather than `type_name`. §4's actual
+    // concern — not forcing `Reflect` onto `Geometry`'s `Arc<Vec<T>>` storage —
+    // is still met, since `Geometry` derives `TypePath` alone.
+    type Produces: TypePath + Send + Sync + 'static;
     type State:   Component + Default;
 
+    /// `(field name, ordinal)` for every port, verified at registration.
+    const PORT_ORDINALS: &'static [(&'static str, u16)];
+    /// REVISED: slots need the same guard, as their own const. M2a's finding
+    /// that name-only matching can accept the wrong declaration applies to
+    /// slots for the same reason it applied to ports.
+    const SLOT_ORDINALS: &'static [(&'static str, u16)] = &[];
     /// Does this node carry a Transform, i.e. can it appear in the scene tree?
     const SPATIAL: bool = false;
     /// Whether `cook` is meaningful. `register` stores `Some(cook)` only if set.
@@ -162,6 +175,17 @@ trait NodeType: 'static {
     fn register(app: &mut App);
     fn tick(world: &mut World, node: Entity, ports: &mut PortView, t: &TickCtx);
     fn cook(_world: &mut World, _node: Entity, _slots: &SlotView) {}
+
+    /// REVISED — required, and absent from this sketch as first written.
+    /// `Produces` names a capability but carries no way to ask *when it last
+    /// changed*, which is exactly what §6's third dirty source needs. Keeping
+    /// it node-supplied is what lets the engine gate on `Geometry` without
+    /// `sway-graph` depending on `sway-geo`. `None` — the default, which the
+    /// material node keeps — means "changes to what I produce do not require
+    /// my consumers to re-cook".
+    fn produced_change_tick(_world: &World, _node: Entity) -> Option<Tick> {
+        None
+    }
 }
 ```
 
@@ -300,6 +324,22 @@ A node whose input is driven by an LFO therefore cooks every tick. That is
 correct and intended: §7's recorded position is that cook cost belongs to the
 graph author and the tool reports rather than polices it.
 
+**REVISED — the flag is one bit per node, not one bit per reason, and that is
+not the whole gate.** A node with both param ports and geometry slots is
+dirtied by *any* of its reasons and cannot ask which one fired. `Mesh` is that
+node: editing its `translation` dirties it, its cook runs, and — with nothing
+further — it re-uploads the mesh asset for a geometry that did not change,
+which is precisely the waste §2.11 names. So `Mesh` carries a **second,
+node-local gate inside its cook**: a fingerprint of `P`'s `Arc` pointer plus
+the point count, compared before `Assets` is touched at all.
+
+The engine gate decides *whether to call cook*; a node that owns an expensive
+resource must still decide *whether to write it*. Any future node holding a
+GPU buffer or an asset handle needs the same two-level structure, and §7's
+`cook` contract should be read as "you may be called when nothing you care
+about changed" rather than as a promise. The findings report records the two
+places where this leaves a cook depending on a value neither gate observes.
+
 **No time-dependent flag at M2b.** Neither `Grid` nor `Displace` needs one —
 both are pure functions of their inputs — and M2a's precedent applies: it
 declined to add observer triggers before a consumer existed, because an
@@ -354,12 +394,19 @@ through `Commands` (§2.6, §2.11).
 |---|---|---|---|---|---|
 | `Grid` | `rows`, `cols`, `width`, `height` | — | `Geometry` | yes — `P`, `N`, `uv`, indices | no |
 | `Displace` | `amount`, `frequency` | `geo` | `Geometry` | yes — `P += N * f(P)` | no |
-| `Mesh` | `translation`, `rotation`, `scale` | `geo`, `material` | — | yes — `Geometry` → `Assets<Mesh>` | yes |
-| `Group` | `translation`, `rotation`, `scale` | — | — | no | yes |
+| `Mesh` | `translation`, `rotation_x/y/z`, `scale` | `geo`, `material` | — | yes — `Geometry` → `Assets<Mesh>` | yes |
+| `Group` | `translation`, `rotation_x/y/z`, `scale` | — | — | no | yes |
 | `StandardMaterial` | `base_color`, `emissive`, `metallic`, `perceptual_roughness` | — | `MaterialOf<StandardMaterial>` | no | no |
 | `Rgb` | `r`, `g`, `b` | — | — | no | no |
 
 `Grid` and `Displace` live in `sway-geo`; the rest in `sway-nodes`.
+
+**REVISED — rotation is three scalar `f32` ports, not one `rotation`.** §2.4's
+rule is that a node's ports are simply its fields, rotation is the thing a
+signal actually drives, and every M2a signal node outputs `f32`; a `Vec3` or
+`Quat` rotation port would need a vector-producing node that does not exist.
+`translation` and `scale` stay `Vec3` because nothing drives them at M2b —
+whenever something does, they face the identical choice.
 
 `Mesh` is where a `Feeds` chain enters the `ChildOf` tree, which §2.10 calls
 the boundary an author most needs to understand. Its cook is where the gate
