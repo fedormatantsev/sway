@@ -1,0 +1,6 @@
+# CoreMIDI virtual destination "Sway" is process-global. Parallel sway-midi
+# tests that call open_input race on the same endpoint (see
+# virtual_destination_receives_midisend_note_on). Libtest has no per-crate
+# thread limit under `cargo test --workspace`, so serialize all test harnesses.
+[env]
+RUST_TEST_THREADS = "1"

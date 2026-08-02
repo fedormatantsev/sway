@@ -65,29 +65,35 @@ mod tests {
 
     #[test]
     fn host_time_near_now_maps_to_fixed_elapsed_time() {
+        let host_time = sway_midi::host_time_now();
+        let elapsed = 42.0;
+        // Pre-seed the epoch from the same stamp so the mapping is exact algebra,
+        // not a race between send-time and first-drain host_time_now() samples.
+        let epoch = sway_midi::host_time_to_secs(host_time) - elapsed;
+
         let (tx, rx) = crossbeam_channel::unbounded();
         tx.send(sway_midi::MidiEvent {
             status: 0x90,
             data1: 60,
             data2: 100,
-            host_time: sway_midi::host_time_now(),
+            host_time,
         })
         .unwrap();
 
         let mut fixed = Time::<Fixed>::from_hz(120.0);
-        fixed.advance_by(Duration::from_secs_f64(42.0));
+        fixed.advance_by(Duration::from_secs_f64(elapsed));
         let mut app = App::new();
         app.insert_resource(fixed)
             .insert_resource(MidiRx(rx))
-            .init_resource::<MidiTimeEpoch>()
+            .insert_resource(MidiTimeEpoch(Some(epoch)))
             .init_resource::<MidiInbox>()
             .add_systems(PreUpdate, feed_midi);
         app.update();
 
         let mapped = app.world().resource::<MidiInbox>().events[0].0;
         assert!(
-            (mapped - 42.0).abs() < 0.05,
-            "near-now host timestamp mapped to {mapped}, expected near fixed elapsed 42s"
+            (mapped - elapsed).abs() < 1e-9,
+            "near-now host timestamp mapped to {mapped}, expected fixed elapsed {elapsed}s"
         );
     }
 
