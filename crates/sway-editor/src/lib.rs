@@ -18,9 +18,11 @@ pub mod snapshot;
 #[cfg(test)]
 mod test_graph;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use bevy_ecs::entity::Entity;
 use imaging::record::replay_transformed;
 use masonry_core::app::{
     RenderRoot, RenderRootOptions, RenderRootSignal, VisualLayerKind, VisualLayerPlan,
@@ -31,6 +33,7 @@ use masonry::kurbo::Affine;
 use masonry::layout::AsUnit;
 use masonry::widgets::{Portal, Split};
 use masonry_core::kurbo::Axis;
+use sway_graph::NodeId;
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use winit::dpi::PhysicalSize;
 
@@ -97,6 +100,10 @@ pub struct EditorUi {
     /// host drives masonry's animation clock itself rather than through a
     /// real windowing event, because nothing else in this shell does.
     last_anim_tick: Instant,
+    /// The `NodeId` behind each entity, from the most recent snapshot.
+    /// Populated by `apply_snapshot`; used by `sync_selection` to translate a
+    /// tree-row selection (an `Entity`) into a canvas selection (a `NodeId`).
+    node_ids: HashMap<Entity, NodeId>,
 }
 
 impl EditorUi {
@@ -124,6 +131,7 @@ impl EditorUi {
             reducer: WindowEventReducer::default(),
             scale_factor,
             last_anim_tick: Instant::now(),
+            node_ids: HashMap::new(),
         }
     }
 
@@ -186,12 +194,58 @@ impl EditorUi {
     /// -- `SceneTree` compares its row signature, `GraphCanvas` reconciles by
     /// `NodeId` -- so calling this every frame is cheap in the steady state.
     pub fn apply_snapshot(&mut self, snap: &WorldSnapshot) {
+        self.node_ids = snap
+            .nodes
+            .iter()
+            .map(|node| (node.entity, node.id))
+            .collect();
+
         self.root.edit_widget_with_tag(SCENE_TREE_TAG, |mut tree| {
             SceneTree::apply_snapshot(&mut tree, snap);
         });
         self.root.edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
             GraphCanvas::apply_snapshot(&mut canvas, snap);
         });
+    }
+
+    /// Mirrors selection between the two panes.
+    ///
+    /// Whichever pane changed since the last call wins; if both changed, the
+    /// canvas does, arbitrarily but deterministically. `NodeId` is the shared
+    /// key, and a tree row that is not a graph node (a Bevy internal, an edge
+    /// entity) selects within the tree and highlights nothing in the canvas.
+    pub fn sync_selection(&mut self) {
+        let canvas_selection = self
+            .root
+            .edit_widget_with_tag(GRAPH_CANVAS_TAG, |canvas| {
+                canvas.widget.selected_node().and_then(|id| {
+                    canvas.widget.entity_of(id).map(|entity| (id, entity))
+                })
+            });
+        let tree_selection = self
+            .root
+            .edit_widget_with_tag(SCENE_TREE_TAG, |tree| tree.widget.selected());
+
+        match (canvas_selection, tree_selection) {
+            (Some((_, entity)), tree) if tree != Some(entity) => {
+                self.root.edit_widget_with_tag(SCENE_TREE_TAG, |mut tree| {
+                    SceneTree::set_selected(&mut tree, Some(entity));
+                });
+            }
+            (None, Some(entity)) => {
+                let node_id = self.last_snapshot_node_id(entity);
+                self.root.edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
+                    GraphCanvas::set_selected(&mut canvas, node_id);
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// The `NodeId` for an entity, from the most recent snapshot. `None` for
+    /// a row that is not a graph node.
+    fn last_snapshot_node_id(&self, entity: Entity) -> Option<NodeId> {
+        self.node_ids.get(&entity).copied()
     }
 
     /// Runs masonry's paint pass and returns the resulting visual-layer plan.
@@ -216,6 +270,8 @@ impl EditorUi {
     /// was wired in: an `External` layer that never receives an anim frame
     /// vanishes from the very next `VisualLayerPlan`.
     pub fn redraw(&mut self) -> VisualLayerPlan {
+        self.sync_selection();
+
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_anim_tick);
         self.last_anim_tick = now;
@@ -248,12 +304,18 @@ impl EditorUi {
 #[cfg(test)]
 mod tests {
     use super::EditorUi;
+    use crate::canvas::GraphCanvas;
+    use crate::scene_tree::SceneTree;
+    use crate::snapshot::{NodeView, TreeGroup, TreeRow, WorldSnapshot};
+    use bevy_ecs::entity::Entity;
     use imaging::Painter;
-    use kurbo::{Affine, Rect};
+    use kurbo::{Affine, Point as KurboPoint, Rect};
     use masonry_core::app::{VisualLayer, VisualLayerKind, VisualLayerPlan};
     use masonry_core::core::{NewWidget, WidgetId};
     use masonry::widgets::Label;
     use peniko::Color;
+    use sway_graph::NodeId;
+    use winit::dpi::PhysicalSize;
 
     fn dummy_widget_id() -> WidgetId {
         NewWidget::new(Label::new("")).id()
@@ -289,5 +351,59 @@ mod tests {
             EditorUi::flatten(&unscaled, 2.0),
             EditorUi::flatten(&pre_scaled, 1.0),
         );
+    }
+
+    fn one_node_snapshot() -> WorldSnapshot {
+        let entity = Entity::from_raw_u32(3).expect("valid entity id");
+        WorldSnapshot {
+            tree: vec![TreeRow {
+                entity,
+                group: TreeGroup::Graph,
+                depth: 0,
+                label: "LFO #1".to_string(),
+                node_id: Some(NodeId(1)),
+            }],
+            nodes: vec![NodeView {
+                entity,
+                id: NodeId(1),
+                name: "LFO".to_string(),
+                pos: Some(KurboPoint::new(10.0, 10.0)),
+            }],
+            edges: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn selecting_a_node_box_highlights_its_tree_row() {
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0);
+        let snap = one_node_snapshot();
+        ui.apply_snapshot(&snap);
+
+        ui.root.edit_widget_with_tag(crate::GRAPH_CANVAS_TAG, |mut canvas| {
+            GraphCanvas::set_selected(&mut canvas, Some(NodeId(1)));
+        });
+        ui.sync_selection();
+
+        let selected = ui
+            .root
+            .edit_widget_with_tag(crate::SCENE_TREE_TAG, |tree| tree.widget.selected());
+        assert_eq!(selected, Some(snap.nodes[0].entity));
+    }
+
+    #[test]
+    fn selecting_a_graph_node_row_highlights_its_node_box() {
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0);
+        let snap = one_node_snapshot();
+        ui.apply_snapshot(&snap);
+
+        ui.root.edit_widget_with_tag(crate::SCENE_TREE_TAG, |mut tree| {
+            SceneTree::set_selected(&mut tree, Some(snap.nodes[0].entity));
+        });
+        ui.sync_selection();
+
+        let selected = ui
+            .root
+            .edit_widget_with_tag(crate::GRAPH_CANVAS_TAG, |canvas| canvas.widget.selected_node());
+        assert_eq!(selected, Some(NodeId(1)));
     }
 }

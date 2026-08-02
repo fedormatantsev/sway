@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 
+use bevy_ecs::entity::Entity;
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
     AccessCtx, ActionCtx, ChildrenIds, ErasedAction, EventCtx, LayoutCtx, MeasureCtx, Modifiers,
@@ -57,6 +58,10 @@ struct NodeSlot {
     /// `apply_snapshot`.
     pos: Point,
     label: String,
+    /// The world entity behind this node. A `NodeId` can outlive the entity
+    /// it names across a recompile, so this is refreshed from the snapshot on
+    /// every `apply_snapshot`, not just when the slot is created.
+    entity: Entity,
 }
 
 /// One painted edge, resolved to node keys rather than snapshot indices so it
@@ -388,6 +393,10 @@ impl GraphCanvas {
                         let mut child = this.ctx.get_mut(&mut slot.pod);
                         NodeBox::set_label(&mut child, &view.name);
                     }
+                    // A `NodeId` can outlive the entity it names across a
+                    // recompile, so this is refreshed every snapshot even
+                    // when nothing else about the node changed.
+                    slot.entity = view.entity;
                 }
                 None => {
                     // `EditorPos` seeds a *new* box only; an existing box owns
@@ -407,7 +416,7 @@ impl GraphCanvas {
                         .to_pod();
                     this.widget.slots.insert(
                         view.id,
-                        NodeSlot { pod, pos, label: view.name.clone() },
+                        NodeSlot { pod, pos, label: view.name.clone(), entity: view.entity },
                     );
                     this.ctx.children_changed();
                 }
@@ -445,6 +454,12 @@ impl GraphCanvas {
     /// A node's current canvas-space position.
     pub fn position_of(&self, id: NodeId) -> Option<Point> {
         self.slots.get(&id).map(|slot| slot.pos)
+    }
+
+    /// The world entity behind a node, so a canvas selection can address the
+    /// matching tree row.
+    pub fn entity_of(&self, id: NodeId) -> Option<Entity> {
+        self.slots.get(&id).map(|slot| slot.entity)
     }
 
     /// How many edges are currently painted.
