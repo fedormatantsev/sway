@@ -8,14 +8,17 @@
 use bevy_app::App;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
+use bevy_ecs::hierarchy::ChildOf;
+use bevy_ecs::name::Name;
 use bevy_ecs::world::World;
 use bevy_math::Vec2;
 use bevy_reflect::Reflect;
 use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
+use bevy_transform::components::Transform;
 use sway_graph::{
     EdgeFrom, EdgeTo, EditorPos, GraphNode, GraphPlugin, NoOutputs, NoSlots, NodeId, NodeType,
-    NodeTypeId, NodeTypeRegistry, ParamEdge, PortArena, PortKind, PortView, TickCtx, compile,
-    register_node_type,
+    NodeTypeId, NodeTypeRegistry, ParamEdge, ParentEdge, PortArena, PortKind, PortView, TickCtx,
+    compile, register_node_type,
 };
 
 /// Graph tick rate for the fixture app. Matches `sway-graph`'s own test
@@ -49,6 +52,11 @@ impl NodeType for Emit {
     type State = EmitState;
 
     const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("value", Emit::OUT_VALUE)];
+    // `spawn_spatial` layers a `Transform` onto this type to stand in for a
+    // scene node (snapshot.rs's tree tests); `compile`'s structure pass
+    // rejects parenting a non-spatial node type (design §4), so this must be
+    // `true` for those fixtures' `ParentEdge`s to validate.
+    const SPATIAL: bool = true;
 
     fn register(_app: &mut App) {}
 
@@ -154,4 +162,36 @@ pub(crate) fn recompile(app: &mut App) {
         .resource_mut::<PortArena>()
         .resize(compiled.continuous_len, compiled.events_len);
     app.world_mut().insert_resource(compiled);
+}
+
+/// A graph node that is also a scene entity: carries a `Transform`, and so
+/// lands in the tree's `Scene` group (design §8).
+///
+/// `ChildOf` is inserted directly so the relationship is visible even before
+/// a `compile()`, but `compile`'s structure pass (crates/sway-graph/src/
+/// compile.rs, "apply structure") unconditionally rewrites every `GraphNode`
+/// entity's `ChildOf` from its `ParentEdge`s, clearing it when none exists --
+/// so a `ParentEdge` is spawned too, or the relationship would vanish the
+/// moment a caller recompiles.
+pub(crate) fn spawn_spatial(world: &mut World, id: u32, parent: Option<Entity>) -> Entity {
+    let mut entity = world.spawn((
+        GraphNode { id: NodeId(id), node_type: type_id::<Emit>(world) },
+        EmitParams,
+        EmitState,
+        Transform::default(),
+    ));
+    if let Some(parent) = parent {
+        entity.insert(ChildOf(parent));
+    }
+    let child = entity.id();
+    if let Some(parent) = parent {
+        world.spawn((ParentEdge, EdgeFrom(child), EdgeTo(parent)));
+    }
+    child
+}
+
+/// A plain, non-graph entity carrying a `Name` -- stands in for the camera
+/// and light `sway-app`'s `setup_scene` spawns outside the graph.
+pub(crate) fn spawn_named_spatial(world: &mut World, name: &str) -> Entity {
+    world.spawn((Name::new(name.to_string()), Transform::default())).id()
 }

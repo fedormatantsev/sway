@@ -11,11 +11,14 @@
 use std::collections::HashMap;
 
 use bevy_ecs::entity::Entity;
+use bevy_ecs::hierarchy::{ChildOf, Children};
+use bevy_ecs::name::Name;
 use bevy_ecs::world::World;
+use bevy_transform::components::Transform;
 use kurbo::Point;
 use sway_graph::{
     CompiledGraph, EdgeFrom, EdgeTo, EditorPos, FeedsEdge, GraphNode, NodeId, NodePlan,
-    NodeTypeRegistry, ParamEdge, PortArena, PortKind,
+    NodeTypeRegistry, ParamEdge, ParentEdge, PortArena, PortKind,
 };
 
 /// Which kind of edge this is. `ParentEdge` is deliberately absent: the tree
@@ -68,12 +71,35 @@ pub struct WorldSnapshot {
     pub edges: Vec<EdgeView>,
 }
 
-/// Placeholder until Task 3. Rows of the world hierarchy pane.
+/// Which section of the tree pane a row belongs to.
+///
+/// Grouping is what makes "all entities" readable: a flat forest of several
+/// hundred roots is not. `Ord` is derived and load-bearing -- `capture`
+/// emits rows in this order so the widget can insert a section header
+/// whenever the group changes.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum TreeGroup {
+    /// Has a `Transform`; nested by `ChildOf`.
+    Scene,
+    /// A `GraphNode` without a `Transform` -- geometry operators, signal nodes.
+    Graph,
+    /// `ParamEdge` / `FeedsEdge` / `ParentEdge` entities.
+    Edges,
+    /// Everything else, including Bevy's own internals.
+    Other,
+}
+
+/// One row of the world hierarchy pane.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TreeRow {
     pub entity: Entity,
+    pub group: TreeGroup,
+    /// Indentation level. Always 0 outside [`TreeGroup::Scene`], which is the
+    /// only group that nests.
     pub depth: usize,
     pub label: String,
+    /// `Some` when this entity is a graph node, which is what lets a tree
+    /// selection highlight a node box in the canvas.
     pub node_id: Option<NodeId>,
 }
 
@@ -121,7 +147,8 @@ pub fn capture(world: &World) -> WorldSnapshot {
         .map(|(i, node)| (node.entity, i))
         .collect();
     let edges = capture_edges(world, &index);
-    WorldSnapshot { tree: Vec::new(), nodes, edges }
+    let tree = capture_tree(world);
+    WorldSnapshot { tree, nodes, edges }
 }
 
 /// Node order: the compiled topological order when a `CompiledGraph` exists,
@@ -223,10 +250,120 @@ fn continuous_value(
         .copied()
 }
 
+fn group_of(world: &World, entity: Entity) -> TreeGroup {
+    if world.get::<Transform>(entity).is_some() {
+        TreeGroup::Scene
+    } else if world.get::<GraphNode>(entity).is_some() {
+        TreeGroup::Graph
+    } else if world.get::<ParamEdge>(entity).is_some()
+        || world.get::<FeedsEdge>(entity).is_some()
+        || world.get::<ParentEdge>(entity).is_some()
+    {
+        TreeGroup::Edges
+    } else {
+        TreeGroup::Other
+    }
+}
+
+/// Best-effort row label: a `Name` wins; then a `GraphNode`'s shortened type
+/// name and `NodeId`; then the entity index and its first three component
+/// names, shortened the same way.
+fn row_label(world: &World, entity: Entity) -> String {
+    if let Some(name) = world.get::<Name>(entity) {
+        return name.to_string();
+    }
+    if let Some(node) = world.get::<GraphNode>(entity) {
+        let type_name = world
+            .get_resource::<NodeTypeRegistry>()
+            .and_then(|reg| reg.get(node.node_type))
+            .map(|entry| short_type_name(entry.name))
+            .unwrap_or_else(|| format!("<type {}>", node.node_type.0));
+        return format!("{type_name} #{}", node.id.0);
+    }
+    let components: Vec<String> = world
+        .inspect_entity(entity)
+        .map(|infos| {
+            infos
+                .take(3)
+                .map(|info| short_type_name(&info.name().shortname().to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if components.is_empty() {
+        format!("e{}", entity.index())
+    } else {
+        format!("e{} [{}]", entity.index(), components.join(", "))
+    }
+}
+
+fn capture_tree(world: &World) -> Vec<TreeRow> {
+    let mut rows: Vec<TreeRow> = Vec::new();
+
+    // Scene: roots first, then their `Children` depth-first. A `Transform`
+    // entity whose parent has no `Transform` is a root here too -- it has
+    // nowhere else to nest.
+    let mut scene_roots: Vec<Entity> = world
+        .iter_entities()
+        .filter(|entity_ref| entity_ref.contains::<Transform>())
+        .filter(|entity_ref| match entity_ref.get::<ChildOf>() {
+            Some(ChildOf(parent)) => world.get::<Transform>(*parent).is_none(),
+            None => true,
+        })
+        .map(|entity_ref| entity_ref.id())
+        .collect();
+    scene_roots.sort_unstable();
+    for root in scene_roots {
+        push_scene_subtree(world, root, 0, &mut rows);
+    }
+
+    // The flat groups, each sorted by entity for a stable order across frames.
+    for group in [TreeGroup::Graph, TreeGroup::Edges, TreeGroup::Other] {
+        let mut members: Vec<Entity> = world
+            .iter_entities()
+            .map(|entity_ref| entity_ref.id())
+            .filter(|&entity| group_of(world, entity) == group)
+            .collect();
+        members.sort_unstable();
+        rows.extend(members.into_iter().map(|entity| TreeRow {
+            entity,
+            group,
+            depth: 0,
+            label: row_label(world, entity),
+            node_id: world.get::<GraphNode>(entity).map(|node| node.id),
+        }));
+    }
+
+    rows
+}
+
+fn push_scene_subtree(world: &World, entity: Entity, depth: usize, rows: &mut Vec<TreeRow>) {
+    rows.push(TreeRow {
+        entity,
+        group: TreeGroup::Scene,
+        depth,
+        label: row_label(world, entity),
+        node_id: world.get::<GraphNode>(entity).map(|node| node.id),
+    });
+    if let Some(children) = world.get::<Children>(entity) {
+        let mut spatial: Vec<Entity> = children
+            .iter()
+            .copied()
+            .filter(|&child| world.get::<Transform>(child).is_some())
+            .collect();
+        spatial.sort_unstable();
+        for child in spatial {
+            push_scene_subtree(world, child, depth + 1, rows);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_graph::{Emit, Recv, app, connect, recompile, spawn_emit, spawn_recv};
+    use crate::test_graph::{
+        Emit, Recv, app, connect, recompile, spawn_emit, spawn_named_spatial, spawn_recv,
+        spawn_spatial,
+    };
     use bevy_math::Vec2;
     use kurbo::Point;
 
@@ -326,5 +463,114 @@ mod tests {
 
         assert_eq!(snap.nodes[0].entity, emit);
         assert_eq!(snap.nodes[1].entity, recv);
+    }
+
+    fn rows_of(snap: &WorldSnapshot, group: TreeGroup) -> Vec<&TreeRow> {
+        snap.tree.iter().filter(|row| row.group == group).collect()
+    }
+
+    #[test]
+    fn rows_are_emitted_in_group_order() {
+        let mut app = app();
+        spawn_spatial(app.world_mut(), 0, None);
+        let emit = spawn_emit(app.world_mut(), 1, None);
+        let recv = spawn_recv(app.world_mut(), 2, None);
+        connect(app.world_mut(), emit, Emit::OUT_VALUE, recv, Recv::AMOUNT);
+        recompile(&mut app);
+
+        let groups: Vec<TreeGroup> = capture(app.world())
+            .tree
+            .iter()
+            .map(|row| row.group)
+            .collect();
+
+        let mut sorted = groups.clone();
+        sorted.sort();
+        assert_eq!(groups, sorted, "rows must be emitted grouped, never interleaved");
+    }
+
+    #[test]
+    fn a_spatial_node_is_in_scene_and_a_signal_node_is_in_graph() {
+        let mut app = app();
+        let spatial = spawn_spatial(app.world_mut(), 0, None);
+        let signal = spawn_emit(app.world_mut(), 1, None);
+        recompile(&mut app);
+
+        let snap = capture(app.world());
+
+        assert!(rows_of(&snap, TreeGroup::Scene).iter().any(|r| r.entity == spatial));
+        assert!(rows_of(&snap, TreeGroup::Graph).iter().any(|r| r.entity == signal));
+    }
+
+    #[test]
+    fn scene_rows_nest_by_child_of() {
+        let mut app = app();
+        let parent = spawn_spatial(app.world_mut(), 0, None);
+        let child = spawn_spatial(app.world_mut(), 1, Some(parent));
+        recompile(&mut app);
+
+        let snap = capture(app.world());
+        let scene = rows_of(&snap, TreeGroup::Scene);
+        let parent_idx = scene.iter().position(|r| r.entity == parent).unwrap();
+        let child_idx = scene.iter().position(|r| r.entity == child).unwrap();
+
+        assert!(parent_idx < child_idx, "a parent must precede its child");
+        assert_eq!(scene[parent_idx].depth, 0);
+        assert_eq!(scene[child_idx].depth, 1);
+    }
+
+    #[test]
+    fn a_name_component_wins_over_the_node_type() {
+        let mut app = app();
+        let named = spawn_named_spatial(app.world_mut(), "key light");
+
+        let snap = capture(app.world());
+        let row = snap.tree.iter().find(|r| r.entity == named).unwrap();
+
+        assert_eq!(row.label, "key light");
+        assert_eq!(row.node_id, None);
+    }
+
+    #[test]
+    fn a_graph_node_row_is_labelled_by_type_and_node_id() {
+        let mut app = app();
+        let emit = spawn_emit(app.world_mut(), 7, None);
+        recompile(&mut app);
+
+        let snap = capture(app.world());
+        let row = snap.tree.iter().find(|r| r.entity == emit).unwrap();
+
+        assert_eq!(row.label, "Emit #7");
+        assert_eq!(row.node_id.map(|id| id.0), Some(7));
+    }
+
+    #[test]
+    fn edge_entities_are_grouped_under_edges() {
+        let mut app = app();
+        let emit = spawn_emit(app.world_mut(), 0, None);
+        let recv = spawn_recv(app.world_mut(), 1, None);
+        connect(app.world_mut(), emit, Emit::OUT_VALUE, recv, Recv::AMOUNT);
+        recompile(&mut app);
+
+        let snap = capture(app.world());
+        assert_eq!(rows_of(&snap, TreeGroup::Edges).len(), 1);
+    }
+
+    #[test]
+    fn every_entity_in_the_world_gets_exactly_one_row() {
+        let mut app = app();
+        spawn_spatial(app.world_mut(), 0, None);
+        spawn_emit(app.world_mut(), 1, None);
+        recompile(&mut app);
+
+        let snap = capture(app.world());
+        let entity_count = app.world().iter_entities().count();
+
+        assert_eq!(snap.tree.len(), entity_count);
+        let mut entities: Vec<_> = snap.tree.iter().map(|r| r.entity).collect();
+        entities.sort();
+        let before = entities.len();
+        entities.dedup();
+        assert_eq!(entities.len(), before, "no entity may appear twice");
     }
 }
