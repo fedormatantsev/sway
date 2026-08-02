@@ -1,43 +1,20 @@
-//! Finding the Bevy viewport's window-space rectangle in masonry's paint output.
+//! `ViewportPlaceholder` -- the Bevy viewport's seat in the widget tree.
 //!
 //! `VisualLayerKind::External` is masonry's placeholder for content a host
-//! renders itself. Its `bounds` are in layer-local coordinates and the layer's
-//! `transform` maps them into window space -- the same convention the scene
-//! layers use, and the reason `replay_into` takes the transform rather than
-//! baking it in.
+//! renders itself; setting `PaintLayerMode::External` in `paint` is what
+//! keeps this widget's subtree out of masonry's own vello scene, leaving a
+//! genuine hole for the compositor's Bevy quad to show through.
 //!
-//! Upstream documents this mode as pre-integration ("current hosts do not
-//! realize these placeholders yet"), so this module is the host integration it
-//! is waiting for, in the narrow form M1b needs: exactly one external layer,
-//! the Bevy viewport.
-
-use kurbo::Rect;
-use masonry_core::app::{VisualLayerKind, VisualLayerPlan};
-
-/// The window-space (logical / CSS pixel) rectangle of the first external
-/// layer, if any.
-///
-/// Returns `None` when the widget tree contains no external boundary -- which
-/// is a legitimate state (the show presenter, or an editor layout with the
-/// viewport collapsed), not an error (controller dispatch ruling R2). The
-/// caller draws no viewport quad.
-///
-/// Hosts that composite into a physical-pixel framebuffer must multiply by
-/// the window `scale_factor` (e.g. `Affine::scale(sf).transform_rect_bbox`)
-/// before using this as a compositor destination or texture size.
-///
-/// If several external layers exist, the first one wins (controller dispatch
-/// ruling R3) -- not an error, not a merge.
-pub fn viewport_rect(plan: &VisualLayerPlan) -> Option<Rect> {
-    plan.layers.iter().find_map(|layer| match layer.kind {
-        // R1 (controller dispatch ruling): `transform_rect_bbox`, not two
-        // hand-transformed corners. Under a rotation the transformed rect is
-        // not axis-aligned, and the bounding box is the only honest answer.
-        // A rotated viewport is not supported and does not need to be.
-        VisualLayerKind::External { bounds } => Some(layer.transform.transform_rect_bbox(bounds)),
-        VisualLayerKind::Scene(_) => None,
-    })
-}
+//! Finding *where* that hole is, in window space, does **not** go through
+//! `VisualLayerKind::External`'s reported `bounds`/`transform` -- an earlier
+//! version of this module did, and it was wrong for any nested layout (see
+//! `EditorUi::viewport_rect`'s doc comment in `sway-editor/src/lib.rs` for
+//! the full story of why, and what reads the rect correctly instead).
+//!
+//! Upstream documents `External` as pre-integration ("current hosts do not
+//! realize these placeholders yet"), so this module is the host integration
+//! it is waiting for, in the narrow form this app needs: exactly one
+//! external layer, the Bevy viewport.
 
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
@@ -53,9 +30,8 @@ use masonry_core::kurbo::{Axis, Size};
 /// placeholder for content a host renders outside masonry's own scene graph.
 /// This is the Bevy viewport's seat in the widget tree: its layout box is
 /// exactly the rectangle the Bevy-rendered point cloud should occupy on
-/// screen, and [`viewport_rect`] reads that rectangle back out of the
-/// [`VisualLayerPlan`](masonry_core::app::VisualLayerPlan) `redraw()`
-/// produces.
+/// screen. `EditorUi::viewport_rect` reads that rectangle back out, off this
+/// widget's own state rather than the `VisualLayerPlan`.
 ///
 /// # Continuous repaint (a real gap in `External`, not a hypothetical one)
 ///
@@ -156,70 +132,5 @@ impl Widget for ViewportPlaceholder {
     /// the canvas).
     fn accepts_pointer_interaction(&self) -> bool {
         false
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::viewport_rect;
-    use kurbo::{Affine, Rect};
-    use masonry_core::app::{VisualLayer, VisualLayerKind, VisualLayerPlan};
-    use masonry_core::core::{NewWidget, WidgetId};
-    use masonry::widgets::Label;
-
-    // Deviation from the brief: `WidgetId::next()` is `pub(crate)` in the
-    // pinned masonry rev (c5950bc), not public as the brief's test code
-    // assumed. The only public way to mint a `WidgetId` from outside the
-    // masonry_core crate is to build a real widget and read its id back off
-    // `NewWidget`.
-    fn dummy_widget_id() -> WidgetId {
-        NewWidget::new(Label::new("")).id()
-    }
-
-    fn plan(layers: Vec<VisualLayer>) -> VisualLayerPlan {
-        VisualLayerPlan { layers }
-    }
-
-    fn external(bounds: Rect, transform: Affine) -> VisualLayer {
-        VisualLayer { kind: VisualLayerKind::External { bounds }, transform, widget_id: dummy_widget_id() }
-    }
-
-    #[test]
-    fn none_when_no_external_layer() {
-        assert_eq!(viewport_rect(&plan(vec![])), None);
-    }
-
-    #[test]
-    fn identity_transform_returns_bounds_unchanged() {
-        let p = plan(vec![external(Rect::new(10.0, 20.0, 110.0, 80.0), Affine::IDENTITY)]);
-        assert_eq!(viewport_rect(&p), Some(Rect::new(10.0, 20.0, 110.0, 80.0)));
-    }
-
-    #[test]
-    fn translation_moves_the_rect_into_window_space() {
-        let p = plan(vec![external(
-            Rect::new(0.0, 0.0, 100.0, 60.0),
-            Affine::translate((25.0, 45.0)),
-        )]);
-        assert_eq!(viewport_rect(&p), Some(Rect::new(25.0, 45.0, 125.0, 105.0)));
-    }
-
-    #[test]
-    fn scale_and_translation_compose() {
-        // Layer-local (0,0)-(100,60), scaled 2x then translated by (10,10).
-        let p = plan(vec![external(
-            Rect::new(0.0, 0.0, 100.0, 60.0),
-            Affine::translate((10.0, 10.0)) * Affine::scale(2.0),
-        )]);
-        assert_eq!(viewport_rect(&p), Some(Rect::new(10.0, 10.0, 210.0, 130.0)));
-    }
-
-    #[test]
-    fn first_external_layer_wins_when_several_exist() {
-        let p = plan(vec![
-            external(Rect::new(0.0, 0.0, 10.0, 10.0), Affine::IDENTITY),
-            external(Rect::new(50.0, 50.0, 60.0, 60.0), Affine::IDENTITY),
-        ]);
-        assert_eq!(viewport_rect(&p), Some(Rect::new(0.0, 0.0, 10.0, 10.0)));
     }
 }

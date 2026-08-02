@@ -42,9 +42,10 @@ pub type AppBuilder = Box<dyn FnOnce(&GpuContext, &ViewportTexture, UVec2) -> Ap
 
 /// What to run once the window is up.
 pub struct ShellConfig {
-    /// Selects the window title and (eventually, Task 4) the editor
-    /// presenter. For M1b Task 3 there is only `ShowPresenter`, so this only
-    /// affects the title.
+    /// Selects the window title and, below in `resumed`, which `Presenter`
+    /// this run uses: `--editor` gets the real `EditorPresenter` (masonry's
+    /// three-pane UI, see `sway_editor::EditorUi`); its absence gets the
+    /// plain `ShowPresenter` (viewport fullscreen, no masonry).
     pub editor: bool,
     pub build_app: AppBuilder,
 }

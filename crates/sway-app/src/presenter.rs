@@ -2,7 +2,7 @@
 //! viewport fullscreen, no masonry, no vello. `EditorPresenter` (Task 4) adds
 //! a masonry `RenderRoot`, painted through vello into a transparent UI
 //! texture; Task 5 makes masonry's widget tree decide the viewport rect
-//! (`sway_editor::external::viewport_rect`) instead of a hardcoded inset.
+//! (`sway_editor::EditorUi::viewport_rect`) instead of a hardcoded inset.
 
 use bevy::app::App;
 use bevy::math::UVec2;
@@ -41,9 +41,12 @@ impl ShowPresenter {
 }
 
 /// Bootstrap size for the editor's Bevy viewport texture (logical CSS
-/// pixels), matching `VIEWPORT_WIDTH`/`VIEWPORT_HEIGHT` in `sway_editor`.
-/// Only used before the first `EditorPresenter::present`; after that,
-/// `present` sizes from masonry's `External` layer via `viewport_rect`.
+/// pixels), used only before the first `EditorPresenter::present` runs and
+/// discovers the real layout. `sway_editor` no longer has a fixed viewport
+/// size to match -- the viewport pane's actual size depends on the window
+/// size and the three-pane `Split` layout's fractions -- so this is purely
+/// an arbitrary, reasonable starting point; the first `present` call resizes
+/// it to whatever `EditorUi::viewport_rect` actually reports.
 pub const EDITOR_VIEWPORT_SIZE: kurbo::Size = kurbo::Size::new(640.0, 360.0);
 
 /// Masonry + vello UI, composited over the live Bevy viewport.
@@ -108,9 +111,10 @@ impl EditorPresenter {
 
     /// One frame, in the fixed, load-bearing order (controller dispatch
     /// ruling R5): masonry redraws first (so a viewport resize costs no
-    /// frame of lag), then -- Task 5 -- the viewport rect is read from
-    /// masonry's `External` visual layer
-    /// (`sway_editor::external::viewport_rect`) and the viewport texture is
+    /// frame of lag), then -- Task 5 -- the viewport rect is read off the
+    /// tagged `ViewportPlaceholder` widget itself
+    /// (`sway_editor::EditorUi::viewport_rect`, not the `VisualLayerPlan` --
+    /// see that method's doc comment for why) and the viewport texture is
     /// resized to match if needed, then Bevy is re-pointed at it and
     /// updates, then vello paints masonry's scene into the transparent UI
     /// texture, then the compositor draws the viewport quad first (if any --
@@ -135,10 +139,10 @@ impl EditorPresenter {
         // (Task 5) instead of the old hardcoded bootstrap size.
         // `viewport_rect` is logical window space; the compositor and the
         // Bevy texture want physical pixels, so scale here.
-        // `None` is a legitimate state -- no external boundary in the
-        // current layout -- not an error (R2); in that case the viewport
-        // texture is left alone and no viewport quad is drawn below.
-        let rect = sway_editor::external::viewport_rect(&plan).map(|logical| {
+        // `None` is a legitimate state -- the widget isn't in the tree --
+        // not an error (R2); in that case the viewport texture is left alone
+        // and no viewport quad is drawn below.
+        let rect = self.editor.viewport_rect().map(|logical| {
             kurbo::Affine::scale(scale).transform_rect_bbox(logical)
         });
         if let Some(rect) = rect {

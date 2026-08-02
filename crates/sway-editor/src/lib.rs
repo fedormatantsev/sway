@@ -29,7 +29,7 @@ use masonry_core::app::{
     WindowSizePolicy,
 };
 use masonry_core::core::{NewWidget, TextEvent, Widget, WidgetTag, WindowEvent as MasonryWindowEvent};
-use masonry::kurbo::Affine;
+use masonry::kurbo::{Affine, Rect};
 use masonry::layout::AsUnit;
 use masonry::widgets::{Portal, Split};
 use masonry_core::kurbo::Axis;
@@ -46,6 +46,14 @@ use crate::snapshot::WorldSnapshot;
 pub const SCENE_TREE_TAG: WidgetTag<SceneTree> = WidgetTag::named("sway-scene-tree");
 /// Reaches the graph pane from `EditorUi::apply_snapshot`.
 pub const GRAPH_CANVAS_TAG: WidgetTag<GraphCanvas> = WidgetTag::named("sway-graph-canvas");
+/// Reaches the viewport placeholder from `EditorUi::viewport_rect`.
+///
+/// Needed because `VisualLayerKind::External`'s reported `transform` is *not*
+/// this widget's accumulated window transform -- see `EditorUi::viewport_rect`'s
+/// doc comment for why that reading (the naive one, and the one this crate
+/// shipped with through Task 7) is wrong for any `External` widget nested
+/// under an offsetting ancestor, which the graph canvas's own `Split` is.
+pub const VIEWPORT_TAG: WidgetTag<ViewportPlaceholder> = WidgetTag::named("sway-viewport");
 
 /// Builds the root widget: three panes, split twice.
 ///
@@ -59,18 +67,19 @@ pub const GRAPH_CANVAS_TAG: WidgetTag<GraphCanvas> = WidgetTag::named("sway-grap
 /// ```
 ///
 /// The Bevy viewport is a sibling of the graph canvas now, not a child of it
-/// at a hardcoded rect. `external::viewport_rect` locates it by scanning the
-/// `VisualLayerPlan` for the `External` layer, which does not care where in
-/// the tree the widget sits, so the presenter needs no change for this.
+/// at a hardcoded rect. Its window-space rect comes from `EditorUi::viewport_rect`,
+/// which reads it directly off the tagged widget's own state -- see that
+/// method's doc comment for why.
 ///
-/// Both content panes carry a `WidgetTag` so `apply_snapshot` can reach them
-/// typed, without downcasting through the `Split`s.
+/// All three content panes carry a `WidgetTag` so `apply_snapshot` and
+/// `viewport_rect` can reach them typed, without downcasting through the
+/// `Split`s.
 fn graph_root() -> NewWidget<dyn Widget> {
     let tree = Portal::new(SceneTree::new().prepare().with_tag(SCENE_TREE_TAG))
         .constrain_horizontal(true)
         .prepare();
 
-    let viewport = ViewportPlaceholder::new().prepare();
+    let viewport = ViewportPlaceholder::new().prepare().with_tag(VIEWPORT_TAG);
     let canvas = GraphCanvas::new().prepare().with_tag(GRAPH_CANVAS_TAG);
 
     let right = Split::new(viewport, canvas)
@@ -248,6 +257,39 @@ impl EditorUi {
         self.node_ids.get(&entity).copied()
     }
 
+    /// The Bevy viewport's current window-space (logical pixel) rectangle, or
+    /// `None` if the widget isn't in the tree.
+    ///
+    /// This deliberately does *not* go through `VisualLayerKind::External`'s
+    /// `bounds`/`transform` (what `external::viewport_rect` used to read, and
+    /// what `Widget::paint`'s doc comment for `PaintLayerMode::External`
+    /// implies is the intended path). At the masonry rev this crate is
+    /// pinned to, `push_external_layer` (`masonry_core::passes::paint`)
+    /// pairs the widget's *local* border-box with `LayerCollector::transform`
+    /// -- which is seeded once per *paint layer* (`RenderRoot`'s own overlay
+    /// stack, e.g. popups) and never updated while walking down through
+    /// ordinary `Inline` ancestors. For the base layer that seed is
+    /// `Affine::IDENTITY`, so any `External` widget nested under an
+    /// offsetting ancestor -- our `Split`s, which place the right pane and
+    /// the viewport within it by translation -- gets reported at the wrong
+    /// window position. Verified by running the three-pane editor and
+    /// screenshotting it: the Bevy content rendered in a rect shifted by
+    /// roughly the tree pane's width, overlapping it, rather than sitting in
+    /// the black hole `ViewportPlaceholder` actually painted.
+    ///
+    /// `QueryCtx::bounding_box` (reachable off any tagged widget through
+    /// `RenderRoot::get_widget_with_tag`) is unaffected: it's computed by the
+    /// compose pass from the widget's own accumulated `window_transform`,
+    /// which *does* include every ancestor's placement. `ViewportPlaceholder`
+    /// has no children and clips to its full content box, so its bounding
+    /// box is exactly its border-box mapped into window space -- precisely
+    /// the rect the compositor needs.
+    pub fn viewport_rect(&self) -> Option<Rect> {
+        self.root
+            .get_widget_with_tag(VIEWPORT_TAG)
+            .map(|widget| widget.ctx().bounding_box())
+    }
+
     /// Runs masonry's paint pass and returns the resulting visual-layer plan.
     ///
     /// Ignores the `Option<TreeUpdate>` `RenderRoot::redraw` also returns
@@ -405,5 +447,27 @@ mod tests {
             .root
             .edit_widget_with_tag(crate::GRAPH_CANVAS_TAG, |canvas| canvas.widget.selected_node());
         assert_eq!(selected, Some(NodeId(1)));
+    }
+
+    /// Regression test for the bug fixed alongside Task 8: `viewport_rect`
+    /// must read the viewport placeholder's own accumulated position, not
+    /// `VisualLayerKind::External`'s reported transform (which masonry seeds
+    /// once per *paint layer* and never updates while descending through
+    /// ordinary `Inline` ancestors -- see `viewport_rect`'s doc comment). A
+    /// regression to that reading would report the viewport at the window
+    /// origin regardless of where the `Split`s actually placed it.
+    #[test]
+    fn viewport_rect_reflects_its_position_inside_nested_splits() {
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0);
+        // Settles layout/compose so the widget tree's geometry is current.
+        ui.redraw();
+
+        let rect = ui.viewport_rect().expect("the viewport placeholder is in the tree");
+
+        // The tree pane is 260px wide (`graph_root`'s split_point_from_start),
+        // so the viewport -- the right Split's top pane -- must start to its
+        // right, not at the window origin.
+        assert!(rect.x0 >= 260.0, "viewport rect {rect:?} must sit right of the tree pane");
+        assert!(rect.width() > 0.0 && rect.height() > 0.0, "viewport rect {rect:?} must have real area");
     }
 }
