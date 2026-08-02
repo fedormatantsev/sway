@@ -11,6 +11,13 @@ kurbo.workspace = true
 peniko.workspace = true
 ui-events-winit.workspace = true
 winit.workspace = true
+sway-graph.workspace = true
+bevy_ecs.workspace = true
+bevy_math.workspace = true
+bevy_reflect.workspace = true
+bevy_transform.workspace = true
 
 [dev-dependencies]
 masonry_testing.workspace = true
+bevy_app.workspace = true
+bevy_time.workspace = true

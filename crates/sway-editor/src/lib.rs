@@ -1,12 +1,22 @@
 //! The masonry half of the editor: a widget tree and the events that reach it.
 //!
-//! Deliberately depends on none of `wgpu`, `vello`, `imaging_vello`, `bevy` --
-//! see the crate manifest. `winit` appears only because `ui-events-winit`
-//! takes `&winit::event::WindowEvent`; nothing here draws with it.
+//! Depends on `bevy_ecs`, `bevy_reflect`, `bevy_transform` and `sway-graph`,
+//! because the editor reads the live world directly (main design §2.8, §3:
+//! "The editor links `sway-graph` regardless"). It deliberately depends on
+//! none of `bevy` (the full facade), `bevy_render`, `wgpu`, `vello`, or
+//! `imaging_vello` -- nothing here creates a device or touches a pipeline,
+//! which is the M1b invariant that actually matters. `winit` appears only
+//! because `ui-events-winit` takes `&winit::event::WindowEvent`; nothing here
+//! draws with it.
 
 pub mod canvas;
 pub mod external;
 pub mod node_box;
+pub mod scene_tree;
+pub mod snapshot;
+
+#[cfg(test)]
+mod test_graph;
 
 use std::sync::Arc;
 use std::time::Instant;

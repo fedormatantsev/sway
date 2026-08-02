@@ -5274,12 +5274,19 @@ dependencies = [
 name = "sway-editor"
 version = "0.1.0"
 dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "bevy_math",
+ "bevy_reflect",
+ "bevy_time",
+ "bevy_transform",
  "imaging",
  "kurbo",
  "masonry",
  "masonry_core",
  "masonry_testing",
  "peniko",
+ "sway-graph",
  "ui-events-winit",
  "winit",
 ]
@@ -5317,6 +5324,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
+ "bevy_math",
  "bevy_reflect",
  "bevy_time",
  "bevy_transform",
