@@ -26,7 +26,7 @@ use masonry::core::{
 };
 use masonry::dpi::PhysicalPosition;
 use masonry::imaging::Painter;
-use masonry_core::kurbo::{Affine, Axis, BezPath, Point, Rect, Size, Stroke, Vec2};
+use masonry_core::kurbo::{Affine, Axis, BezPath, Point, Size, Stroke, Vec2};
 use masonry::layout::{LenReq, Length};
 use peniko::Color;
 
@@ -70,11 +70,6 @@ pub struct GraphCanvas {
     /// The currently selected node, by insertion index. `None` if nothing is
     /// selected.
     selected: Option<usize>,
-    /// A drag-to-connect gesture in progress: the source node's index, and
-    /// the live cursor position in canvas space (for painting the live
-    /// bezier -- R1, controller dispatch ruling, still applies: this pending
-    /// edge is never itself hit-tested, only the commit target is).
-    pending_edge: Option<(usize, Point)>,
     /// A middle-drag pan in progress (brief step 4): the last-seen
     /// window-space (logical) pointer position. `None` when not panning.
     panning: Option<Point>,
@@ -98,7 +93,6 @@ impl GraphCanvas {
             pan: Vec2::ZERO,
             zoom: 1.0,
             selected: None,
-            pending_edge: None,
             panning: None,
         }
     }
@@ -230,16 +224,6 @@ impl Widget for GraphCanvas {
             let to = self.to_visual(to_pos + half_height);
             self.paint_edge(painter, from, to, edge_brush);
         }
-
-        // The live drag-to-connect edge, from the source node's connector to
-        // the cursor (already tracked in canvas space -- see `on_action`).
-        if let Some((src_idx, cursor_canvas)) = self.pending_edge
-            && let Some(&src_pos) = self.positions.get(src_idx)
-        {
-            let from = self.to_visual(src_pos + right_edge);
-            let to = self.to_visual(cursor_canvas);
-            self.paint_edge(painter, from, to, Color::from_rgb8(220, 200, 120));
-        }
     }
 
     fn on_pointer_event(
@@ -349,28 +333,6 @@ impl Widget for GraphCanvas {
             NodeBoxAction::DraggedBy(delta) => {
                 self.positions[idx] += delta / self.zoom;
                 self.retransform_one_from_action(ctx, idx);
-                ctx.request_paint_only();
-            }
-            NodeBoxAction::ConnectStart => {
-                self.pending_edge = Some((idx, self.positions[idx]));
-                ctx.request_paint_only();
-            }
-            NodeBoxAction::ConnectMove(window_pos) => {
-                let canvas_pos = self.window_to_canvas(window_pos);
-                if let Some(pending) = &mut self.pending_edge {
-                    pending.1 = canvas_pos;
-                }
-                ctx.request_paint_only();
-            }
-            NodeBoxAction::ConnectEnd(window_pos) => {
-                if let Some((src, _)) = self.pending_edge.take() {
-                    let canvas_pos = self.window_to_canvas(window_pos);
-                    if let Some(target) = self.node_at_canvas_point(canvas_pos)
-                        && target != src
-                    {
-                        self.edges.push((src, target));
-                    }
-                }
                 ctx.request_paint_only();
             }
         }
@@ -487,24 +449,6 @@ impl GraphCanvas {
     /// local (0,0)-(160,72) box to the window.
     fn child_transform(&self, idx: usize) -> Affine {
         Affine::translate(self.pan) * Affine::scale(self.zoom) * Affine::translate(self.positions[idx].to_vec2())
-    }
-
-    /// Converts a window-space (logical) point to canvas space, inverting
-    /// `child_transform`'s pan/zoom (but not any per-node position -- this
-    /// is "where in the infinite canvas is the cursor", independent of any
-    /// particular node).
-    fn window_to_canvas(&self, p: Point) -> Point {
-        ((p.to_vec2() - self.pan) / self.zoom).to_point()
-    }
-
-    /// Finds the node (by insertion index) whose canvas-space border box
-    /// contains the given canvas-space point, if any. Used only for
-    /// drag-to-connect's release target -- R1 (controller dispatch ruling)
-    /// still holds: edges themselves are never hit-tested, only nodes are.
-    fn node_at_canvas_point(&self, p: Point) -> Option<usize> {
-        self.positions
-            .iter()
-            .position(|&pos| Rect::from_origin_size(pos, node_box::SIZE).contains(p))
     }
 
     fn paint_edge(&self, painter: &mut Painter<'_>, from: Point, to: Point, brush: Color) {

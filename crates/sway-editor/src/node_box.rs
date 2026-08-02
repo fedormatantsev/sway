@@ -5,7 +5,7 @@
 //! no trait, no generics over node kinds, and no serialization here: just a
 //! label and a `selected` flag. The point of Task 6 was structural, not
 //! visual -- each node is a real child widget with its own [`WidgetId`].
-//! Task 7 adds the interaction: selection, dragging, and drag-to-connect.
+//! Task 7 adds the interaction: selection and dragging.
 //!
 //! Modeled on `masonry::widgets::canvas::Canvas` (a leaf custom-drawing
 //! widget) for the overall `Widget` impl shape, and on
@@ -37,11 +37,12 @@ use masonry::accesskit::{Node, Role};
 use masonry::core::{
     AccessCtx, ChildrenIds, EventCtx, LayoutCtx, MeasureCtx, PaintCtx, PointerButton,
     PointerButtonEvent, PointerEvent, PointerState, PointerUpdate, PropertiesMut, PropertiesRef,
-    RegisterCtx, Widget, WidgetMut,
+    RegisterCtx, Widget, WidgetMut, WidgetPod,
 };
 use masonry::imaging::Painter;
 use masonry::layout::{LenReq, Length};
-use masonry_core::kurbo::{Axis, Circle, Point, RoundedRect, Size, Stroke};
+use masonry::widgets::Label;
+use masonry_core::kurbo::{Axis, Point, RoundedRect, Size, Stroke};
 use peniko::Color;
 
 /// Fixed footprint of every node box, in canvas-space logical pixels.
@@ -56,9 +57,8 @@ pub(crate) const SIZE: Size = Size::new(160.0, 72.0);
 
 const CORNER_RADIUS: f64 = 8.0;
 
-/// Width of the drag-to-connect zone, as a fraction of `SIZE.width`, measured
-/// from the right edge -- the brief's "right-hand quarter".
-const CONNECT_ZONE_FRACTION: f64 = 0.25;
+/// Inset of the label from the box's top-left corner, in logical pixels.
+const LABEL_INSET: f64 = 10.0;
 
 /// What the pointer is currently doing to this node box, between a `Down`
 /// that started a gesture and the `Up`/`Cancel` that ends it.
@@ -71,35 +71,33 @@ enum Gesture {
     /// than a delta-since-`Down` (see the module doc for why this can't be
     /// derived from `ctx.local_position` instead).
     Dragging { last_window: Point },
-    /// Dragging a new edge out of the connector zone.
-    Connecting,
 }
 
 /// The action a [`NodeBox`] reports to its parent [`GraphCanvas`] through
-/// [`EventCtx::submit_action`]/[`Widget::on_action`] (R2, controller dispatch
-/// ruling). All positions/deltas are window-space (logical pixels); see the
-/// module doc.
+/// [`EventCtx::submit_action`]/[`Widget::on_action`]. Deltas are window-space
+/// (logical pixels); see the module doc.
+///
+/// Drag-to-connect is deliberately absent. It appended to a local `Vec` of
+/// edges, inventing connections that exist in no graph -- harmless against
+/// placeholder boxes, a lie against real ones. Topology editing arrives at M7.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NodeBoxAction {
-    /// This node was pressed in its body (not the connector zone): the
-    /// canvas should select it.
+    /// This node was pressed: the canvas should select it.
     Selected,
-    /// The pointer moved by this delta while dragging the node body.
+    /// The pointer moved by this delta while dragging the node.
     DraggedBy(masonry_core::kurbo::Vec2),
-    /// A drag-to-connect gesture started from this node's connector zone.
-    ConnectStart,
-    /// The drag-to-connect cursor moved to this window-space point.
-    ConnectMove(Point),
-    /// The drag-to-connect gesture ended (pointer released) at this
-    /// window-space point.
-    ConnectEnd(Point),
 }
 
-/// A node box in the graph canvas: a rounded rectangle with a border, drawn
-/// through `imaging::Painter`. Selection flips its fill color; a small
-/// connector dot on the right edge marks the drag-to-connect zone.
+/// A node box in the graph canvas: a rounded rectangle with a border and a
+/// text label, drawn through `imaging::Painter` and one `Label` child.
+///
+/// `Label` rather than painting text directly: `imaging::Painter` exposes
+/// only `glyphs`, which takes *pre-shaped* glyphs, and shaping is masonry's
+/// job. `Label::accepts_pointer_interaction` is `false`, so the child never
+/// steals a press from this widget's own gesture handling.
 pub struct NodeBox {
-    label: String,
+    label: WidgetPod<Label>,
+    label_text: String,
     selected: bool,
     gesture: Gesture,
 }
@@ -108,10 +106,16 @@ impl NodeBox {
     /// Creates a new, unselected node box with the given label.
     pub fn new(label: String) -> Self {
         Self {
-            label,
+            label: Label::new(label.clone()).prepare().to_pod(),
+            label_text: label,
             selected: false,
             gesture: Gesture::None,
         }
+    }
+
+    /// The text this box currently displays.
+    pub fn label_text(&self) -> &str {
+        &self.label_text
     }
 }
 
@@ -128,6 +132,18 @@ impl NodeBox {
             this.ctx.request_paint_only();
         }
     }
+
+    /// Replaces the displayed text. Called by `GraphCanvas` when a snapshot
+    /// renames a node -- which happens on a node-type change under a
+    /// surviving `NodeId`.
+    pub fn set_label(this: &mut WidgetMut<'_, Self>, label: &str) {
+        if this.widget.label_text == label {
+            return;
+        }
+        label.clone_into(&mut this.widget.label_text);
+        let mut child = this.ctx.get_mut(&mut this.widget.label);
+        Label::set_text(&mut child, label.to_string());
+    }
 }
 
 /// Converts a [`PointerState`]'s position to a window-space (logical pixels)
@@ -140,7 +156,9 @@ fn window_point(state: &PointerState) -> Point {
 impl Widget for NodeBox {
     type Action = NodeBoxAction;
 
-    fn register_children(&mut self, _ctx: &mut RegisterCtx<'_>) {}
+    fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
+        ctx.register_child(&mut self.label);
+    }
 
     fn measure(
         &mut self,
@@ -162,6 +180,12 @@ impl Widget for NodeBox {
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, size: Size) {
+        let inner = Size::new(
+            (size.width - 2.0 * LABEL_INSET).max(0.0),
+            (size.height - 2.0 * LABEL_INSET).max(0.0),
+        );
+        ctx.run_layout(&mut self.label, inner);
+        ctx.place_child(&mut self.label, Point::new(LABEL_INSET, LABEL_INSET));
         ctx.set_clip_path(size.to_rect());
     }
 
@@ -181,22 +205,9 @@ impl Widget for NodeBox {
                     // `GraphCanvas::on_pointer_event`.
                     return;
                 }
-                // `ctx.local_position` is safe to use here (and only here):
-                // at `Down`, this widget's transform hasn't been touched by
-                // the gesture we're about to start, so there's no
-                // moving-frame issue yet -- we just want to know which zone,
-                // in this node's own unscaled coordinates, was clicked.
-                let local = ctx.local_position(state.position);
                 ctx.capture_pointer();
-                if local.x >= SIZE.width * (1.0 - CONNECT_ZONE_FRACTION) {
-                    self.gesture = Gesture::Connecting;
-                    ctx.submit_action::<Self::Action>(NodeBoxAction::ConnectStart);
-                } else {
-                    self.gesture = Gesture::Dragging {
-                        last_window: window_point(state),
-                    };
-                    ctx.submit_action::<Self::Action>(NodeBoxAction::Selected);
-                }
+                self.gesture = Gesture::Dragging { last_window: window_point(state) };
+                ctx.submit_action::<Self::Action>(NodeBoxAction::Selected);
                 // Stop this from also bubbling to `GraphCanvas::on_pointer_event`,
                 // which treats an unhandled `Down` as "background click, clear
                 // selection" -- see that method's doc comment.
@@ -204,25 +215,14 @@ impl Widget for NodeBox {
             }
             PointerEvent::Move(PointerUpdate { current, .. }) if ctx.is_active() => {
                 let window = window_point(current);
-                match &mut self.gesture {
-                    Gesture::Dragging { last_window } => {
-                        let delta = window - *last_window;
-                        *last_window = window;
-                        ctx.submit_action::<Self::Action>(NodeBoxAction::DraggedBy(delta));
-                    }
-                    Gesture::Connecting => {
-                        ctx.submit_action::<Self::Action>(NodeBoxAction::ConnectMove(window));
-                    }
-                    Gesture::None => {}
+                if let Gesture::Dragging { last_window } = &mut self.gesture {
+                    let delta = window - *last_window;
+                    *last_window = window;
+                    ctx.submit_action::<Self::Action>(NodeBoxAction::DraggedBy(delta));
                 }
                 ctx.set_handled();
             }
-            PointerEvent::Up(PointerButtonEvent { state, .. }) => {
-                if self.gesture == Gesture::Connecting {
-                    ctx.submit_action::<Self::Action>(NodeBoxAction::ConnectEnd(window_point(
-                        state,
-                    )));
-                }
+            PointerEvent::Up(..) => {
                 self.gesture = Gesture::None;
                 ctx.set_handled();
             }
@@ -249,13 +249,6 @@ impl Widget for NodeBox {
         painter
             .stroke(rect, &Stroke::new(1.5), Color::from_rgb8(200, 200, 210))
             .draw();
-
-        // Connector affordance: a small dot marking the drag-to-connect zone,
-        // so a human running the app can see where to grab an edge from.
-        let connector = Point::new(SIZE.width, SIZE.height / 2.0);
-        painter
-            .fill(Circle::new(connector, 4.0), Color::from_rgb8(220, 200, 120))
-            .draw();
     }
 
     fn accessibility_role(&self) -> Role {
@@ -263,11 +256,11 @@ impl Widget for NodeBox {
     }
 
     fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, node: &mut Node) {
-        node.set_description(self.label.as_str());
+        node.set_description(self.label_text.as_str());
     }
 
     fn children_ids(&self) -> ChildrenIds {
-        ChildrenIds::new()
+        ChildrenIds::from_slice(&[self.label.id()])
     }
 
     // R6 (controller dispatch ruling): explicit even though `true` is also
@@ -275,5 +268,36 @@ impl Widget for NodeBox {
     // concrete to point at on this widget.
     fn accepts_pointer_interaction(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NodeBox, SIZE};
+    use masonry::core::{DefaultProperties, PointerButton, Widget};
+    use masonry_core::kurbo::Point;
+    use masonry_testing::TestHarness;
+
+    #[test]
+    fn a_node_box_has_a_label_child_carrying_its_text() {
+        let node = NodeBox::new("LFO #3".to_string());
+        let harness = TestHarness::create(DefaultProperties::default(), node.prepare());
+        assert_eq!(harness.root_widget().label_text(), "LFO #3");
+        assert_eq!(harness.root_widget().children_ids().len(), 1);
+    }
+
+    #[test]
+    fn a_press_in_the_right_hand_quarter_selects_rather_than_connects() {
+        // Drag-to-connect is gone: the whole box is now one gesture, so a
+        // press anywhere -- including where the connector dot used to be --
+        // selects and drags.
+        let node = NodeBox::new("n".to_string());
+        let mut harness = TestHarness::create(DefaultProperties::default(), node.prepare());
+
+        harness.mouse_move(Point::new(SIZE.width - 8.0, SIZE.height / 2.0));
+        harness.mouse_button_press(Some(PointerButton::Primary));
+
+        let action = harness.pop_action_erased();
+        assert!(action.is_some(), "a press must still submit an action");
     }
 }
