@@ -1,9 +1,14 @@
 # Sway — Design
 
 **Date:** 2026-07-25
-**Status:** Approved, pre-implementation
+**Status:** In implementation — M0, M1, M1b, M2a, M2b, M2c complete; M3 next
 **Revision:** graph engine builds on Bevy's non-rendering subcrates (§2.2–§2.7, §3)
 **Revision:** scene composition is expressed in the graph, Houdini/USD-shaped (§2.10)
+**Revision (2026-08-02):** §5 and §7 reconciled against what was actually built.
+M2 shipped as M2a + M2b, an unplanned M2c added the editor's first real views,
+and each completed milestone now carries the debt it did not discharge. The
+architecture sections are unchanged; where implementation contradicted them the
+correction lives in the milestone's findings report and is named in §7.
 
 ## 1. What this is
 
@@ -766,16 +771,24 @@ nothing real.
 Sizes are relative, not calendar. Ordering follows two rules: get one end-to-end
 path working before deepening any layer, and pull genuinely unknown work early.
 
-### M0 — Walking skeleton (S)
+**Status at 2026-08-02.** M0, M1, M1b, M2a, M2b and M2c are complete and on
+`main`; M3 is next. A completed milestone's plan is superseded by its findings
+report, which is linked below and is the authority on what was actually built.
+Where one left debt it carries a *Carried forward* line saying so, and the
+milestone that inherits it says so too — the point is that debt is visible in
+the roadmap rather than only in a report nobody re-reads.
+
+### M0 — Walking skeleton (S) — **complete**
 
 MIDI note in → hardcoded Rust graph → a cube changes colour → fullscreen on the
-HDMI display. No file format, no editor, no abstraction. Proves the MIDI IO
+HDMI display. No file format, no editor, no abstraction. Proved the MIDI IO
 thread, the `FixedUpdate` tick position in the schedule, and fullscreen output on
 an external display.
 
-*Exit:* Octatrack plugged in, something on screen moves in time.
+The cube and its `bridge.rs` were retired at M2b, having been replaced by a real
+graph-authored scene. That is the intended fate of a walking skeleton.
 
-### M1 — Render spike (M, high risk)
+### M1 — Render spike (M, high risk) — **complete, with one gap**
 
 Deliberately out of order. Bevy's custom-pipeline API is the least documented,
 fastest-moving surface in the project, and both point clouds and z-depth
@@ -789,50 +802,139 @@ rule that put this milestone out of order in the first place. If the
 extract-and-dispatch shape of §2.10 turns out to be unworkable, that changes the
 operator set, and learning it here costs a spike rather than a rewrite of M5.
 
-*Exit:* a point cloud and a z-depth sprite layer render at frame rate with custom
-vertex/fragment shaders, and one compute-cooked geometry operator dispatches from
-a graph-shaped dirty set. The code is provisional — the goal is knowledge, not
-architecture.
+*Outcome* (`reports/2026-07-26-m1-render-spike-findings.md`): the point cloud is
+a custom `SpecializedMeshPipeline` and the sprite layers took the `Material`
+path; both hold frame rate indistinguishably from baseline at 50k points and 5
+layers. `Scatter`'s compute pass dispatches once per dirty source, and a
+`Readback` proves its output correct.
 
-### M1b — Integration spike (S) — **go/no-go gate**
+**The compute buffer never reached the draw.** That is a scope boundary, not a
+format incompatibility — `point_cloud.rs` already binds two independently
+strided vertex slots, and a third fed from scatter's raw position buffer closes
+it with no second pass. The distinction matters and should not drift into the
+stronger claim.
+
+*Carried forward to M5:* closing compute→draw; the point cloud's unamortised
+per-frame ~1.6 MB CPU clone plus ~1.6 MB re-upload; and the fact that these
+demos are standalone, spawn their own cameras, and are therefore mutually
+exclusive with the graph-built scene. None of them is a node yet.
+
+### M1b — Integration spike (S) — go/no-go gate: **passed**
 
 Headless Bevy rendering to a texture using an externally-created device,
 composited by a Vello-backed masonry widget, in one process. Extended with a
 pan/zoom canvas holding draggable boxes and bezier edges, to prove masonry can
 carry a node editor at all.
 
-*Exit:* one window, one device, Bevy output visible inside a masonry widget.
-If bevy and vello cannot currently agree on wgpu and winit, stop and reconsider
-against the Syphon route.
+*Outcome* (`reports/2026-07-28-m1b-integration-findings.md`): one `wgpu 29.0.4`
+and one `winit 0.30.13` resolve across bevy 0.19 and `imaging_vello`, pinned
+exactly in the workspace manifest and asserted by a compile-time test. Bevy's
+output reaches the screen through our texture and our compositor. **The Syphon
+fallback of §2.8 and the two-device CPU-copy fallback are both retired unused.**
 
-### M2 — Graph engine (L)
+The one non-obvious cost: masonry resets `paint_layer_mode` to `Inline` for
+every widget on every redraw, so the `External` viewport layer only survives if
+the host pumps anim frames continuously. That is masonry's own reference host
+pattern, not a workaround, and it must not be simplified away.
 
-`sway-graph` core: `NodeType` trait with reflect-derived params, node and edge
-entities, the three edge kinds with their two validation passes, type-erased
-ports with `Continuous`/`Event` kinds, compiler, `FixedUpdate` runner. Initial
-node set: MidiNote, MidiCC, LFO, Envelope, Math, Remap, Switch, Select.
-Golden-trace test harness. Graphs still constructed in Rust.
+### M2a — Graph engine core (L) — **complete**
 
-Cook gating on change ticks (§2.11) belongs here rather than at M5, even though
-no node cooks anything yet: it determines what the tick loop looks like, and
-retrofitting it around an existing runner is worse than building it in. A
-trivial `Geometry`-producing node is enough to exercise it. The
-authored-versus-driven param rule of §2.11 belongs here too — it is a semantic,
-not an optimisation, and every node written after it assumes one answer or the
-other.
+M2 shipped in two halves. M2a is `sway-graph`'s signal half: the `NodeType`
+contract with reflect-derived params, node and param-edge entities, type-erased
+`Continuous`/`Event` ports over the arena, the dataflow compiler and its
+topological sort, the `FixedUpdate` runner, and the eight signal nodes —
+MidiNote, MidiCC, LFO, Envelope, Math, Remap, Switch, Select — behind a
+golden-trace harness. Graphs are still constructed in Rust.
 
-The reflect-derived schema is load-bearing for M7 and should be exercised here:
-one node type's params should already drive a throwaway debug inspector, so that
-missing `TypeData` is found now rather than at the start of an XL milestone.
+*Outcome* (`reports/2026-07-31-m2a-graph-engine-findings.md`): erased
+`Box<dyn PartialReflect>` was adequate and forced no hand-written schema;
+positional ordinal consts held across all eight types, once ordinal identity
+was corrected to the `(name, ordinal)` pair; `Envelope` gained a second event
+input, because note-off-driven release is graph input rather than hidden
+controller logic.
 
-*Exit:* a code-built graph drives M1's visuals from real MIDI; trace tests pass
-deterministically.
+*Carried forward:* nine reviewer-approved non-blocking gaps, all test coverage
+or comments, listed in the report's "Deferred minor findings". The MIDI epoch
+bridge is still throwaway and does not correct long-session mach-versus-fixed
+drift — **M3 owns that**, since it is the same clock problem the transport is
+about.
 
-### M3 — Transport and beat lock (M)
+### M2b — Structure edges, geometry, the cook gate (L) — **complete**
+
+M2's second half, and the milestone that made §2.10 real for the first time:
+`ParentEdge` and `FeedsEdge` with the structure validation pass, the `Geometry`
+component with its `Arc`-backed attribute tables, cook gating on change ticks,
+the tick's second pass, and six nodes — `Grid`, `Displace`, `Mesh`, `Group`,
+`StandardMaterial`, `Rgb`.
+
+Cook gating belonged here rather than at M5 even though almost nothing cooks
+yet: it determines what the tick loop looks like, and retrofitting it around an
+existing runner is worse than building it in. The authored-versus-driven param
+rule of §2.11 landed here for the same reason — it is a semantic, and every node
+written after it assumes one answer or the other.
+
+*Outcome* (`reports/2026-08-01-m2b-scene-composition-findings.md`): two orders
+held with no cross-DAG constraint wanted; `Slots` plus `Produces` is the right
+split once `Produces` gains a companion `produced_change_tick`; `Arc` sharing
+measured 14.2× against a deep-copy counterfactual at the demo graph's own size,
+and doubles as the mesh-upload gate. The gate is worth ~20× on the demo graph
+(624 ns closed against 13.07 µs open).
+
+**The gate is one bit per node, not one per reason.** A node dirtied by a param
+edit cannot ask whether its *geometry* changed, so a node owning an expensive
+resource needs a second, node-local gate inside its cook. §2.11 presents the
+engine gate as the whole answer and it is not; the consequences are in §7.
+
+*Exit met:* a Rust-built graph cooks a two-operator `Feeds` chain into a `Mesh`
+under a `Group`, with live MIDI driving displacement, colour and rotation.
+
+*Not met from M2's original exit:* **the graph does not drive M1's visuals.**
+It drives its own scene. Point clouds and sprite layers become nodes at M5.
+
+*Also not done:* the throwaway reflect-driven inspector M2 asked for, which
+existed to find missing editor `TypeData` early. That risk is undischarged and
+is pulled into M4 below.
+
+### M2c — Scene and graph views (M) — **complete**
+
+Unplanned, inserted between M2b and M3, and worth the detour: M3 is about a
+phase estimate that is either right or wrong, and debugging it against a black
+window and a log file is worse than debugging it against a picture of the graph.
+
+Three panes wired to the live world — a scene/entity tree, the Bevy viewport,
+and a graph canvas driven by a per-frame `capture(&World)` snapshot with live
+activity on continuous edges. Read-only throughout. `EditorPos` became a
+component in `sway-graph`, node identity became `NodeId` so a box keeps its
+`WidgetId` across snapshots, and drag-to-connect was deleted rather than left
+inventing edges that exist in no graph.
+
+Design: `specs/2026-08-02-scene-and-graph-views-design.md`. **This is M7's first
+slice, not an overlay** — the snapshot, the pane layout and the widget identity
+model are what M7 extends.
+
+*Carried forward:* event edges show no activity, because a frame-rate sampler
+observes roughly half of a one-tick event and a randomly pulsing edge is worse
+than a static one. The honest fix is a per-edge ring buffer written by the tick,
+and it belongs at M7 with the rest of the editor's write paths. Dragged
+positions do not persist (M4 serializes them, M7 writes them back), and node
+display names are shortened from `type_name` until M4's registered short names
+replace the shortening outright.
+
+### M3 — Transport and beat lock (M) — **next**
 
 MIDI clock ingestion at 24 ppqn, drift-corrected phase estimator,
 start/stop/continue, tempo tracking. Transport-aware nodes: tempo-synced LFO,
 beat-quantised trigger, bar/beat/16th time base.
+
+**M2a's throwaway MIDI epoch bridge is M3's problem, and it should be replaced
+rather than patched.** It samples the mach-versus-`Time<Fixed>` offset once at
+first drain and never corrects drift, which is the same clock-alignment question
+the phase estimator exists to answer — one clock discipline, not two.
+
+M2c's panes are the debugging surface this milestone was sequenced to have. A
+transport readout was deliberately left out of M2c, because inventing the
+display before the thing it displays is backwards; M3 adds it, as a fourth
+consumer of the same snapshot.
 
 *Exit:* visuals stay locked through recorded traces containing tempo changes and
 clock dropouts.
@@ -860,17 +962,58 @@ round-trip either. The expected shape is reflect for *reading* and a
 hand-controlled emitter for *writing*, editing the existing document in place
 rather than regenerating it.
 
+Three things this milestone inherits:
+
+- **The read-only inspector M2 asked for and did not build starts M4.** Its
+  purpose was to find missing editor `TypeData` before an XL milestone depended
+  on it, and that purpose is now sharper, not weaker: M4 decides how a params
+  struct is read from and written back to a document, and an inspector is the
+  same walk over the same registered type. M2c supplied the pane to put it in,
+  so this is a small task rather than a milestone. Doing it after M4 commits to
+  a serialisation shape gets the order backwards.
+- **`EditorPos` is serialized here** (§2.10's node components are all authored
+  data; a position is no different), which is what makes M2c's dragged positions
+  survive a restart once M7 writes them back.
+- **Event fan-in order across recompiles is undecided.** Ordering is
+  deterministic for one compiled graph, established twice — by compiled rank and
+  by a stable offset sort. Whether a recompile must preserve an earlier source
+  order is a reload semantic, so it is M4's to answer, and answering it "no"
+  silently means a hot reload can change which of two simultaneous notes wins.
+
 *Exit:* a set can be authored by editing text with the app running.
 
 ### M5 — Visual runtime (L)
 
-The real version of M1, and the milestone that makes §2.10 real. The scene node
-set — `Asset`, `Transform`, `Group`, `Camera`, `Mesh`, one node per light type,
-one per material type — and the geometry operators — `Grid`, `Scatter`,
-`CopyToPoints` — plus the `Geometry` component and the renderable marker. Runtime services (`PointCloudSet`, `SpriteLayers`,
-`Emitters`, `CameraRig`, `AnimationDirector`) with owned invariants, glTF mesh
-instancing, curve-driven procedural animation, physics if wanted. Where the
-fire-and-forget decoupling earns its keep: nodes trigger, ECS systems continue.
+The real version of M1. M2b already made §2.10 real in miniature — `Geometry`,
+the two edge kinds, `Grid`, `Displace`, `Mesh`, `Group`, `StandardMaterial`,
+`Rgb` all exist and cook — so M5 is now **the rest of the node set plus GPU
+residency**, not a from-scratch milestone: `Asset`, `Camera`, one node per light
+type, `Scatter`, `CopyToPoints`, and the renderable marker. Runtime services
+(`PointCloudSet`, `SpriteLayers`, `Emitters`, `CameraRig`, `AnimationDirector`)
+with owned invariants, glTF mesh instancing, curve-driven procedural animation,
+physics if wanted. Where the fire-and-forget decoupling earns its keep: nodes
+trigger, ECS systems continue.
+
+**M1's visuals become nodes here, and the compute→draw gap closes here.** The
+original M2 exit expected the graph to drive M1's point cloud and sprite layers;
+M2b's scene node set drives its own mesh instead, so that promise moves to M5
+intact. It carries M1's unamortised extraction with it — a per-frame CPU clone
+and re-upload of the whole instance buffer, invisible at 50k points on an M4 and
+not something to inherit unexamined at production cardinality.
+
+**Two M2b invariants are safe by circumstance and must become safe by
+construction before the node set grows:**
+
+- The mesh upload gate fingerprints `P`'s `Arc` and point count only, so an
+  operator that rewrites `N`, `uv` or indices while passing `P` through would
+  produce a **silently stale mesh** — the one failure in that gate that does not
+  fail toward wasted work. Nothing in today's operator set reaches it; "recompute
+  normals" or "UV project" does. Fixing it means deciding what a cheap
+  whole-`Geometry` identity is, which is exactly the decision GPU residency
+  forces anyway, so the two should be made together.
+- A material node never dirties its `Mesh` consumer, which is correct while a
+  handle is created once at compile time and never recreated. Nothing enforces
+  that. `Asset` and any node that reloads is where it stops being true.
 
 Two things deliberately *not* here. An attribute expression node — Houdini's
 wrangle, where most of its power concentrates — is a language or a compiled
@@ -890,13 +1033,23 @@ watchdog, and a black-frame fallback surviving any single subsystem failure.
 
 *Exit:* a set is played with it.
 
-### M7 — Editor (XL)
+### M7 — Editor (L, was XL)
 
-Masonry UI in the shape proven at M1b. Schema-driven inspector panel first — the
-easy, high-value half, and easier still because it is a walk over `TypeRegistry`
-and `TypeData` rather than a bespoke schema format — then the canvas: pan/zoom,
-node widgets, edge routing, hit-testing, drag-to-connect. Live viewport and live
-edge values throughout.
+**Smaller than it was, because M2c and M4 took its read half.** Pan/zoom, node
+widgets keyed by `NodeId`, edge routing, hit-testing, the three-pane layout, the
+live viewport, live edge values, and selection sync all exist; the read-only
+inspector arrives at M4. What remains is the *write* half, which is where the
+difficulty always was.
+
+- Topology editing: drag-to-connect (deleted at M2c precisely so it would not
+  ship as a lie), node creation from a palette, deletion, and param editing in
+  the inspector.
+- Writing dragged positions back to `EditorPos`, against M2c's seeding rule —
+  a snapshot seeds a node's position once and never again, or the next frame
+  snaps a dragged node home.
+- Event-edge activity, which needs the per-edge ring buffer M2c refused to put
+  in the hot tick for a read-only view. With the editor a first-class consumer
+  and a write path already crossing into the tick, the trade changes.
 
 Topology editing spawns and despawns node and edge entities and requests a
 recompile. Nothing here weakens §1's guarantee that the graph is compiled before
@@ -940,22 +1093,56 @@ Spout. Timeline sequencing.
   at the price of geometry arriving a frame or more late. Named here so it is a
   known option rather than a 2am rediscovery.
 
-- **Which geometry operators are GPU-resident** cannot be answered before M1
-  produces one. The shape is decided (§2.10: extract a dirty set, dispatch a
+- **Which geometry operators are GPU-resident** is still open, and M1 answered
+  less than hoped. The shape is decided (§2.10: extract a dirty set, dispatch a
   render-graph subgraph in `Feeds` order, params through `ShaderParams`, arena
   stays on the CPU) and the criterion is decided (output size known before
-  dispatch). What is open is how far the criterion reaches in practice, and
-  whether mixed residency proves tolerable or forces a rule that a `Feeds` chain
-  must be entirely one or the other. Answer at M1, revisit before M5.
+  dispatch). M1 dispatched one compute operator from a dirty set and read its
+  output back correctly, which is an **absence of a counterexample, not a
+  confirmation** — one dispatch, one readback, one draw, all well inside
+  conservative bounds, and the compute output never reached the draw. What
+  remains open is unchanged: how far the criterion reaches, and whether mixed
+  residency is tolerable or forces a rule that a `Feeds` chain is entirely one
+  or the other. **Answer at M5**, where it now also decides what a cheap
+  whole-`Geometry` identity is (§5, M5).
 
-- **Fixed tick rate value** is unchosen. The mechanism is settled
-  (`Time::<Fixed>::from_hz`); the number should be picked at M2 with
-  measurements rather than by guess.
-- **Reflect's ergonomics under a real node set** are unproven here. Params types
-  must be `Reflect`, which constrains what a node author can put in them
-  — trait objects, foreign types without a reflect impl, and closures all need
-  work-arounds. M2 is where this is found out; the fallback is a hand-written
-  schema for the few types that resist, not abandoning the registry.
+- **The cook gate is one bit per node, not one bit per reason.** M2b's finding,
+  and it qualifies §2.11 directly: the engine gate decides *whether to call
+  cook*, and a node owning an expensive resource still has to decide *whether to
+  write it*. `Mesh` does this with a `GeometryFingerprint` over `P`'s `Arc`
+  pointer and point count. What is open is whether that two-level structure is
+  the design or a symptom — a per-reason gate, or a cheap whole-`Geometry`
+  identity, would collapse it. Decide with GPU residency at M5, not before; the
+  current arrangement is correct, just under-specified.
+
+- **A node whose tick depends on a cook from the same tick has no expression.**
+  Two passes run globally — every tick, then every cook — so a hypothetical
+  `PointCount` node, outputting its input geometry's length as a signal, inverts
+  the order and would need a third pass or a fixpoint. No node has wanted it yet.
+  Recorded so that when one is proposed it is recognised as an **architectural
+  change rather than a new node type**.
+
+- **Fixed tick rate value** is unchosen, and M2b's measurements did not choose
+  it. The mechanism is settled (`Time::<Fixed>::from_hz`). The data so far: the
+  demo graph's `graph_tick` costs 624 ns with the gate closed and 13.07 µs with
+  two CPU cooks open, or 0.16% of a 120 Hz budget at worst. That is one 48×48
+  grid with no renderer, no live MIDI callback and no M5 residency traffic — not
+  the graph the number should be chosen against. Two measurement rules earned
+  the hard way and worth keeping: **time `graph_tick` directly**, because an
+  `App::update()` fixture floor of ~40 µs dwarfs the signal, and **run with
+  `--test-threads=1`**, because parallel test execution inflates timings by up
+  to 40%. M2a's 2.226 µs/tick figure is not comparable to either and should not
+  be cited.
+- ~~**Reflect's ergonomics under a real node set**~~ — resolved for params,
+  ports and slots by M2a and M2b. Nothing resisted `Reflect`: `Event<T>` and
+  `Slot<T>` both derive it with a `PhantomData<fn() -> T>` field
+  `#[reflect(ignore)]`d, and no hand-written schema was needed. Two rules came
+  out of it — use `reflect_clone()` rather than `to_dynamic()` for any value
+  that must later downcast to its concrete type, or reflected enums silently
+  become dynamic proxies; and import `ReflectDefault` from the `bevy_reflect`
+  prelude. The narrower part is still open: **editor `TypeData` is unexercised**,
+  because the throwaway inspector M2 was meant to build was never built. That is
+  the reason it now starts M4 (§5).
 - ~~**State lives in two places**~~ — resolved by §2.2. Node state is components
   on the node entity, so state lives only in the world, and snapshot/restore
   becomes a question about the world rather than a per-node protocol. The open
