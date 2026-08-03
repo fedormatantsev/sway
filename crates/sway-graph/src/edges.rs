@@ -38,6 +38,37 @@ pub struct NodeRuntime {
     pub last_slot_ticks: Vec<Option<Tick>>,
 }
 
+/// One end of an edge: a field ordinal and, for a `Vec` field, which element.
+///
+/// Addressing by `(field, index)` rather than a flat ordinal is what makes a
+/// `Vec` resize local — inserting a child renumbers nothing outside that
+/// field, so authored edges and editor widget identity survive it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub struct Endpoint {
+    /// Ordinal within the node's fields: inlets first, then outlets.
+    pub field: u16,
+    /// Element within a `Vec` field. Always 0 for a non-`Vec` field.
+    pub index: u16,
+}
+
+impl Endpoint {
+    /// The single slot of a non-`Vec` field.
+    pub fn field(field: u16) -> Self {
+        Self { field, index: 0 }
+    }
+}
+
+/// The one edge. Carries nothing but its two endpoints — what an edge *does*
+/// is decided by the type of the inlet it lands on (design §2).
+///
+/// An entity, so Bevy maintains the reverse index and `linked_spawn` on
+/// `EdgeFrom`/`EdgeTo` makes despawning a node despawn its edges.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Edge {
+    pub from: Endpoint,
+    pub to: Endpoint,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PortKind {
     Continuous,
@@ -117,5 +148,21 @@ mod tests {
         let mut world = World::new();
         let entity = world.spawn(EditorPos(Vec2::new(20.0, 140.0))).id();
         assert_eq!(world.get::<EditorPos>(entity).map(|p| p.0), Some(Vec2::new(20.0, 140.0)));
+    }
+
+    #[test]
+    fn an_edge_addresses_an_element_of_a_field() {
+        use super::{Edge, Endpoint};
+
+        let edge = Edge {
+            from: Endpoint::field(2),
+            to: Endpoint { field: 0, index: 3 },
+        };
+
+        // A non-Vec field is element 0 of itself, so one addressing scheme
+        // covers both cases and callers never branch on variadic-ness.
+        assert_eq!(edge.from.index, 0);
+        assert_eq!(edge.to.field, 0);
+        assert_eq!(edge.to.index, 3);
     }
 }
