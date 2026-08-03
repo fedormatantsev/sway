@@ -5,16 +5,14 @@ use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
 use bevy_reflect::Reflect;
-use sway_graph::{
-    ContinuousIdx, Event, EventIdx, NoSlots, NodeType, PortView, TickCtx, register_event_port,
-};
+use sway_graph::{Events, NodeType, PortView, TickCtx, register_events};
 
 use crate::NoteMsg;
 
 #[derive(Reflect, Component, Default)]
-pub struct EnvelopeParams {
-    pub trigger: Event<NoteMsg>,
-    pub release_trigger: Event<NoteMsg>,
+pub struct EnvelopeInlets {
+    pub triggers: Vec<Events<NoteMsg>>,
+    pub release_triggers: Vec<Events<NoteMsg>>,
     pub attack: f32,
     pub decay: f32,
     pub sustain: f32,
@@ -22,7 +20,7 @@ pub struct EnvelopeParams {
 }
 
 #[derive(Reflect, Default)]
-pub struct EnvelopeOutputs {
+pub struct EnvelopeOutlets {
     pub value: f32,
 }
 
@@ -36,50 +34,48 @@ pub struct EnvelopeState {
 pub struct Envelope;
 
 impl Envelope {
-    pub const ATTACK: u16 = 0;
-    pub const DECAY: u16 = 1;
-    pub const SUSTAIN: u16 = 2;
-    pub const RELEASE: u16 = 3;
-    pub const OUT_VALUE: u16 = 4;
-    pub const TRIGGER: u16 = 0;
-    pub const RELEASE_TRIGGER: u16 = 1;
+    pub const TRIGGERS: u16 = 0;
+    pub const RELEASE_TRIGGERS: u16 = 1;
+    pub const ATTACK: u16 = 2;
+    pub const DECAY: u16 = 3;
+    pub const SUSTAIN: u16 = 4;
+    pub const RELEASE: u16 = 5;
+    pub const OUT_VALUE: u16 = 6;
 }
 
 impl NodeType for Envelope {
-    type Params = EnvelopeParams;
-    type Outputs = EnvelopeOutputs;
-    type Slots = NoSlots;
-    type Produces = ();
+    type Inlets = EnvelopeInlets;
+    type Outlets = EnvelopeOutlets;
     type State = EnvelopeState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+    const ORDINALS: &'static [(&'static str, u16)] = &[
+        ("triggers", Self::TRIGGERS),
+        ("release_triggers", Self::RELEASE_TRIGGERS),
         ("attack", Self::ATTACK),
         ("decay", Self::DECAY),
         ("sustain", Self::SUSTAIN),
         ("release", Self::RELEASE),
         ("value", Self::OUT_VALUE),
-        ("trigger", Self::TRIGGER),
-        ("release_trigger", Self::RELEASE_TRIGGER),
     ];
 
     fn register(app: &mut App) {
-        register_event_port::<NoteMsg>(app);
+        register_events::<NoteMsg>(app);
     }
 
     fn tick(world: &mut World, node: Entity, ports: &mut PortView, ctx: &TickCtx) {
-        let attack: f32 = ports.read(ContinuousIdx(Self::ATTACK as u32));
-        let decay: f32 = ports.read(ContinuousIdx(Self::DECAY as u32));
-        let sustain: f32 = ports.read(ContinuousIdx(Self::SUSTAIN as u32));
-        let release: f32 = ports.read(ContinuousIdx(Self::RELEASE as u32));
+        let attack: f32 = ports.read(Self::ATTACK);
+        let decay: f32 = ports.read(Self::DECAY);
+        let sustain: f32 = ports.read(Self::SUSTAIN);
+        let release: f32 = ports.read(Self::RELEASE);
 
-        let mut gate_events: Vec<(f32, bool, NoteMsg)> = ports
-            .events::<NoteMsg>(EventIdx(Self::TRIGGER as u32))
-            .map(|ev| (ev.offset, true, ev.value.clone()))
+        let mut gate_events: Vec<(f32, bool, NoteMsg)> = merged(ports, Self::TRIGGERS)
+            .into_iter()
+            .map(|(offset, msg)| (offset, true, msg))
             .collect();
         gate_events.extend(
-            ports
-                .events::<NoteMsg>(EventIdx(Self::RELEASE_TRIGGER as u32))
-                .map(|ev| (ev.offset, false, ev.value.clone())),
+            merged(ports, Self::RELEASE_TRIGGERS)
+                .into_iter()
+                .map(|(offset, msg)| (offset, false, msg)),
         );
         gate_events.sort_by(|a, b| a.0.total_cmp(&b.0));
 
@@ -117,8 +113,25 @@ impl NodeType for Envelope {
                 ) * state.velocity
             }
         };
-        ports.write(ContinuousIdx(Self::OUT_VALUE as u32), value);
+        ports.write(Self::OUT_VALUE, value);
     }
+}
+
+/// Merges this node's trigger elements into one offset-ordered stream.
+///
+/// The engine used to do this, ordering sources by compiled rank and stable
+/// sorting by offset. Element order now plays the part compiled rank did, and
+/// the sort is still stable, so equal offsets resolve by element index —
+/// which is what keeps the `event-fan-in` golden trace bit-identical.
+fn merged(ports: &PortView, field: u16) -> Vec<(f32, NoteMsg)> {
+    let mut merged: Vec<(f32, NoteMsg)> = Vec::new();
+    for index in 0..ports.len(field) {
+        for occurrence in ports.events_at::<NoteMsg>(field, index as u16) {
+            merged.push((occurrence.offset, occurrence.value.clone()));
+        }
+    }
+    merged.sort_by(|a, b| a.0.total_cmp(&b.0));
+    merged
 }
 
 fn adsr_unscaled(
@@ -181,11 +194,11 @@ mod tests {
     use bevy_ecs::resource::Resource;
     use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
     use sway_graph::{
-        EdgeFrom, EdgeTo, GraphNode, GraphPlugin, NodeId, NodeRuntime, NodeType, NodeTypeRegistry,
-        ParamEdge, PortArena, PortKind, compile,
+        compile, CompiledGraph, Edge, EdgeFrom, EdgeTo, Endpoint, GraphNode, GraphPlugin, NodeId,
+        NodeType, NodeTypeRegistry, PortArena,
     };
 
-    use crate::{MidiInbox, MidiNote, MidiNoteParams, MidiNoteState, RawMidi, SignalNodesPlugin};
+    use crate::{MidiInbox, MidiNote, MidiNoteInlets, MidiNoteState, RawMidi, SignalNodesPlugin};
 
     use super::*;
 
@@ -209,6 +222,17 @@ mod tests {
             .expect("node type registered")
     }
 
+    fn connect(app: &mut App, from: Entity, from_field: u16, to: Entity, to_field: u16, to_index: u16) {
+        app.world_mut().spawn((
+            Edge {
+                from: Endpoint::field(from_field),
+                to: Endpoint { field: to_field, index: to_index },
+            },
+            EdgeFrom(from),
+            EdgeTo(to),
+        ));
+    }
+
     fn envelope_app() -> App {
         let mut app = App::new();
         app.add_plugins(TimePlugin)
@@ -226,7 +250,7 @@ mod tests {
                     id: NodeId(0),
                     node_type: midi_type,
                 },
-                MidiNoteParams {
+                MidiNoteInlets {
                     channel: 0,
                     note_lo: 0,
                     note_hi: 127,
@@ -241,9 +265,9 @@ mod tests {
                     id: NodeId(1),
                     node_type: envelope_type,
                 },
-                EnvelopeParams {
-                    trigger: Event::default(),
-                    release_trigger: Event::default(),
+                EnvelopeInlets {
+                    triggers: vec![Events::default()],
+                    release_triggers: vec![Events::default()],
                     attack: 0.05,
                     decay: 0.01,
                     sustain: 0.4,
@@ -252,43 +276,30 @@ mod tests {
                 EnvelopeState::default(),
             ))
             .id();
-        app.world_mut().spawn((
-            ParamEdge {
-                source_port: MidiNote::OUT_NOTE_ON,
-                target_port: Envelope::TRIGGER,
-                kind: PortKind::Event,
-            },
-            EdgeFrom(midi),
-            EdgeTo(envelope),
-        ));
-        app.world_mut().spawn((
-            ParamEdge {
-                source_port: MidiNote::OUT_NOTE_OFF,
-                target_port: Envelope::RELEASE_TRIGGER,
-                kind: PortKind::Event,
-            },
-            EdgeFrom(midi),
-            EdgeTo(envelope),
-        ));
+        connect(&mut app, midi, MidiNote::OUT_NOTE_ON, envelope, Envelope::TRIGGERS, 0);
+        connect(
+            &mut app,
+            midi,
+            MidiNote::OUT_NOTE_OFF,
+            envelope,
+            Envelope::RELEASE_TRIGGERS,
+            0,
+        );
         app.world_mut().insert_resource(EnvelopeNode(envelope));
 
         let compiled = compile(app.world_mut()).expect("envelope graph compiles");
-        let (continuous_len, events_len) = (compiled.continuous_len, compiled.events_len);
-        app.world_mut()
-            .resource_mut::<PortArena>()
-            .resize(continuous_len, events_len);
+        let slots_len = compiled.slots_len;
+        app.world_mut().resource_mut::<PortArena>().resize(slots_len);
         app.world_mut().insert_resource(compiled);
         app
     }
 
     fn envelope_value(app: &App) -> f32 {
         let node = app.world().resource::<EnvelopeNode>().0;
-        let base = app
-            .world()
-            .get::<NodeRuntime>(node)
-            .expect("compiled")
-            .continuous_base;
-        *app.world().resource::<PortArena>().continuous[base + Envelope::OUT_VALUE as usize]
+        let compiled = app.world().resource::<CompiledGraph>();
+        let plan = compiled.plans.iter().find(|p| p.entity == node).expect("compiled");
+        let slot = plan.base + plan.field_offsets[Envelope::OUT_VALUE as usize];
+        *app.world().resource::<PortArena>().values[slot]
             .try_downcast_ref::<f32>()
             .expect("envelope output is f32")
     }

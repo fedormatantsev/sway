@@ -5,9 +5,7 @@ use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
 use bevy_reflect::Reflect;
-use sway_graph::{
-    ContinuousIdx, Event, EventIdx, NoSlots, NodeType, PortView, TickCtx, register_event_port,
-};
+use sway_graph::{Events, NodeType, PortView, TickCtx, register_events};
 
 use crate::NoteMsg;
 
@@ -25,14 +23,14 @@ pub enum MathOp {
 }
 
 #[derive(Reflect, Component, Default)]
-pub struct MathParams {
+pub struct MathInlets {
     pub op: MathOp,
     pub a: f32,
     pub b: f32,
 }
 
 #[derive(Reflect, Default)]
-pub struct MathOutputs {
+pub struct MathOutlets {
     pub value: f32,
 }
 
@@ -49,13 +47,11 @@ impl Math {
 }
 
 impl NodeType for Math {
-    type Params = MathParams;
-    type Outputs = MathOutputs;
-    type Slots = NoSlots;
-    type Produces = ();
+    type Inlets = MathInlets;
+    type Outlets = MathOutlets;
     type State = MathState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+    const ORDINALS: &'static [(&'static str, u16)] = &[
         ("op", Self::OP),
         ("a", Self::A),
         ("b", Self::B),
@@ -70,9 +66,9 @@ impl NodeType for Math {
     }
 
     fn tick(_world: &mut World, _node: Entity, ports: &mut PortView, _ctx: &TickCtx) {
-        let op: MathOp = ports.read(ContinuousIdx(Self::OP as u32));
-        let a: f32 = ports.read(ContinuousIdx(Self::A as u32));
-        let b: f32 = ports.read(ContinuousIdx(Self::B as u32));
+        let op: MathOp = ports.read(Self::OP);
+        let a: f32 = ports.read(Self::A);
+        let b: f32 = ports.read(Self::B);
         let value = match op {
             MathOp::Add => a + b,
             MathOp::Sub => a - b,
@@ -87,14 +83,14 @@ impl NodeType for Math {
             MathOp::Min => a.min(b),
             MathOp::Max => a.max(b),
         };
-        ports.write(ContinuousIdx(Self::OUT_VALUE as u32), value);
+        ports.write(Self::OUT_VALUE, value);
     }
 }
 
 // --- Remap ----------------------------------------------------------------
 
 #[derive(Reflect, Component, Default)]
-pub struct RemapParams {
+pub struct RemapInlets {
     pub value: f32,
     pub in_min: f32,
     pub in_max: f32,
@@ -104,7 +100,7 @@ pub struct RemapParams {
 }
 
 #[derive(Reflect, Default)]
-pub struct RemapOutputs {
+pub struct RemapOutlets {
     pub value: f32,
 }
 
@@ -124,13 +120,11 @@ impl Remap {
 }
 
 impl NodeType for Remap {
-    type Params = RemapParams;
-    type Outputs = RemapOutputs;
-    type Slots = NoSlots;
-    type Produces = ();
+    type Inlets = RemapInlets;
+    type Outlets = RemapOutlets;
     type State = RemapState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+    const ORDINALS: &'static [(&'static str, u16)] = &[
         ("value", Self::VALUE),
         ("in_min", Self::IN_MIN),
         ("in_max", Self::IN_MAX),
@@ -143,12 +137,12 @@ impl NodeType for Remap {
     fn register(_app: &mut App) {}
 
     fn tick(_world: &mut World, _node: Entity, ports: &mut PortView, _ctx: &TickCtx) {
-        let mut value: f32 = ports.read(ContinuousIdx(Self::VALUE as u32));
-        let in_min: f32 = ports.read(ContinuousIdx(Self::IN_MIN as u32));
-        let in_max: f32 = ports.read(ContinuousIdx(Self::IN_MAX as u32));
-        let out_min: f32 = ports.read(ContinuousIdx(Self::OUT_MIN as u32));
-        let out_max: f32 = ports.read(ContinuousIdx(Self::OUT_MAX as u32));
-        let clamp: bool = ports.read(ContinuousIdx(Self::CLAMP as u32));
+        let mut value: f32 = ports.read(Self::VALUE);
+        let in_min: f32 = ports.read(Self::IN_MIN);
+        let in_max: f32 = ports.read(Self::IN_MAX);
+        let out_min: f32 = ports.read(Self::OUT_MIN);
+        let out_max: f32 = ports.read(Self::OUT_MAX);
+        let clamp: bool = ports.read(Self::CLAMP);
 
         if clamp {
             let lo = in_min.min(in_max);
@@ -162,21 +156,21 @@ impl NodeType for Remap {
             let t = (value - in_min) / (in_max - in_min);
             out_min + t * (out_max - out_min)
         };
-        ports.write(ContinuousIdx(Self::OUT_VALUE as u32), out);
+        ports.write(Self::OUT_VALUE, out);
     }
 }
 
 // --- Switch ---------------------------------------------------------------
 
 #[derive(Reflect, Component, Default)]
-pub struct SwitchParams {
+pub struct SwitchInlets {
     pub select: bool,
     pub a: f32,
     pub b: f32,
 }
 
 #[derive(Reflect, Default)]
-pub struct SwitchOutputs {
+pub struct SwitchOutlets {
     pub value: f32,
 }
 
@@ -193,13 +187,11 @@ impl Switch {
 }
 
 impl NodeType for Switch {
-    type Params = SwitchParams;
-    type Outputs = SwitchOutputs;
-    type Slots = NoSlots;
-    type Produces = ();
+    type Inlets = SwitchInlets;
+    type Outlets = SwitchOutlets;
     type State = SwitchState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+    const ORDINALS: &'static [(&'static str, u16)] = &[
         ("select", Self::SELECT),
         ("a", Self::A),
         ("b", Self::B),
@@ -209,13 +201,10 @@ impl NodeType for Switch {
     fn register(_app: &mut App) {}
 
     fn tick(_world: &mut World, _node: Entity, ports: &mut PortView, _ctx: &TickCtx) {
-        let select: bool = ports.read(ContinuousIdx(Self::SELECT as u32));
-        let a: f32 = ports.read(ContinuousIdx(Self::A as u32));
-        let b: f32 = ports.read(ContinuousIdx(Self::B as u32));
-        ports.write(
-            ContinuousIdx(Self::OUT_VALUE as u32),
-            if select { a } else { b },
-        );
+        let select: bool = ports.read(Self::SELECT);
+        let a: f32 = ports.read(Self::A);
+        let b: f32 = ports.read(Self::B);
+        ports.write(Self::OUT_VALUE, if select { a } else { b });
     }
 }
 
@@ -229,13 +218,13 @@ pub enum NoteField {
 }
 
 #[derive(Reflect, Component, Default)]
-pub struct SelectParams {
-    pub trigger: Event<NoteMsg>,
+pub struct SelectInlets {
+    pub trigger: Events<NoteMsg>,
     pub field: NoteField,
 }
 
 #[derive(Reflect, Default)]
-pub struct SelectOutputs {
+pub struct SelectOutlets {
     pub value: f32,
 }
 
@@ -247,26 +236,24 @@ pub struct SelectState {
 pub struct Select;
 
 impl Select {
-    pub const FIELD: u16 = 0;
-    pub const OUT_VALUE: u16 = 1;
     pub const TRIGGER: u16 = 0;
+    pub const FIELD: u16 = 1;
+    pub const OUT_VALUE: u16 = 2;
 }
 
 impl NodeType for Select {
-    type Params = SelectParams;
-    type Outputs = SelectOutputs;
-    type Slots = NoSlots;
-    type Produces = ();
+    type Inlets = SelectInlets;
+    type Outlets = SelectOutlets;
     type State = SelectState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+    const ORDINALS: &'static [(&'static str, u16)] = &[
+        ("trigger", Self::TRIGGER),
         ("field", Self::FIELD),
         ("value", Self::OUT_VALUE),
-        ("trigger", Self::TRIGGER),
     ];
 
     fn register(app: &mut App) {
-        register_event_port::<NoteMsg>(app);
+        register_events::<NoteMsg>(app);
         app.world_mut()
             .resource_mut::<bevy_ecs::reflect::AppTypeRegistry>()
             .write()
@@ -274,11 +261,8 @@ impl NodeType for Select {
     }
 
     fn tick(world: &mut World, node: Entity, ports: &mut PortView, _ctx: &TickCtx) {
-        let field: NoteField = ports.read(ContinuousIdx(Self::FIELD as u32));
-        let last = ports
-            .events::<NoteMsg>(EventIdx(Self::TRIGGER as u32))
-            .last()
-            .map(|ev| ev.value.clone());
+        let field: NoteField = ports.read(Self::FIELD);
+        let last = ports.events::<NoteMsg>(Self::TRIGGER).last().map(|ev| ev.value.clone());
 
         if let Some(msg) = last {
             let held = match field {
@@ -292,16 +276,32 @@ impl NodeType for Select {
         }
 
         let held = world.get::<SelectState>(node).expect("SelectState").held;
-        ports.write(ContinuousIdx(Self::OUT_VALUE as u32), held);
+        ports.write(Self::OUT_VALUE, held);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use bevy_app::App;
     use bevy_ecs::world::World;
-    use sway_graph::{NodeType, BoxedOccurrence, PortArena, PortView, TickCtx};
+    use sway_graph::{
+        register_node_type, Events, FieldSpec, NodeType, NodeTypeRegistry, Occurrence, PortArena,
+        PortView, TickCtx,
+    };
 
     use super::*;
+
+    /// Builds the flat (inlets-then-outlets) field list for `N`. Every field
+    /// exercised by these tests is a single, non-`Vec` slot, so offsets are
+    /// simply `0..len` and every length is 1.
+    fn node_fields<N: NodeType>() -> Vec<FieldSpec> {
+        let mut app = App::new();
+        let id = register_node_type::<N>(&mut app);
+        let entry = app.world().resource::<NodeTypeRegistry>().get(id).expect("registered");
+        let mut fields = entry.inlets.clone();
+        fields.extend(entry.outlets.iter().cloned());
+        fields
+    }
 
     fn context() -> TickCtx {
         TickCtx {
@@ -314,15 +314,17 @@ mod tests {
     fn math_value(op: MathOp, a: f32, b: f32) -> f32 {
         let mut world = World::new();
         let node = world.spawn(MathState).id();
-        let mut arena = PortArena::new(4, 0);
-        arena.continuous[Math::OP as usize] = Box::new(op);
-        arena.continuous[Math::A as usize] = Box::new(a);
-        arena.continuous[Math::B as usize] = Box::new(b);
-        let mut ports = PortView::new(&mut arena, 0, 0, 4, 0, &[false; 3]);
+        let fields = node_fields::<Math>();
+        let offsets: Vec<usize> = (0..fields.len()).collect();
+        let lens = vec![1usize; fields.len()];
+        let connected = vec![false; fields.len()];
+        let mut arena = PortArena::new(fields.len());
+        arena.values[Math::OP as usize] = Box::new(op);
+        arena.values[Math::A as usize] = Box::new(a);
+        arena.values[Math::B as usize] = Box::new(b);
+        let mut ports = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
         Math::tick(&mut world, node, &mut ports, &context());
-        *arena.continuous[Math::OUT_VALUE as usize]
-            .try_downcast_ref::<f32>()
-            .unwrap()
+        *arena.values[Math::OUT_VALUE as usize].try_downcast_ref::<f32>().unwrap()
     }
 
     #[test]
@@ -343,7 +345,11 @@ mod tests {
     fn remap_value(value: f32, clamp: bool) -> f32 {
         let mut world = World::new();
         let node = world.spawn(RemapState).id();
-        let mut arena = PortArena::new(7, 0);
+        let fields = node_fields::<Remap>();
+        let offsets: Vec<usize> = (0..fields.len()).collect();
+        let lens = vec![1usize; fields.len()];
+        let connected = vec![false; fields.len()];
+        let mut arena = PortArena::new(fields.len());
         for (index, value) in [
             (Remap::VALUE, value),
             (Remap::IN_MIN, 0.0),
@@ -351,14 +357,12 @@ mod tests {
             (Remap::OUT_MIN, -1.0),
             (Remap::OUT_MAX, 1.0),
         ] {
-            arena.continuous[index as usize] = Box::new(value);
+            arena.values[index as usize] = Box::new(value);
         }
-        arena.continuous[Remap::CLAMP as usize] = Box::new(clamp);
-        let mut ports = PortView::new(&mut arena, 0, 0, 7, 0, &[false; 6]);
+        arena.values[Remap::CLAMP as usize] = Box::new(clamp);
+        let mut ports = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
         Remap::tick(&mut world, node, &mut ports, &context());
-        *arena.continuous[Remap::OUT_VALUE as usize]
-            .try_downcast_ref::<f32>()
-            .unwrap()
+        *arena.values[Remap::OUT_VALUE as usize].try_downcast_ref::<f32>().unwrap()
     }
 
     #[test]
@@ -371,7 +375,11 @@ mod tests {
     fn remap_degenerate_input_range_returns_out_min() {
         let mut world = World::new();
         let node = world.spawn(RemapState).id();
-        let mut arena = PortArena::new(7, 0);
+        let fields = node_fields::<Remap>();
+        let offsets: Vec<usize> = (0..fields.len()).collect();
+        let lens = vec![1usize; fields.len()];
+        let connected = vec![false; fields.len()];
+        let mut arena = PortArena::new(fields.len());
         for (index, value) in [
             (Remap::VALUE, 4.0_f32),
             (Remap::IN_MIN, 2.0_f32),
@@ -379,13 +387,13 @@ mod tests {
             (Remap::OUT_MIN, 7.0_f32),
             (Remap::OUT_MAX, 9.0_f32),
         ] {
-            arena.continuous[index as usize] = Box::new(value);
+            arena.values[index as usize] = Box::new(value);
         }
-        arena.continuous[Remap::CLAMP as usize] = Box::new(false);
-        let mut ports = PortView::new(&mut arena, 0, 0, 7, 0, &[false; 6]);
+        arena.values[Remap::CLAMP as usize] = Box::new(false);
+        let mut ports = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
         Remap::tick(&mut world, node, &mut ports, &context());
         assert_eq!(
-            arena.continuous[Remap::OUT_VALUE as usize].try_downcast_ref::<f32>(),
+            arena.values[Remap::OUT_VALUE as usize].try_downcast_ref::<f32>(),
             Some(&7.0)
         );
     }
@@ -393,15 +401,17 @@ mod tests {
     fn switch_value(select: bool) -> f32 {
         let mut world = World::new();
         let node = world.spawn(SwitchState).id();
-        let mut arena = PortArena::new(4, 0);
-        arena.continuous[Switch::SELECT as usize] = Box::new(select);
-        arena.continuous[Switch::A as usize] = Box::new(3.0_f32);
-        arena.continuous[Switch::B as usize] = Box::new(9.0_f32);
-        let mut ports = PortView::new(&mut arena, 0, 0, 4, 0, &[false; 3]);
+        let fields = node_fields::<Switch>();
+        let offsets: Vec<usize> = (0..fields.len()).collect();
+        let lens = vec![1usize; fields.len()];
+        let connected = vec![false; fields.len()];
+        let mut arena = PortArena::new(fields.len());
+        arena.values[Switch::SELECT as usize] = Box::new(select);
+        arena.values[Switch::A as usize] = Box::new(3.0_f32);
+        arena.values[Switch::B as usize] = Box::new(9.0_f32);
+        let mut ports = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
         Switch::tick(&mut world, node, &mut ports, &context());
-        *arena.continuous[Switch::OUT_VALUE as usize]
-            .try_downcast_ref::<f32>()
-            .unwrap()
+        *arena.values[Switch::OUT_VALUE as usize].try_downcast_ref::<f32>().unwrap()
     }
 
     #[test]
@@ -414,38 +424,38 @@ mod tests {
     fn select_latches_the_last_event_and_holds_without_events() {
         let mut world = World::new();
         let node = world.spawn(SelectState::default()).id();
-        let mut arena = PortArena::new(2, 1);
-        arena.continuous[Select::FIELD as usize] = Box::new(NoteField::Note);
-        arena.events[Select::TRIGGER as usize] = vec![
-            BoxedOccurrence {
-                offset: 0.001,
-                value: Box::new(NoteMsg {
-                    note: 60,
-                    velocity: 20,
-                }),
-            },
-            BoxedOccurrence {
-                offset: 0.006,
-                value: Box::new(NoteMsg {
-                    note: 72,
-                    velocity: 100,
-                }),
-            },
-        ];
+        let fields = node_fields::<Select>();
+        let offsets: Vec<usize> = (0..fields.len()).collect();
+        let lens = vec![1usize; fields.len()];
+        let connected = vec![false; fields.len()];
+        let mut arena = PortArena::new(fields.len());
+        arena.values[Select::FIELD as usize] = Box::new(NoteField::Note);
+        arena.values[Select::TRIGGER as usize] = Box::new(Events::<NoteMsg> {
+            occurrences: vec![
+                Occurrence {
+                    offset: 0.001,
+                    value: NoteMsg { note: 60, velocity: 20 },
+                },
+                Occurrence {
+                    offset: 0.006,
+                    value: NoteMsg { note: 72, velocity: 100 },
+                },
+            ],
+        });
         {
-            let mut ports = PortView::new(&mut arena, 0, 0, 2, 1, &[false]);
+            let mut ports = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
             Select::tick(&mut world, node, &mut ports, &context());
         }
         assert_eq!(
-            arena.continuous[Select::OUT_VALUE as usize].try_downcast_ref::<f32>(),
+            arena.values[Select::OUT_VALUE as usize].try_downcast_ref::<f32>(),
             Some(&72.0)
         );
 
-        arena.events[Select::TRIGGER as usize].clear();
-        let mut ports = PortView::new(&mut arena, 0, 0, 2, 1, &[false]);
+        arena.values[Select::TRIGGER as usize] = Box::new(Events::<NoteMsg>::default());
+        let mut ports = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
         Select::tick(&mut world, node, &mut ports, &context());
         assert_eq!(
-            arena.continuous[Select::OUT_VALUE as usize].try_downcast_ref::<f32>(),
+            arena.values[Select::OUT_VALUE as usize].try_downcast_ref::<f32>(),
             Some(&72.0)
         );
     }
@@ -454,19 +464,22 @@ mod tests {
     fn select_normalizes_velocity() {
         let mut world = World::new();
         let node = world.spawn(SelectState::default()).id();
-        let mut arena = PortArena::new(2, 1);
-        arena.continuous[Select::FIELD as usize] = Box::new(NoteField::Velocity);
-        arena.events[Select::TRIGGER as usize] = vec![BoxedOccurrence {
-            offset: 0.001,
-            value: Box::new(NoteMsg {
-                note: 60,
-                velocity: 127,
-            }),
-        }];
-        let mut ports = PortView::new(&mut arena, 0, 0, 2, 1, &[false]);
+        let fields = node_fields::<Select>();
+        let offsets: Vec<usize> = (0..fields.len()).collect();
+        let lens = vec![1usize; fields.len()];
+        let connected = vec![false; fields.len()];
+        let mut arena = PortArena::new(fields.len());
+        arena.values[Select::FIELD as usize] = Box::new(NoteField::Velocity);
+        arena.values[Select::TRIGGER as usize] = Box::new(Events::<NoteMsg> {
+            occurrences: vec![Occurrence {
+                offset: 0.001,
+                value: NoteMsg { note: 60, velocity: 127 },
+            }],
+        });
+        let mut ports = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
         Select::tick(&mut world, node, &mut ports, &context());
         assert_eq!(
-            arena.continuous[Select::OUT_VALUE as usize].try_downcast_ref::<f32>(),
+            arena.values[Select::OUT_VALUE as usize].try_downcast_ref::<f32>(),
             Some(&1.0)
         );
     }

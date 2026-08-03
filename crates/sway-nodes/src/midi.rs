@@ -8,10 +8,7 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::world::World;
 use bevy_reflect::Reflect;
 use bevy_time::{Fixed, Time};
-use sway_graph::{
-    ContinuousIdx, Event, EventIdx, NoSlots, NodeType, PortView, TickCtx, graph_tick,
-    register_event_port, register_node_type,
-};
+use sway_graph::{Events, NodeType, PortView, TickCtx, graph_tick, register_events, register_node_type};
 
 use crate::{Envelope, LFO, Math, Remap, Select, Switch};
 
@@ -66,16 +63,16 @@ pub fn drain_inbox(
 }
 
 #[derive(Reflect, Component, Default)]
-pub struct MidiNoteParams {
+pub struct MidiNoteInlets {
     pub channel: u8,
     pub note_lo: u8,
     pub note_hi: u8,
 }
 
 #[derive(Reflect, Default)]
-pub struct MidiNoteOutputs {
-    pub note_on: Event<NoteMsg>,
-    pub note_off: Event<NoteMsg>,
+pub struct MidiNoteOutlets {
+    pub note_on: Events<NoteMsg>,
+    pub note_off: Events<NoteMsg>,
 }
 
 #[derive(Component, Default)]
@@ -87,18 +84,16 @@ impl MidiNote {
     pub const CHANNEL: u16 = 0;
     pub const NOTE_LO: u16 = 1;
     pub const NOTE_HI: u16 = 2;
-    pub const OUT_NOTE_ON: u16 = 0;
-    pub const OUT_NOTE_OFF: u16 = 1;
+    pub const OUT_NOTE_ON: u16 = 3;
+    pub const OUT_NOTE_OFF: u16 = 4;
 }
 
 impl NodeType for MidiNote {
-    type Params = MidiNoteParams;
-    type Outputs = MidiNoteOutputs;
-    type Slots = NoSlots;
-    type Produces = ();
+    type Inlets = MidiNoteInlets;
+    type Outlets = MidiNoteOutlets;
     type State = MidiNoteState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+    const ORDINALS: &'static [(&'static str, u16)] = &[
         ("channel", Self::CHANNEL),
         ("note_lo", Self::NOTE_LO),
         ("note_hi", Self::NOTE_HI),
@@ -107,13 +102,13 @@ impl NodeType for MidiNote {
     ];
 
     fn register(app: &mut App) {
-        register_event_port::<NoteMsg>(app);
+        register_events::<NoteMsg>(app);
     }
 
     fn tick(world: &mut World, _node: Entity, ports: &mut PortView, _ctx: &TickCtx) {
-        let channel: u8 = ports.read(ContinuousIdx(Self::CHANNEL as u32));
-        let note_lo: u8 = ports.read(ContinuousIdx(Self::NOTE_LO as u32));
-        let note_hi: u8 = ports.read(ContinuousIdx(Self::NOTE_HI as u32));
+        let channel: u8 = ports.read(Self::CHANNEL);
+        let note_lo: u8 = ports.read(Self::NOTE_LO);
+        let note_hi: u8 = ports.read(Self::NOTE_HI);
 
         for &(offset, message) in &world.resource::<TickMidi>().events {
             if message.status & 0x0f != channel
@@ -129,10 +124,10 @@ impl NodeType for MidiNote {
             };
             match (message.status & 0xf0, message.data2) {
                 (0x90, velocity) if velocity > 0 => {
-                    ports.emit(EventIdx(Self::OUT_NOTE_ON as u32), offset, payload);
+                    ports.emit(Self::OUT_NOTE_ON, offset, payload);
                 }
                 (0x80, _) | (0x90, 0) => {
-                    ports.emit(EventIdx(Self::OUT_NOTE_OFF as u32), offset, payload);
+                    ports.emit(Self::OUT_NOTE_OFF, offset, payload);
                 }
                 _ => {}
             }
@@ -141,13 +136,13 @@ impl NodeType for MidiNote {
 }
 
 #[derive(Reflect, Component, Default)]
-pub struct MidiCCParams {
+pub struct MidiCCInlets {
     pub channel: u8,
     pub cc: u8,
 }
 
 #[derive(Reflect, Default)]
-pub struct MidiCCOutputs {
+pub struct MidiCCOutlets {
     pub value: f32,
 }
 
@@ -163,13 +158,11 @@ impl MidiCC {
 }
 
 impl NodeType for MidiCC {
-    type Params = MidiCCParams;
-    type Outputs = MidiCCOutputs;
-    type Slots = NoSlots;
-    type Produces = ();
+    type Inlets = MidiCCInlets;
+    type Outlets = MidiCCOutlets;
     type State = MidiCCState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+    const ORDINALS: &'static [(&'static str, u16)] = &[
         ("channel", Self::CHANNEL),
         ("cc", Self::CC),
         ("value", Self::OUT_VALUE),
@@ -178,8 +171,8 @@ impl NodeType for MidiCC {
     fn register(_app: &mut App) {}
 
     fn tick(world: &mut World, _node: Entity, ports: &mut PortView, _ctx: &TickCtx) {
-        let channel: u8 = ports.read(ContinuousIdx(Self::CHANNEL as u32));
-        let cc: u8 = ports.read(ContinuousIdx(Self::CC as u32));
+        let channel: u8 = ports.read(Self::CHANNEL);
+        let cc: u8 = ports.read(Self::CC);
         let value = world
             .resource::<TickMidi>()
             .events
@@ -193,7 +186,7 @@ impl NodeType for MidiCC {
             .map(|(_, message)| message.data2 as f32 / 127.0);
 
         if let Some(value) = value {
-            ports.write(ContinuousIdx(Self::OUT_VALUE as u32), value);
+            ports.write(Self::OUT_VALUE, value);
         }
     }
 }
@@ -223,12 +216,12 @@ mod tests {
     use bevy_ecs::resource::Resource;
     use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
     use sway_graph::{
-        EdgeFrom, EdgeTo, GraphNode, GraphPlugin, NodeId, NodeRuntime, NodeType, NodeTypeRegistry,
-        ParamEdge, PortArena, PortKind, compile,
+        compile, CompiledGraph, Edge, EdgeFrom, EdgeTo, Endpoint, GraphNode, GraphPlugin, NodeId,
+        NodeType, NodeTypeRegistry, Occurrence, PortArena,
     };
 
     use super::*;
-    use crate::{RemapParams, RemapState};
+    use crate::{RemapInlets, RemapState};
 
     const TICK_HZ: f64 = 120.0;
 
@@ -260,13 +253,23 @@ mod tests {
             .expect("node type registered by SignalNodesPlugin")
     }
 
+    fn connect(app: &mut App, from: Entity, from_field: u16, to: Entity, to_field: u16) -> Entity {
+        app.world_mut()
+            .spawn((
+                Edge {
+                    from: Endpoint::field(from_field),
+                    to: Endpoint::field(to_field),
+                },
+                EdgeFrom(from),
+                EdgeTo(to),
+            ))
+            .id()
+    }
+
     fn compile_graph(app: &mut App) {
         let compiled = compile(app.world_mut()).expect("compiles");
-        let continuous_len = compiled.continuous_len;
-        let events_len = compiled.events_len;
-        app.world_mut()
-            .resource_mut::<PortArena>()
-            .resize(continuous_len, events_len);
+        let slots_len = compiled.slots_len;
+        app.world_mut().resource_mut::<PortArena>().resize(slots_len);
         app.world_mut().insert_resource(compiled);
     }
 
@@ -280,7 +283,7 @@ mod tests {
                     id: NodeId(0),
                     node_type,
                 },
-                MidiNoteParams {
+                MidiNoteInlets {
                     channel: 0,
                     note_lo: 60,
                     note_hi: 72,
@@ -303,7 +306,7 @@ mod tests {
                     id: NodeId(0),
                     node_type,
                 },
-                MidiCCParams { channel: 0, cc: 74 },
+                MidiCCInlets { channel: 0, cc: 74 },
                 MidiCCState,
             ))
             .id();
@@ -312,14 +315,16 @@ mod tests {
         app
     }
 
-    fn event_slot(app: &App, ordinal: u16) -> &Vec<sway_graph::BoxedOccurrence> {
+    fn event_slot(app: &App, ordinal: u16) -> Vec<Occurrence<NoteMsg>> {
         let node = app.world().resource::<TestNode>().0;
-        let base = app
-            .world()
-            .get::<NodeRuntime>(node)
-            .expect("node is compiled")
-            .event_base;
-        &app.world().resource::<PortArena>().events[base + ordinal as usize]
+        let compiled = app.world().resource::<CompiledGraph>();
+        let plan = compiled.plans.iter().find(|p| p.entity == node).expect("node is compiled");
+        let slot = plan.base + plan.field_offsets[ordinal as usize];
+        app.world().resource::<PortArena>().values[slot]
+            .try_downcast_ref::<Events<NoteMsg>>()
+            .expect("slot holds Events<NoteMsg>")
+            .occurrences
+            .clone()
     }
 
     fn note_on_count(app: &App) -> usize {
@@ -330,21 +335,16 @@ mod tests {
         event_slot(app, MidiNote::OUT_NOTE_OFF).len()
     }
 
-    fn first_note_on(app: &App) -> &NoteMsg {
-        event_slot(app, MidiNote::OUT_NOTE_ON)[0]
-            .value
-            .try_downcast_ref::<NoteMsg>()
-            .expect("note-on payload is NoteMsg")
+    fn first_note_on(app: &App) -> NoteMsg {
+        event_slot(app, MidiNote::OUT_NOTE_ON)[0].value.clone()
     }
 
     fn cc_value(app: &App) -> f32 {
         let node = app.world().resource::<TestNode>().0;
-        let base = app
-            .world()
-            .get::<NodeRuntime>(node)
-            .expect("node is compiled")
-            .continuous_base;
-        *app.world().resource::<PortArena>().continuous[base + MidiCC::OUT_VALUE as usize]
+        let compiled = app.world().resource::<CompiledGraph>();
+        let plan = compiled.plans.iter().find(|p| p.entity == node).expect("node is compiled");
+        let slot = plan.base + plan.field_offsets[MidiCC::OUT_VALUE as usize];
+        *app.world().resource::<PortArena>().values[slot]
             .try_downcast_ref::<f32>()
             .expect("CC output is f32")
     }
@@ -499,7 +499,7 @@ mod tests {
                     id: NodeId(0),
                     node_type: cc_type,
                 },
-                MidiCCParams { channel: 0, cc: 74 },
+                MidiCCInlets { channel: 0, cc: 74 },
                 MidiCCState,
             ))
             .id();
@@ -510,7 +510,7 @@ mod tests {
                     id: NodeId(1),
                     node_type: remap_type,
                 },
-                RemapParams {
+                RemapInlets {
                     in_max: 1.0,
                     out_max: 1.0,
                     ..Default::default()
@@ -518,27 +518,16 @@ mod tests {
                 RemapState,
             ))
             .id();
-        app.world_mut().spawn((
-            ParamEdge {
-                source_port: MidiCC::OUT_VALUE,
-                target_port: Remap::VALUE,
-                kind: PortKind::Continuous,
-            },
-            EdgeFrom(cc),
-            EdgeTo(remap),
-        ));
+        connect(&mut app, cc, MidiCC::OUT_VALUE, remap, Remap::VALUE);
         compile_graph(&mut app);
 
         app.update();
 
-        let base = app
-            .world()
-            .get::<NodeRuntime>(remap)
-            .expect("remap is compiled")
-            .continuous_base;
+        let compiled = app.world().resource::<CompiledGraph>();
+        let plan = compiled.plans.iter().find(|p| p.entity == remap).expect("remap is compiled");
+        let slot = plan.base + plan.field_offsets[Remap::VALUE as usize];
         assert_eq!(
-            app.world().resource::<PortArena>().continuous[base + Remap::VALUE as usize]
-                .try_downcast_ref::<f32>(),
+            app.world().resource::<PortArena>().values[slot].try_downcast_ref::<f32>(),
             Some(&0.0),
         );
     }

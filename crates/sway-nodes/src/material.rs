@@ -7,7 +7,7 @@
 use core::marker::PhantomData;
 
 use bevy::prelude::*;
-use sway_graph::{ContinuousIdx, NoSlots, NodeType, PortView, TickCtx};
+use sway_graph::{NodeType, PortView, Product, TickCtx, register_product};
 
 /// The capability a material node produces: "a handle to a material of type
 /// `M`". A `Mesh` node's `material` slot accepts exactly this.
@@ -15,14 +15,14 @@ use sway_graph::{ContinuousIdx, NoSlots, NodeType, PortView, TickCtx};
 pub struct MaterialOf<M: TypePath + Send + Sync + 'static>(PhantomData<fn() -> M>);
 
 #[derive(Reflect, Component)]
-pub struct StandardMaterialParams {
+pub struct StandardMaterialInlets {
     pub base_color: Color,
     pub emissive: Color,
     pub metallic: f32,
     pub perceptual_roughness: f32,
 }
 
-impl Default for StandardMaterialParams {
+impl Default for StandardMaterialInlets {
     fn default() -> Self {
         Self {
             base_color: Color::WHITE,
@@ -34,7 +34,9 @@ impl Default for StandardMaterialParams {
 }
 
 #[derive(Reflect, Default)]
-pub struct StandardMaterialOutputs {}
+pub struct StandardMaterialOutlets {
+    pub material: Product<MaterialOf<StandardMaterial>>,
+}
 
 /// Owns the handle. `Option` rather than `Handle::default()` so "not created
 /// yet" is representable without relying on what a default handle points at.
@@ -50,32 +52,32 @@ impl StandardMaterialNode {
     pub const EMISSIVE: u16 = 1;
     pub const METALLIC: u16 = 2;
     pub const PERCEPTUAL_ROUGHNESS: u16 = 3;
+    pub const OUT_MATERIAL: u16 = 4;
 }
 
 impl NodeType for StandardMaterialNode {
-    type Params = StandardMaterialParams;
-    type Outputs = StandardMaterialOutputs;
-    type Slots = NoSlots;
-    type Produces = MaterialOf<StandardMaterial>;
+    type Inlets = StandardMaterialInlets;
+    type Outlets = StandardMaterialOutlets;
     type State = MaterialState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+    const ORDINALS: &'static [(&'static str, u16)] = &[
         ("base_color", Self::BASE_COLOR),
         ("emissive", Self::EMISSIVE),
         ("metallic", Self::METALLIC),
         ("perceptual_roughness", Self::PERCEPTUAL_ROUGHNESS),
+        ("material", Self::OUT_MATERIAL),
     ];
 
     fn register(app: &mut App) {
         app.register_type::<Color>();
+        register_product::<MaterialOf<StandardMaterial>>(app);
     }
 
     fn tick(world: &mut World, node: Entity, ports: &mut PortView, _t: &TickCtx) {
-        let base_color: Color = ports.read(ContinuousIdx(Self::BASE_COLOR as u32));
-        let emissive: Color = ports.read(ContinuousIdx(Self::EMISSIVE as u32));
-        let metallic: f32 = ports.read(ContinuousIdx(Self::METALLIC as u32));
-        let perceptual_roughness: f32 =
-            ports.read(ContinuousIdx(Self::PERCEPTUAL_ROUGHNESS as u32));
+        let base_color: Color = ports.read(Self::BASE_COLOR);
+        let emissive: Color = ports.read(Self::EMISSIVE);
+        let metallic: f32 = ports.read(Self::METALLIC);
+        let perceptual_roughness: f32 = ports.read(Self::PERCEPTUAL_ROUGHNESS);
 
         let handle = world
             .get::<MaterialState>(node)
@@ -124,7 +126,16 @@ impl NodeType for StandardMaterialNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sway_graph::{PortArena, PortView, TickCtx};
+    use sway_graph::{register_node_type, FieldSpec, NodeTypeRegistry, PortArena, PortView, TickCtx};
+
+    fn node_fields() -> Vec<FieldSpec> {
+        let mut app = App::new();
+        let id = register_node_type::<StandardMaterialNode>(&mut app);
+        let entry = app.world().resource::<NodeTypeRegistry>().get(id).expect("registered");
+        let mut fields = entry.inlets.clone();
+        fields.extend(entry.outlets.iter().cloned());
+        fields
+    }
 
     fn app_with_material() -> (App, Entity) {
         let mut app = App::new();
@@ -133,7 +144,7 @@ mod tests {
             .init_asset::<StandardMaterial>();
         let node = app
             .world_mut()
-            .spawn((StandardMaterialParams::default(), MaterialState::default()))
+            .spawn((StandardMaterialInlets::default(), MaterialState::default()))
             .id();
         (app, node)
     }
@@ -147,13 +158,17 @@ mod tests {
     /// `Messages`). So this helper drives one update after the tick to
     /// match what a real frame would observe.
     fn tick_with(app: &mut App, node: Entity, colour: Color) {
-        let mut arena = PortArena::new(4, 0);
-        arena.continuous[StandardMaterialNode::BASE_COLOR as usize] = Box::new(colour);
-        arena.continuous[StandardMaterialNode::EMISSIVE as usize] = Box::new(Color::BLACK);
-        arena.continuous[StandardMaterialNode::METALLIC as usize] = Box::new(0.0_f32);
-        arena.continuous[StandardMaterialNode::PERCEPTUAL_ROUGHNESS as usize] = Box::new(0.5_f32);
+        let fields = node_fields();
+        let offsets: Vec<usize> = (0..fields.len()).collect();
+        let lens = vec![1usize; fields.len()];
+        let connected = vec![false; fields.len()];
+        let mut arena = PortArena::new(fields.len());
+        arena.values[StandardMaterialNode::BASE_COLOR as usize] = Box::new(colour);
+        arena.values[StandardMaterialNode::EMISSIVE as usize] = Box::new(Color::BLACK);
+        arena.values[StandardMaterialNode::METALLIC as usize] = Box::new(0.0_f32);
+        arena.values[StandardMaterialNode::PERCEPTUAL_ROUGHNESS as usize] = Box::new(0.5_f32);
         let world = app.world_mut();
-        let mut view = PortView::new(&mut arena, 0, 0, 4, 0, &[false; 4]);
+        let mut view = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
         StandardMaterialNode::tick(
             world,
             node,

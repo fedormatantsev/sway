@@ -6,13 +6,13 @@ use bevy_ecs::entity::Entity;
 use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
 use serde::{Deserialize, Serialize};
 use sway_graph::{
-    EdgeFrom, EdgeTo, Event, GraphNode, GraphPlugin, NodeId, NodeRuntime, NodeType,
-    NodeTypeRegistry, ParamEdge, PortArena, PortKind, compile,
+    compile, CompiledGraph, Edge, EdgeFrom, EdgeTo, Endpoint, Events, GraphNode, GraphPlugin,
+    NodeId, NodeType, NodeTypeRegistry, PortArena,
 };
 use sway_nodes::{
-    Envelope, EnvelopeParams, EnvelopeState, LFO, LfoParams, LfoState, Math, MathOp, MathParams,
-    MathState, MidiCC, MidiCCParams, MidiCCState, MidiInbox, MidiNote, MidiNoteParams,
-    MidiNoteState, NoteMsg, RawMidi, Remap, RemapParams, RemapState, SignalNodesPlugin, Waveform,
+    Envelope, EnvelopeInlets, EnvelopeState, LFO, LfoInlets, LfoState, Math, MathInlets, MathOp,
+    MathState, MidiCC, MidiCCInlets, MidiCCState, MidiInbox, MidiNote, MidiNoteInlets,
+    MidiNoteState, NoteMsg, RawMidi, Remap, RemapInlets, RemapState, SignalNodesPlugin, Waveform,
 };
 
 #[derive(Debug, Deserialize)]
@@ -77,16 +77,25 @@ fn node_type_id<N: NodeType>(app: &App) -> sway_graph::NodeTypeId {
 fn connect(
     app: &mut App,
     source: Entity,
-    source_port: u16,
+    source_field: u16,
     target: Entity,
-    target_port: u16,
-    kind: PortKind,
+    target_field: u16,
+) {
+    connect_at(app, source, source_field, target, target_field, 0);
+}
+
+fn connect_at(
+    app: &mut App,
+    source: Entity,
+    source_field: u16,
+    target: Entity,
+    target_field: u16,
+    target_index: u16,
 ) {
     app.world_mut().spawn((
-        ParamEdge {
-            source_port,
-            target_port,
-            kind,
+        Edge {
+            from: Endpoint::field(source_field),
+            to: Endpoint { field: target_field, index: target_index },
         },
         EdgeFrom(source),
         EdgeTo(target),
@@ -95,10 +104,8 @@ fn connect(
 
 fn compile_graph(app: &mut App) {
     let graph = compile(app.world_mut()).expect("trace graph compiles");
-    let (continuous_len, events_len) = (graph.continuous_len, graph.events_len);
-    app.world_mut()
-        .resource_mut::<PortArena>()
-        .resize(continuous_len, events_len);
+    let slots_len = graph.slots_len;
+    app.world_mut().resource_mut::<PortArena>().resize(slots_len);
     app.world_mut().insert_resource(graph);
 }
 
@@ -110,7 +117,7 @@ fn spawn_midi_note(app: &mut App, id: u32, channel: u8, note_lo: u8, note_hi: u8
                 id: NodeId(id),
                 node_type: midi_type,
             },
-            MidiNoteParams {
+            MidiNoteInlets {
                 channel,
                 note_lo,
                 note_hi,
@@ -120,7 +127,11 @@ fn spawn_midi_note(app: &mut App, id: u32, channel: u8, note_lo: u8, note_hi: u8
         .id()
 }
 
-fn spawn_envelope(app: &mut App, id: u32) -> Entity {
+/// `trigger_slots` sizes the variadic `triggers` field, because — like
+/// `Group::children` — a variadic field's slot count comes from the instance,
+/// not the type: one slot per `MidiNote` this envelope will fan events in
+/// from.
+fn spawn_envelope(app: &mut App, id: u32, trigger_slots: usize) -> Entity {
     let envelope_type = node_type_id::<Envelope>(app);
     app.world_mut()
         .spawn((
@@ -128,9 +139,9 @@ fn spawn_envelope(app: &mut App, id: u32) -> Entity {
                 id: NodeId(id),
                 node_type: envelope_type,
             },
-            EnvelopeParams {
-                trigger: Event::default(),
-                release_trigger: Event::default(),
+            EnvelopeInlets {
+                triggers: vec![Events::default(); trigger_slots],
+                release_triggers: vec![Events::default()],
                 attack: 0.05,
                 decay: 0.08,
                 sustain: 0.4,
@@ -143,22 +154,22 @@ fn spawn_envelope(app: &mut App, id: u32) -> Entity {
 
 fn build_midi_envelope(app: &mut App, trace_note_events: bool) -> Vec<TracedPort> {
     let midi = spawn_midi_note(app, 0, 0, 0, 127);
-    let envelope = spawn_envelope(app, 1);
-    connect(
+    let envelope = spawn_envelope(app, 1, 1);
+    connect_at(
         app,
         midi,
         MidiNote::OUT_NOTE_ON,
         envelope,
-        Envelope::TRIGGER,
-        PortKind::Event,
+        Envelope::TRIGGERS,
+        0,
     );
-    connect(
+    connect_at(
         app,
         midi,
         MidiNote::OUT_NOTE_OFF,
         envelope,
-        Envelope::RELEASE_TRIGGER,
-        PortKind::Event,
+        Envelope::RELEASE_TRIGGERS,
+        0,
     );
     compile_graph(app);
     let mut ports = vec![TracedPort {
@@ -189,7 +200,7 @@ fn build_lfo_one_cycle(app: &mut App) -> Vec<TracedPort> {
                 id: NodeId(0),
                 node_type: lfo_type,
             },
-            LfoParams {
+            LfoInlets {
                 hz: 2.0,
                 shape: Waveform::Sine,
                 phase: 0.0,
@@ -215,7 +226,7 @@ fn build_cc_hold(app: &mut App) -> Vec<TracedPort> {
                 id: NodeId(0),
                 node_type: cc_type,
             },
-            MidiCCParams { channel: 0, cc: 74 },
+            MidiCCInlets { channel: 0, cc: 74 },
             MidiCCState,
         ))
         .id();
@@ -238,7 +249,7 @@ fn build_chain_math_remap(app: &mut App) -> Vec<TracedPort> {
                 id: NodeId(0),
                 node_type: lfo_type,
             },
-            LfoParams {
+            LfoInlets {
                 hz: 1.0,
                 shape: Waveform::Sine,
                 phase: 0.0,
@@ -254,7 +265,7 @@ fn build_chain_math_remap(app: &mut App) -> Vec<TracedPort> {
                 id: NodeId(1),
                 node_type: math_type,
             },
-            MathParams {
+            MathInlets {
                 op: MathOp::Add,
                 a: 0.0,
                 b: 1.0,
@@ -269,7 +280,7 @@ fn build_chain_math_remap(app: &mut App) -> Vec<TracedPort> {
                 id: NodeId(2),
                 node_type: remap_type,
             },
-            RemapParams {
+            RemapInlets {
                 value: 0.0,
                 in_min: 0.0,
                 in_max: 2.0,
@@ -280,22 +291,8 @@ fn build_chain_math_remap(app: &mut App) -> Vec<TracedPort> {
             RemapState,
         ))
         .id();
-    connect(
-        app,
-        lfo,
-        LFO::OUT_VALUE,
-        math,
-        Math::A,
-        PortKind::Continuous,
-    );
-    connect(
-        app,
-        math,
-        Math::OUT_VALUE,
-        remap,
-        Remap::VALUE,
-        PortKind::Continuous,
-    );
+    connect(app, lfo, LFO::OUT_VALUE, math, Math::A);
+    connect(app, math, Math::OUT_VALUE, remap, Remap::VALUE);
     compile_graph(app);
     vec![
         TracedPort {
@@ -323,15 +320,21 @@ fn build_two_notes_one_tick(app: &mut App) -> Vec<TracedPort> {
 fn build_event_fan_in(app: &mut App) -> Vec<TracedPort> {
     let midi_a = spawn_midi_note(app, 0, 0, 0, 127);
     let midi_b = spawn_midi_note(app, 1, 1, 0, 127);
-    let envelope = spawn_envelope(app, 2);
-    for midi in [midi_a, midi_b] {
-        connect(
+    let envelope = spawn_envelope(app, 2, 2);
+    // `Envelope::TRIGGERS` is variadic; each `MidiNote` feeds its own
+    // element. `midi_a` takes element 0 and `midi_b` element 1 — the same
+    // order the old engine's compiled rank gave them — because `Envelope`'s
+    // own `merged()` now plays the part the engine's fan-in used to, and
+    // getting this order right is what makes the trace comparison below
+    // meaningful rather than merely green.
+    for (index, midi) in [midi_a, midi_b].into_iter().enumerate() {
+        connect_at(
             app,
             midi,
             MidiNote::OUT_NOTE_ON,
             envelope,
-            Envelope::TRIGGER,
-            PortKind::Event,
+            Envelope::TRIGGERS,
+            index as u16,
         );
     }
     compile_graph(app);
@@ -344,37 +347,53 @@ fn build_event_fan_in(app: &mut App) -> Vec<TracedPort> {
         TracedPort {
             label: "envelope.trigger",
             node: envelope,
-            kind: PortKindSpec::NoteEvents(Envelope::TRIGGER, "note_on"),
+            kind: PortKindSpec::NoteEvents(Envelope::TRIGGERS, "note_on"),
         },
     ]
 }
 
 fn snapshot_port(app: &App, port: &TracedPort) -> Snapshot {
-    let runtime = app
-        .world()
-        .get::<NodeRuntime>(port.node)
+    let compiled = app.world().resource::<CompiledGraph>();
+    let plan = compiled
+        .plans
+        .iter()
+        .find(|p| p.entity == port.node)
         .expect("traced node is compiled");
     let arena = app.world().resource::<PortArena>();
     match port.kind {
         PortKindSpec::Continuous(ordinal) => {
-            let value = arena.continuous[runtime.continuous_base + ordinal as usize]
+            let slot = plan.base + plan.field_offsets[ordinal as usize];
+            let value = arena.values[slot]
                 .try_downcast_ref::<f32>()
                 .copied()
                 .expect("traced continuous port is f32");
             Snapshot::Continuous(value)
         }
         PortKindSpec::NoteEvents(ordinal, event_name) => {
-            let events = arena.events[runtime.event_base + ordinal as usize]
-                .iter()
-                .map(|occurrence| {
-                    let message = occurrence
-                        .value
-                        .try_downcast_ref::<NoteMsg>()
-                        .expect("traced event payload is NoteMsg");
-                    (
-                        occurrence.offset,
-                        format!("{event_name}({},{})", message.note, message.velocity),
-                    )
+            // The field may be variadic (`Envelope::TRIGGERS` fans in one
+            // `MidiNote` per element), so every element's occurrences are
+            // gathered here — element order first, offset second — the same
+            // rule `Envelope::merged` itself uses, and the one that keeps
+            // this trace meaningful for a fan-in of more than one source.
+            let offset = plan.field_offsets[ordinal as usize];
+            let len = plan.field_lens[ordinal as usize];
+            let events = (0..len)
+                .flat_map(|index| {
+                    let slot = plan.base + offset + index;
+                    arena.values[slot]
+                        .try_downcast_ref::<Events<NoteMsg>>()
+                        .expect("traced event port is Events<NoteMsg>")
+                        .occurrences
+                        .iter()
+                        .map(|occurrence| {
+                            (
+                                occurrence.offset,
+                                format!(
+                                    "{event_name}({},{})",
+                                    occurrence.value.note, occurrence.value.velocity
+                                ),
+                            )
+                        })
                 })
                 .collect();
             Snapshot::Events(events)

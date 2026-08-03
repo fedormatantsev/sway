@@ -11,19 +11,15 @@ use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use sway_geo::Geometry;
-use sway_graph::{ContinuousIdx, NodeType, PortView, Slot, SlotView, TickCtx, register_slot};
+use sway_graph::{NodeType, PortView, Product, Spatial, TickCtx, register_product};
 
 use crate::material::{MaterialOf, MaterialState};
 
-#[derive(Reflect, Default)]
-pub struct MeshNodeSlots {
-    pub geo: Slot<Geometry>,
-    pub material: Slot<MaterialOf<StandardMaterial>>,
-}
-
-/// Scalar rotation ports, for the reason `GroupParams` gives.
+/// Scalar rotation ports, for the reason `GroupInlets` gives.
 #[derive(Reflect, Component)]
-pub struct MeshNodeParams {
+pub struct MeshNodeInlets {
+    pub geo: Product<Geometry>,
+    pub material: Product<MaterialOf<StandardMaterial>>,
     pub translation: Vec3,
     pub rotation_x: f32,
     pub rotation_y: f32,
@@ -31,9 +27,11 @@ pub struct MeshNodeParams {
     pub scale: Vec3,
 }
 
-impl Default for MeshNodeParams {
+impl Default for MeshNodeInlets {
     fn default() -> Self {
         Self {
+            geo: Product::default(),
+            material: Product::default(),
             translation: Vec3::ZERO,
             rotation_x: 0.0,
             rotation_y: 0.0,
@@ -44,7 +42,9 @@ impl Default for MeshNodeParams {
 }
 
 #[derive(Reflect, Default)]
-pub struct MeshNodeOutputs {}
+pub struct MeshNodeOutlets {
+    pub spatial: Product<Spatial>,
+}
 
 /// A cheap "did the geometry actually change" signal, checked before
 /// touching the mesh asset at all.
@@ -87,46 +87,46 @@ pub struct MeshNodeState {
 pub struct MeshNode;
 
 impl MeshNode {
-    pub const TRANSLATION: u16 = 0;
-    pub const ROTATION_X: u16 = 1;
-    pub const ROTATION_Y: u16 = 2;
-    pub const ROTATION_Z: u16 = 3;
-    pub const SCALE: u16 = 4;
     pub const IN_GEO: u16 = 0;
     pub const IN_MATERIAL: u16 = 1;
+    pub const TRANSLATION: u16 = 2;
+    pub const ROTATION_X: u16 = 3;
+    pub const ROTATION_Y: u16 = 4;
+    pub const ROTATION_Z: u16 = 5;
+    pub const SCALE: u16 = 6;
+    pub const OUT_SPATIAL: u16 = 7;
 }
 
 impl NodeType for MeshNode {
-    type Params = MeshNodeParams;
-    type Outputs = MeshNodeOutputs;
-    type Slots = MeshNodeSlots;
-    type Produces = ();
+    type Inlets = MeshNodeInlets;
+    type Outlets = MeshNodeOutlets;
     type State = MeshNodeState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+    const ORDINALS: &'static [(&'static str, u16)] = &[
+        ("geo", Self::IN_GEO),
+        ("material", Self::IN_MATERIAL),
         ("translation", Self::TRANSLATION),
         ("rotation_x", Self::ROTATION_X),
         ("rotation_y", Self::ROTATION_Y),
         ("rotation_z", Self::ROTATION_Z),
         ("scale", Self::SCALE),
+        ("spatial", Self::OUT_SPATIAL),
     ];
-    const SLOT_ORDINALS: &'static [(&'static str, u16)] =
-        &[("geo", Self::IN_GEO), ("material", Self::IN_MATERIAL)];
-    const SPATIAL: bool = true;
     const COOKS: bool = true;
 
     fn register(app: &mut App) {
         app.register_type::<Vec3>();
-        register_slot::<Geometry>(app);
-        register_slot::<MaterialOf<StandardMaterial>>(app);
+        register_product::<Geometry>(app);
+        register_product::<MaterialOf<StandardMaterial>>(app);
+        register_product::<Spatial>(app);
     }
 
     fn tick(world: &mut World, node: Entity, ports: &mut PortView, _t: &TickCtx) {
-        let translation: Vec3 = ports.read(ContinuousIdx(Self::TRANSLATION as u32));
-        let rx: f32 = ports.read(ContinuousIdx(Self::ROTATION_X as u32));
-        let ry: f32 = ports.read(ContinuousIdx(Self::ROTATION_Y as u32));
-        let rz: f32 = ports.read(ContinuousIdx(Self::ROTATION_Z as u32));
-        let scale: Vec3 = ports.read(ContinuousIdx(Self::SCALE as u32));
+        let translation: Vec3 = ports.read(Self::TRANSLATION);
+        let rx: f32 = ports.read(Self::ROTATION_X);
+        let ry: f32 = ports.read(Self::ROTATION_Y);
+        let rz: f32 = ports.read(Self::ROTATION_Z);
+        let scale: Vec3 = ports.read(Self::SCALE);
         let want = Transform {
             translation,
             rotation: Quat::from_euler(EulerRot::XYZ, rx, ry, rz),
@@ -142,8 +142,8 @@ impl NodeType for MeshNode {
         }
     }
 
-    fn cook(world: &mut World, node: Entity, slots: &SlotView) {
-        if let Some(source) = slots.source(Self::IN_MATERIAL)
+    fn cook(world: &mut World, node: Entity, ports: &PortView) {
+        if let Some(source) = ports.source(Self::IN_MATERIAL, 0)
             && let Some(handle) = world.get::<MaterialState>(source).and_then(|s| s.handle.clone())
         {
             let current = world
@@ -154,7 +154,7 @@ impl NodeType for MeshNode {
             }
         }
 
-        let Some(source) = slots.source(Self::IN_GEO) else {
+        let Some(source) = ports.source(Self::IN_GEO, 0) else {
             return;
         };
         let Some(geo) = world.get::<Geometry>(source).cloned() else {
@@ -256,7 +256,16 @@ mod tests {
     use super::*;
     use sway_geo::{Attribute, Geometry};
     use std::sync::Arc;
-    use sway_graph::{SlotSource, SlotView};
+    use sway_graph::{register_node_type, FieldSpec, NodeTypeRegistry, PortArena, PortView};
+
+    fn node_fields() -> Vec<FieldSpec> {
+        let mut app = App::new();
+        let id = register_node_type::<MeshNode>(&mut app);
+        let entry = app.world().resource::<NodeTypeRegistry>().get(id).expect("registered");
+        let mut fields = entry.inlets.clone();
+        fields.extend(entry.outlets.iter().cloned());
+        fields
+    }
 
     fn quad() -> Geometry {
         let mut g = Geometry::new(4);
@@ -284,12 +293,13 @@ mod tests {
         let source = app.world_mut().spawn(quad()).id();
         let node = app
             .world_mut()
-            .spawn((MeshNodeParams::default(), MeshNodeState::default()))
+            .spawn((MeshNodeInlets::default(), MeshNodeState::default()))
             .id();
         (app, source, node)
     }
 
-    /// Runs `MeshNode::cook` and then drives one `app.update()`.
+    /// Runs `MeshNode::cook` (optionally with a material source) and then
+    /// drives one `app.update()`.
     ///
     /// `Assets::get_mut`/`add` only queue an `AssetEvent`; Bevy 0.19 flushes
     /// that queue into `Messages<AssetEvent<A>>` from the `asset_events`
@@ -302,13 +312,24 @@ mod tests {
     /// observing `re_cooking_unchanged_geometry_does_not_modify_the_asset`
     /// still pass. `material.rs`'s `tick_with` hits the identical hazard and
     /// resolves it the same way.
-    fn cook(app: &mut App, node: Entity, source: Entity) {
-        let slots = [
-            Some(SlotSource { entity: source, plan_index: 0 }),
-            None,
-        ];
-        MeshNode::cook(app.world_mut(), node, &SlotView::new(&slots));
+    fn cook_with(app: &mut App, node: Entity, source: Entity, material: Option<Entity>) {
+        let fields = node_fields();
+        let offsets: Vec<usize> = (0..fields.len()).collect();
+        let lens = vec![1usize; fields.len()];
+        let connected = vec![false; fields.len()];
+        let mut arena = PortArena::new(fields.len());
+        arena.values[MeshNode::IN_GEO as usize] = Box::new(Product::<Geometry>::from_source(source));
+        arena.values[MeshNode::IN_MATERIAL as usize] = Box::new(match material {
+            Some(m) => Product::<MaterialOf<StandardMaterial>>::from_source(m),
+            None => Product::<MaterialOf<StandardMaterial>>::default(),
+        });
+        let ports = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
+        MeshNode::cook(app.world_mut(), node, &ports);
         app.update();
+    }
+
+    fn cook(app: &mut App, node: Entity, source: Entity) {
+        cook_with(app, node, source, None);
     }
 
     fn count_modified(app: &mut App) -> usize {
@@ -393,11 +414,16 @@ mod tests {
             .spawn(MaterialState { handle: Some(handle.clone()) })
             .id();
 
-        let slots = [
-            Some(SlotSource { entity: source, plan_index: 0 }),
-            Some(SlotSource { entity: material_node, plan_index: 1 }),
-        ];
-        MeshNode::cook(app.world_mut(), node, &SlotView::new(&slots));
+        let fields = node_fields();
+        let offsets: Vec<usize> = (0..fields.len()).collect();
+        let lens = vec![1usize; fields.len()];
+        let connected = vec![false; fields.len()];
+        let mut arena = PortArena::new(fields.len());
+        arena.values[MeshNode::IN_GEO as usize] = Box::new(Product::<Geometry>::from_source(source));
+        arena.values[MeshNode::IN_MATERIAL as usize] =
+            Box::new(Product::<MaterialOf<StandardMaterial>>::from_source(material_node));
+        let ports = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
+        MeshNode::cook(app.world_mut(), node, &ports);
 
         assert_eq!(
             app.world().get::<MeshMaterial3d<StandardMaterial>>(node).map(|m| m.0.clone()),

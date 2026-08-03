@@ -1,7 +1,7 @@
 //! Scene structure nodes: `Group` and `Rgb`. Design §8.
 
 use bevy::prelude::*;
-use sway_graph::{ContinuousIdx, NoSlots, NodeType, PortView, TickCtx};
+use sway_graph::{NodeType, PortView, Product, Spatial, TickCtx, register_product};
 
 /// Rotation is three scalar ports rather than one `Vec3`, because rotation is
 /// the thing a signal actually drives and every M2a signal node outputs `f32`.
@@ -9,7 +9,8 @@ use sway_graph::{ContinuousIdx, NoSlots, NodeType, PortView, TickCtx};
 /// §2.4's rule is that a node's ports are simply its fields. Translation and
 /// scale stay `Vec3`: nothing drives them at M2b.
 #[derive(Reflect, Component)]
-pub struct GroupParams {
+pub struct GroupInlets {
+    pub children: Vec<Product<Spatial>>,
     pub translation: Vec3,
     /// Euler angles in radians, applied XYZ.
     pub rotation_x: f32,
@@ -18,9 +19,10 @@ pub struct GroupParams {
     pub scale: Vec3,
 }
 
-impl Default for GroupParams {
+impl Default for GroupInlets {
     fn default() -> Self {
         Self {
+            children: Vec::new(),
             translation: Vec3::ZERO,
             rotation_x: 0.0,
             rotation_y: 0.0,
@@ -31,7 +33,9 @@ impl Default for GroupParams {
 }
 
 #[derive(Reflect, Default)]
-pub struct GroupOutputs {}
+pub struct GroupOutlets {
+    pub spatial: Product<Spatial>,
+}
 
 #[derive(Component, Default)]
 pub struct GroupState;
@@ -39,39 +43,41 @@ pub struct GroupState;
 pub struct Group;
 
 impl Group {
-    pub const TRANSLATION: u16 = 0;
-    pub const ROTATION_X: u16 = 1;
-    pub const ROTATION_Y: u16 = 2;
-    pub const ROTATION_Z: u16 = 3;
-    pub const SCALE: u16 = 4;
+    pub const CHILDREN: u16 = 0;
+    pub const TRANSLATION: u16 = 1;
+    pub const ROTATION_X: u16 = 2;
+    pub const ROTATION_Y: u16 = 3;
+    pub const ROTATION_Z: u16 = 4;
+    pub const SCALE: u16 = 5;
+    pub const OUT_SPATIAL: u16 = 6;
 }
 
 impl NodeType for Group {
-    type Params = GroupParams;
-    type Outputs = GroupOutputs;
-    type Slots = NoSlots;
-    type Produces = ();
+    type Inlets = GroupInlets;
+    type Outlets = GroupOutlets;
     type State = GroupState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+    const ORDINALS: &'static [(&'static str, u16)] = &[
+        ("children", Self::CHILDREN),
         ("translation", Self::TRANSLATION),
         ("rotation_x", Self::ROTATION_X),
         ("rotation_y", Self::ROTATION_Y),
         ("rotation_z", Self::ROTATION_Z),
         ("scale", Self::SCALE),
+        ("spatial", Self::OUT_SPATIAL),
     ];
-    const SPATIAL: bool = true;
 
     fn register(app: &mut App) {
         app.register_type::<Vec3>();
+        register_product::<Spatial>(app);
     }
 
     fn tick(world: &mut World, node: Entity, ports: &mut PortView, _t: &TickCtx) {
-        let translation: Vec3 = ports.read(ContinuousIdx(Self::TRANSLATION as u32));
-        let rx: f32 = ports.read(ContinuousIdx(Self::ROTATION_X as u32));
-        let ry: f32 = ports.read(ContinuousIdx(Self::ROTATION_Y as u32));
-        let rz: f32 = ports.read(ContinuousIdx(Self::ROTATION_Z as u32));
-        let scale: Vec3 = ports.read(ContinuousIdx(Self::SCALE as u32));
+        let translation: Vec3 = ports.read(Self::TRANSLATION);
+        let rx: f32 = ports.read(Self::ROTATION_X);
+        let ry: f32 = ports.read(Self::ROTATION_Y);
+        let rz: f32 = ports.read(Self::ROTATION_Z);
+        let scale: Vec3 = ports.read(Self::SCALE);
         let want = Transform {
             translation,
             rotation: Quat::from_euler(EulerRot::XYZ, rx, ry, rz),
@@ -91,14 +97,14 @@ impl NodeType for Group {
 }
 
 #[derive(Reflect, Component, Default)]
-pub struct RgbParams {
+pub struct RgbInlets {
     pub r: f32,
     pub g: f32,
     pub b: f32,
 }
 
 #[derive(Reflect, Default)]
-pub struct RgbOutputs {
+pub struct RgbOutlets {
     pub color: Color,
 }
 
@@ -118,13 +124,11 @@ impl Rgb {
 }
 
 impl NodeType for Rgb {
-    type Params = RgbParams;
-    type Outputs = RgbOutputs;
-    type Slots = NoSlots;
-    type Produces = ();
+    type Inlets = RgbInlets;
+    type Outlets = RgbOutlets;
     type State = RgbState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+    const ORDINALS: &'static [(&'static str, u16)] = &[
         ("r", Self::R),
         ("g", Self::G),
         ("b", Self::B),
@@ -136,35 +140,49 @@ impl NodeType for Rgb {
     }
 
     fn tick(_world: &mut World, _node: Entity, ports: &mut PortView, _t: &TickCtx) {
-        let r: f32 = ports.read(ContinuousIdx(Self::R as u32));
-        let g: f32 = ports.read(ContinuousIdx(Self::G as u32));
-        let b: f32 = ports.read(ContinuousIdx(Self::B as u32));
-        ports.write(ContinuousIdx(Self::OUT_COLOR as u32), Color::srgb(r, g, b));
+        let r: f32 = ports.read(Self::R);
+        let g: f32 = ports.read(Self::G);
+        let b: f32 = ports.read(Self::B);
+        ports.write(Self::OUT_COLOR, Color::srgb(r, g, b));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sway_graph::{PortArena, PortView, TickCtx};
+    use sway_graph::{register_node_type, FieldSpec, NodeTypeRegistry, PortArena, PortView, TickCtx};
 
-    /// Fills a five-slot arena with a Group's ports.
-    fn group_arena(translation: Vec3) -> PortArena {
-        let mut arena = PortArena::new(5, 0);
-        arena.continuous[Group::TRANSLATION as usize] = Box::new(translation);
-        arena.continuous[Group::ROTATION_X as usize] = Box::new(0.0_f32);
-        arena.continuous[Group::ROTATION_Y as usize] = Box::new(0.0_f32);
-        arena.continuous[Group::ROTATION_Z as usize] = Box::new(0.0_f32);
-        arena.continuous[Group::SCALE as usize] = Box::new(Vec3::ONE);
-        arena
+    fn node_fields<N: NodeType>() -> Vec<FieldSpec> {
+        let mut app = App::new();
+        let id = register_node_type::<N>(&mut app);
+        let entry = app.world().resource::<NodeTypeRegistry>().get(id).expect("registered");
+        let mut fields = entry.inlets.clone();
+        fields.extend(entry.outlets.iter().cloned());
+        fields
+    }
+
+    /// Fills a Group's fields, with `children` left at its (harmless, since
+    /// `Group::tick` never reads it) fictitious single slot.
+    fn group_arena() -> (PortArena, Vec<FieldSpec>, Vec<usize>, Vec<usize>, Vec<bool>) {
+        let fields = node_fields::<Group>();
+        let offsets: Vec<usize> = (0..fields.len()).collect();
+        let lens = vec![1usize; fields.len()];
+        let connected = vec![false; fields.len()];
+        let arena = PortArena::new(fields.len());
+        (arena, fields, offsets, lens, connected)
     }
 
     #[test]
     fn a_group_writes_its_transform() {
         let mut world = World::new();
-        let node = world.spawn((GroupParams::default(), GroupState)).id();
-        let mut arena = group_arena(Vec3::new(1.0, 2.0, 3.0));
-        let mut view = PortView::new(&mut arena, 0, 0, 5, 0, &[false; 5]);
+        let node = world.spawn((GroupInlets::default(), GroupState)).id();
+        let (mut arena, fields, offsets, lens, connected) = group_arena();
+        arena.values[Group::TRANSLATION as usize] = Box::new(Vec3::new(1.0, 2.0, 3.0));
+        arena.values[Group::ROTATION_X as usize] = Box::new(0.0_f32);
+        arena.values[Group::ROTATION_Y as usize] = Box::new(0.0_f32);
+        arena.values[Group::ROTATION_Z as usize] = Box::new(0.0_f32);
+        arena.values[Group::SCALE as usize] = Box::new(Vec3::ONE);
+        let mut view = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
 
         Group::tick(
             &mut world,
@@ -185,11 +203,16 @@ mod tests {
         // change tick every tick, re-running propagation and making
         // `Changed<Transform>` worthless downstream.
         let mut world = World::new();
-        let node = world.spawn((GroupParams::default(), GroupState)).id();
-        let mut arena = group_arena(Vec3::ZERO);
+        let node = world.spawn((GroupInlets::default(), GroupState)).id();
+        let (mut arena, fields, offsets, lens, connected) = group_arena();
+        arena.values[Group::TRANSLATION as usize] = Box::new(Vec3::ZERO);
+        arena.values[Group::ROTATION_X as usize] = Box::new(0.0_f32);
+        arena.values[Group::ROTATION_Y as usize] = Box::new(0.0_f32);
+        arena.values[Group::ROTATION_Z as usize] = Box::new(0.0_f32);
+        arena.values[Group::SCALE as usize] = Box::new(Vec3::ONE);
 
         for _ in 0..2 {
-            let mut view = PortView::new(&mut arena, 0, 0, 5, 0, &[false; 5]);
+            let mut view = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
             Group::tick(
                 &mut world,
                 node,
@@ -205,7 +228,7 @@ mod tests {
         }
         let first = world.entity(node).get_ref::<Transform>().unwrap().last_changed();
 
-        let mut view = PortView::new(&mut arena, 0, 0, 5, 0, &[false; 5]);
+        let mut view = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
         Group::tick(
             &mut world,
             node,
@@ -224,13 +247,17 @@ mod tests {
     fn rgb_writes_a_color_to_its_output_port() {
         // The first struct-typed value across a continuous edge (design §8).
         let mut world = World::new();
-        let node = world.spawn((RgbParams::default(), RgbState)).id();
-        let mut arena = PortArena::new(4, 0);
-        arena.continuous[Rgb::R as usize] = Box::new(1.0_f32);
-        arena.continuous[Rgb::G as usize] = Box::new(0.5_f32);
-        arena.continuous[Rgb::B as usize] = Box::new(0.0_f32);
-        arena.continuous[Rgb::OUT_COLOR as usize] = Box::new(Color::BLACK);
-        let mut view = PortView::new(&mut arena, 0, 0, 4, 0, &[false; 3]);
+        let node = world.spawn((RgbInlets::default(), RgbState)).id();
+        let fields = node_fields::<Rgb>();
+        let offsets: Vec<usize> = (0..fields.len()).collect();
+        let lens = vec![1usize; fields.len()];
+        let connected = vec![false; fields.len()];
+        let mut arena = PortArena::new(fields.len());
+        arena.values[Rgb::R as usize] = Box::new(1.0_f32);
+        arena.values[Rgb::G as usize] = Box::new(0.5_f32);
+        arena.values[Rgb::B as usize] = Box::new(0.0_f32);
+        arena.values[Rgb::OUT_COLOR as usize] = Box::new(Color::BLACK);
+        let mut view = PortView::new(&mut arena, 0, &fields, &offsets, &lens, &connected);
 
         Rgb::tick(
             &mut world,
@@ -240,7 +267,7 @@ mod tests {
         );
 
         assert_eq!(
-            arena.continuous[Rgb::OUT_COLOR as usize].try_downcast_ref::<Color>(),
+            arena.values[Rgb::OUT_COLOR as usize].try_downcast_ref::<Color>(),
             Some(&Color::srgb(1.0, 0.5, 0.0))
         );
     }
