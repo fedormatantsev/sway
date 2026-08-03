@@ -299,7 +299,7 @@ impl NodeType for Select {
 #[cfg(test)]
 mod tests {
     use bevy_ecs::world::World;
-    use sway_graph::{NodeType, Occurrence, PortArena, PortView, TickCtx};
+    use sway_graph::{NodeType, BoxedOccurrence, PortArena, PortView, TickCtx};
 
     use super::*;
 
@@ -417,14 +417,14 @@ mod tests {
         let mut arena = PortArena::new(2, 1);
         arena.continuous[Select::FIELD as usize] = Box::new(NoteField::Note);
         arena.events[Select::TRIGGER as usize] = vec![
-            Occurrence {
+            BoxedOccurrence {
                 offset: 0.001,
                 value: Box::new(NoteMsg {
                     note: 60,
                     velocity: 20,
                 }),
             },
-            Occurrence {
+            BoxedOccurrence {
                 offset: 0.006,
                 value: Box::new(NoteMsg {
                     note: 72,
@@ -456,7 +456,7 @@ mod tests {
         let node = world.spawn(SelectState::default()).id();
         let mut arena = PortArena::new(2, 1);
         arena.continuous[Select::FIELD as usize] = Box::new(NoteField::Velocity);
-        arena.events[Select::TRIGGER as usize] = vec![Occurrence {
+        arena.events[Select::TRIGGER as usize] = vec![BoxedOccurrence {
             offset: 0.001,
             value: Box::new(NoteMsg {
                 note: 60,

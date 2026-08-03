@@ -312,7 +312,7 @@ mod tests {
         app
     }
 
-    fn event_slot(app: &App, ordinal: u16) -> &Vec<sway_graph::Occurrence> {
+    fn event_slot(app: &App, ordinal: u16) -> &Vec<sway_graph::BoxedOccurrence> {
         let node = app.world().resource::<TestNode>().0;
         let base = app
             .world()

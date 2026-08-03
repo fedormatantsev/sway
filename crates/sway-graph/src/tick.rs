@@ -10,7 +10,7 @@ use bevy_time::{Fixed, Time};
 
 use crate::compile::CompiledGraph;
 use crate::edges::NodeRuntime;
-use crate::ports::{Occurrence, PortArena};
+use crate::ports::{BoxedOccurrence, PortArena};
 use crate::registry::{
     CookFn, NodeTypeRegistry, PrefillFn, ProducedTickFn, SeedOutputsFn, TickFn, TickOfFn,
 };
@@ -151,11 +151,11 @@ pub fn graph_tick(world: &mut World) {
             }
             for &(src, dst) in &plan.event_merges {
                 // `arena.events[src]` and `arena.events[dst]` alias the same
-                // `Vec<Vec<Occurrence>>`, so the copy needs a temporary — the
+                // `Vec<Vec<BoxedOccurrence>>`, so the copy needs a temporary — the
                 // one per-tick allocation this design does not avoid.
-                let copied: Vec<Occurrence> = arena.events[src]
+                let copied: Vec<BoxedOccurrence> = arena.events[src]
                     .iter()
-                    .map(|o| Occurrence {
+                    .map(|o| BoxedOccurrence {
                         offset: o.offset,
                         value: clone_slot(&*o.value),
                     })

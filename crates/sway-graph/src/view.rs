@@ -9,7 +9,7 @@
 use bevy_ecs::entity::Entity;
 use bevy_reflect::Reflect;
 
-use crate::ports::{ContinuousIdx, EventIdx, Occurrence, PortArena};
+use crate::ports::{ContinuousIdx, EventIdx, BoxedOccurrence, PortArena};
 
 /// Context shared by every node ticked this frame. Spec §6/§7.
 pub struct TickCtx {
@@ -128,7 +128,7 @@ impl<'a> PortView<'a> {
     /// Appends an occurrence to an event output's slot for this tick.
     pub fn emit<T: Reflect>(&mut self, idx: EventIdx, offset: f32, value: T) {
         let slot = self.event_slot(idx);
-        self.arena.events[slot].push(Occurrence {
+        self.arena.events[slot].push(BoxedOccurrence {
             offset,
             value: Box::new(value),
         });
