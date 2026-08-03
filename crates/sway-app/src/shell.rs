@@ -23,13 +23,16 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::presenter::{EditorPresenter, ShowPresenter, EDITOR_VIEWPORT_SIZE};
+use crate::presenter::{ShowPresenter, EDITOR_VIEWPORT_SIZE};
+// NOTE: EditorPresenter is stubbed in Task 7 due to sway-editor migration
+// use crate::presenter::EditorPresenter;
 
 /// Which presenter this run uses, selected once at window creation
 /// (`ShellConfig::editor`) and never switched at runtime.
+/// NOTE (Task 7): EditorPresenter variant removed due to sway-editor not being migrated.
 enum Presenter {
     Show(ShowPresenter),
-    Editor(Box<EditorPresenter>),
+    // Editor(Box<EditorPresenter>),  // Task 7: disabled due to sway-editor migration
 }
 
 /// Builds the demo-specific Bevy `App` once the window, shared device, and
@@ -75,13 +78,7 @@ impl Running {
                 &self.viewport,
                 &mut self.compositor,
             ),
-            Presenter::Editor(presenter) => presenter.present(
-                &mut self.app,
-                &self.gpu,
-                &self.surface,
-                &mut self.viewport,
-                &mut self.compositor,
-            ),
+            // Presenter::Editor(_) => panic!("EditorPresenter is disabled in Task 7"),
         }
         // Keeps the loop continuous: vsync (the surface is `Fifo`) paces us,
         // not this call. This also covers `begin_frame` returning `None`
@@ -175,11 +172,13 @@ impl ApplicationHandler for Shell {
         // R6 (controller dispatch ruling): `--editor` now selects the real
         // `EditorPresenter`, not the `ShowPresenter` fallback Task 3 left in
         // place.
-        let presenter = if config.editor {
+        // NOTE (Task 7): EditorPresenter is disabled because sway-editor is
+        // broken due to unfinished migrations. Forcing ShowPresenter.
+        let presenter = /* if config.editor {
             Presenter::Editor(Box::new(EditorPresenter::new(&gpu, size, scale_factor)))
-        } else {
+        } else { */
             Presenter::Show(ShowPresenter)
-        };
+        /* } */;
 
         self.running = Some(Running {
             window,
@@ -204,9 +203,10 @@ impl ApplicationHandler for Shell {
         // translate into a masonry event at all -- that's `ui-events-winit`'s
         // reducer's call, not this shell's -- so this is safe to do
         // unconditionally for every event this shell also handles below.
-        if let Presenter::Editor(presenter) = &mut running.presenter {
-            presenter.handle_winit_event(running.window.scale_factor(), &event);
-        }
+        // NOTE (Task 7): EditorPresenter is disabled
+        // if let Presenter::Editor(presenter) = &mut running.presenter {
+        //     presenter.handle_winit_event(running.window.scale_factor(), &event);
+        // }
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -226,25 +226,16 @@ impl ApplicationHandler for Shell {
                             UVec2::new(width, height),
                         );
                     }
-                    Presenter::Editor(presenter) => {
-                        // Carried finding from Task 4: a minimized window can
-                        // deliver `(0, 0)` here, and masonry's layout pass
-                        // has a documented panic on non-finite/negative
-                        // resolved dimensions. The show path above already
-                        // clamps before touching its own resources; this
-                        // path didn't clamp before handing `size` to
-                        // masonry, so it's fixed here too.
-                        let size = PhysicalSize::new(size.width.max(1), size.height.max(1));
-                        presenter.resize(size, running.window.scale_factor());
-                    }
+                    // Presenter::Editor(_) => panic!("EditorPresenter is disabled in Task 7"),
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 // Mirror masonry_winit: Rescale only. A `Resized` often
                 // follows when the OS also changes the physical size.
-                if let Presenter::Editor(presenter) = &mut running.presenter {
-                    presenter.rescale(scale_factor);
-                }
+                // NOTE (Task 7): EditorPresenter is disabled
+                // if let Presenter::Editor(presenter) = &mut running.presenter {
+                //     presenter.rescale(scale_factor);
+                // }
             }
             WindowEvent::RedrawRequested => running.redraw(),
             _ => {}

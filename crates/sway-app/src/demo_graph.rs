@@ -1,24 +1,24 @@
 //! The M2b demo graph, built in Rust. Design §8.
 //!
 //! ```text
-//! Grid ──feeds(geo)──→ Displace ──feeds(geo)──→ Mesh ←──feeds(material)── StandardMaterial ← Rgb
-//!                                                └──parent──→ Group(root)
-//! MidiCC 74 ────────param→ Displace.amount
-//! MidiNote → Envelope ─param→ Rgb.r
-//! LFO ──────────────param→ Group.rotation.y
+//! Grid.geo ──→ Displace.geo ──→ Mesh.geo,  StandardMaterial.material ──→ Mesh.material
+//! Mesh.spatial ──→ Group("root").children[0]
+//! MidiCC 74.value ──→ Displace.amount
+//! MidiNote.note_on ──→ Envelope.triggers[0].value ──→ Rgb.r
+//! LFO.value ──→ Group("root").rotation_y
 //! ```
 
 use bevy::prelude::*;
-use sway_geo::{Displace, DisplaceParams, DisplaceState, Grid, GridParams, GridState};
+use sway_geo::{Displace, DisplaceInlets, DisplaceState, Grid, GridInlets, GridState};
 use sway_graph::{
-    EdgeFrom, EdgeTo, EditorPos, FeedsEdge, GraphNode, NodeId, NodeType, NodeTypeRegistry,
-    ParamEdge, ParentEdge, PortArena, PortKind, compile,
+    Edge, EdgeFrom, EdgeTo, Endpoint, EditorPos, GraphNode, NodeId, NodeType, NodeTypeRegistry,
+    PortArena, compile,
 };
 use sway_nodes::{
-    Envelope, EnvelopeParams, EnvelopeState, Group, GroupParams, GroupState, LFO, LfoParams,
-    LfoState, MaterialState, MeshNode, MeshNodeParams, MeshNodeState, MidiCC, MidiCCParams,
-    MidiCCState, MidiNote, MidiNoteParams, MidiNoteState, Rgb, RgbParams, RgbState,
-    StandardMaterialNode, StandardMaterialParams,
+    Envelope, EnvelopeInlets, EnvelopeState, Group, GroupInlets, GroupState, LFO, LfoInlets,
+    LfoState, MaterialState, MeshNode, MeshNodeInlets, MeshNodeState, MidiCC, MidiCCInlets,
+    MidiCCState, MidiNote, MidiNoteInlets, MidiNoteState, Rgb, RgbInlets, RgbState,
+    StandardMaterialNode, StandardMaterialInlets,
 };
 
 fn node_type_id<N: NodeType>(world: &World) -> sway_graph::NodeTypeId {
@@ -28,9 +28,12 @@ fn node_type_id<N: NodeType>(world: &World) -> sway_graph::NodeTypeId {
         .expect("node type registered")
 }
 
-fn param(world: &mut World, from: Entity, sp: u16, to: Entity, tp: u16, kind: PortKind) {
+fn edge(world: &mut World, from: Entity, from_field: u16, to: Entity, to_field: u16, to_index: u16) {
     world.spawn((
-        ParamEdge { source_port: sp, target_port: tp, kind },
+        Edge {
+            from: Endpoint::field(from_field),
+            to: Endpoint { field: to_field, index: to_index },
+        },
         EdgeFrom(from),
         EdgeTo(to),
     ));
@@ -46,7 +49,7 @@ pub fn setup_demo_graph(world: &mut World) {
     let grid = world
         .spawn((
             GraphNode { id: id(), node_type: node_type_id::<Grid>(world) },
-            GridParams { rows: 48, cols: 48, width: 4.0, height: 4.0 },
+            GridInlets { rows: 48, cols: 48, width: 4.0, height: 4.0 },
             GridState,
             EditorPos(Vec2::new(20.0, 380.0)),
         ))
@@ -54,7 +57,7 @@ pub fn setup_demo_graph(world: &mut World) {
     let displace = world
         .spawn((
             GraphNode { id: id(), node_type: node_type_id::<Displace>(world) },
-            DisplaceParams { amount: 0.2, frequency: 3.0 },
+            DisplaceInlets { amount: 0.2, frequency: 3.0, ..Default::default() },
             DisplaceState,
             EditorPos(Vec2::new(240.0, 380.0)),
         ))
@@ -62,7 +65,7 @@ pub fn setup_demo_graph(world: &mut World) {
     let mesh = world
         .spawn((
             GraphNode { id: id(), node_type: node_type_id::<MeshNode>(world) },
-            MeshNodeParams::default(),
+            MeshNodeInlets::default(),
             MeshNodeState::default(),
             EditorPos(Vec2::new(900.0, 200.0)),
         ))
@@ -70,7 +73,7 @@ pub fn setup_demo_graph(world: &mut World) {
     let material = world
         .spawn((
             GraphNode { id: id(), node_type: node_type_id::<StandardMaterialNode>(world) },
-            StandardMaterialParams::default(),
+            StandardMaterialInlets::default(),
             MaterialState::default(),
             EditorPos(Vec2::new(680.0, 20.0)),
         ))
@@ -78,7 +81,7 @@ pub fn setup_demo_graph(world: &mut World) {
     let rgb = world
         .spawn((
             GraphNode { id: id(), node_type: node_type_id::<Rgb>(world) },
-            RgbParams { r: 0.1, g: 0.2, b: 0.8 },
+            RgbInlets { r: 0.1, g: 0.2, b: 0.8 },
             RgbState,
             EditorPos(Vec2::new(460.0, 20.0)),
         ))
@@ -86,7 +89,7 @@ pub fn setup_demo_graph(world: &mut World) {
     let root = world
         .spawn((
             GraphNode { id: id(), node_type: node_type_id::<Group>(world) },
-            GroupParams::default(),
+            GroupInlets { children: vec![Default::default(); 1], ..Default::default() },
             GroupState,
             EditorPos(Vec2::new(680.0, 260.0)),
         ))
@@ -94,7 +97,7 @@ pub fn setup_demo_graph(world: &mut World) {
     let cc = world
         .spawn((
             GraphNode { id: id(), node_type: node_type_id::<MidiCC>(world) },
-            MidiCCParams { channel: 0, cc: 74 },
+            MidiCCInlets { channel: 0, cc: 74 },
             MidiCCState,
             EditorPos(Vec2::new(20.0, 140.0)),
         ))
@@ -102,7 +105,7 @@ pub fn setup_demo_graph(world: &mut World) {
     let note = world
         .spawn((
             GraphNode { id: id(), node_type: node_type_id::<MidiNote>(world) },
-            MidiNoteParams { channel: 0, note_lo: 0, note_hi: 127 },
+            MidiNoteInlets { channel: 0, note_lo: 0, note_hi: 127 },
             MidiNoteState,
             EditorPos(Vec2::new(20.0, 20.0)),
         ))
@@ -110,9 +113,9 @@ pub fn setup_demo_graph(world: &mut World) {
     let envelope = world
         .spawn((
             GraphNode { id: id(), node_type: node_type_id::<Envelope>(world) },
-            EnvelopeParams {
-                trigger: sway_graph::Event::default(),
-                release_trigger: sway_graph::Event::default(),
+            EnvelopeInlets {
+                triggers: vec![Default::default(); 1],
+                release_triggers: vec![Default::default(); 1],
                 attack: 0.01,
                 decay: 0.1,
                 sustain: 0.7,
@@ -125,7 +128,7 @@ pub fn setup_demo_graph(world: &mut World) {
     let lfo = world
         .spawn((
             GraphNode { id: id(), node_type: node_type_id::<LFO>(world) },
-            LfoParams {
+            LfoInlets {
                 hz: 0.1,
                 shape: sway_nodes::Waveform::Saw,
                 phase: 0.0,
@@ -140,35 +143,24 @@ pub fn setup_demo_graph(world: &mut World) {
         .id();
 
     // Structure: the Feeds chain, and where it enters the ChildOf tree.
-    world.spawn((FeedsEdge { slot: Displace::IN_GEO }, EdgeFrom(grid), EdgeTo(displace)));
-    world.spawn((FeedsEdge { slot: MeshNode::IN_GEO }, EdgeFrom(displace), EdgeTo(mesh)));
-    world.spawn((
-        FeedsEdge { slot: MeshNode::IN_MATERIAL },
-        EdgeFrom(material),
-        EdgeTo(mesh),
-    ));
-    world.spawn((ParentEdge, EdgeFrom(mesh), EdgeTo(root)));
+    edge(world, grid, Grid::OUT_GEO, displace, Displace::IN_GEO, 0);
+    edge(world, displace, Displace::OUT_GEO, mesh, MeshNode::IN_GEO, 0);
+    edge(world, material, StandardMaterialNode::OUT_MATERIAL, mesh, MeshNode::IN_MATERIAL, 0);
+    edge(world, mesh, MeshNode::OUT_SPATIAL, root, Group::CHILDREN, 0);
+    edge(world, rgb, Rgb::OUT_COLOR, material, StandardMaterialNode::BASE_COLOR, 0);
 
     // Signals. CC drives displacement, so the cook gate is visible on stage
     // rather than only in tests (design §8).
-    param(world, cc, MidiCC::OUT_VALUE, displace, Displace::AMOUNT, PortKind::Continuous);
-    param(world, note, MidiNote::OUT_NOTE_ON, envelope, Envelope::TRIGGER, PortKind::Event);
-    param(
-        world,
-        note,
-        MidiNote::OUT_NOTE_OFF,
-        envelope,
-        Envelope::RELEASE_TRIGGER,
-        PortKind::Event,
-    );
-    param(world, envelope, Envelope::OUT_VALUE, rgb, Rgb::R, PortKind::Continuous);
-    param(world, rgb, Rgb::OUT_COLOR, material, StandardMaterialNode::BASE_COLOR, PortKind::Continuous);
-    param(world, lfo, LFO::OUT_VALUE, root, Group::ROTATION_Y, PortKind::Continuous);
+    edge(world, cc, MidiCC::OUT_VALUE, displace, Displace::AMOUNT, 0);
+    edge(world, note, MidiNote::OUT_NOTE_ON, envelope, Envelope::TRIGGERS, 0);
+    edge(world, note, MidiNote::OUT_NOTE_OFF, envelope, Envelope::RELEASE_TRIGGERS, 0);
+    edge(world, envelope, Envelope::OUT_VALUE, rgb, Rgb::R, 0);
+    edge(world, lfo, LFO::OUT_VALUE, root, Group::ROTATION_Y, 0);
 
     let compiled = compile(world).expect("the demo graph must compile");
     world
         .resource_mut::<PortArena>()
-        .resize(compiled.continuous_len, compiled.events_len);
+        .resize(compiled.slots_len);
     world.insert_resource(compiled);
 }
 

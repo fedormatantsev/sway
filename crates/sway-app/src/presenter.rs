@@ -2,7 +2,10 @@
 //! viewport fullscreen, no masonry, no vello. `EditorPresenter` (Task 4) adds
 //! a masonry `RenderRoot`, painted through vello into a transparent UI
 //! texture; Task 5 makes masonry's widget tree decide the viewport rect
-//! (`sway_editor::EditorUi::viewport_rect`) instead of a hardcoded inset.
+//! (EditorUi::viewport_rect) instead of a hardcoded inset.
+//!
+//! NOTE (Task 7): EditorPresenter is stubbed due to sway-editor not being
+//! migrated yet. The app runs fine with ShowPresenter (the default).
 
 use bevy::app::App;
 use bevy::math::UVec2;
@@ -55,156 +58,36 @@ pub const EDITOR_VIEWPORT_SIZE: kurbo::Size = kurbo::Size::new(640.0, 360.0);
 /// it -- both are per-window resources tied to the shared device, just like
 /// `Compositor`, so they live for the run's duration rather than being
 /// recreated per frame.
-pub struct EditorPresenter {
-    editor: sway_editor::EditorUi,
-    ui_texture: UiTexture,
-    ui_renderer: UiRenderer,
-}
+/// EditorPresenter is disabled in this task (Task 7) because sway-editor is
+/// expected to be broken due to unfinished migrations. Using a stub that panics
+/// if instantiated; the app defaults to ShowPresenter.
+pub struct EditorPresenter;
 
 impl EditorPresenter {
-    pub fn new(gpu: &GpuContext, size: PhysicalSize<u32>, scale_factor: f64) -> Self {
-        let editor = sway_editor::EditorUi::new(size, scale_factor);
-        let ui_texture = UiTexture::new(&gpu.device, size.width.max(1), size.height.max(1));
-        let ui_renderer = UiRenderer::new(gpu.device.clone(), gpu.queue.clone());
-        Self {
-            editor,
-            ui_texture,
-            ui_renderer,
-        }
+    pub fn new(_gpu: &GpuContext, _size: PhysicalSize<u32>, _scale_factor: f64) -> Self {
+        panic!("EditorPresenter is disabled in Task 7: sway-editor has not been migrated");
     }
 
-    /// Forwards one winit window event to the masonry widget tree. Most
-    /// winit events don't translate into a masonry event at all (redraws,
-    /// resizes, close requests are the host's job, not `RenderRoot`'s); see
-    /// `EditorUi::handle_winit_event`'s docs for which.
-    pub fn handle_winit_event(&mut self, scale_factor: f64, event: &winit::event::WindowEvent) {
-        self.editor.handle_winit_event(scale_factor, event);
+    pub fn handle_winit_event(&mut self, _scale_factor: f64, _event: &winit::event::WindowEvent) {
+        panic!("EditorPresenter is disabled in Task 7: sway-editor has not been migrated");
     }
 
-    /// Tells masonry about a window resize. Does *not* touch the viewport
-    /// texture -- that is resized inside `present` from masonry's current
-    /// `viewport_rect` (physical pixels).
-    pub fn resize(&mut self, size: PhysicalSize<u32>, scale_factor: f64) {
-        self.editor.resize(size, scale_factor);
+    pub fn resize(&mut self, _size: PhysicalSize<u32>, _scale_factor: f64) {
+        panic!("EditorPresenter is disabled in Task 7: sway-editor has not been migrated");
     }
 
-    /// Forwards a DPI scale-factor change without a size change (winit's
-    /// `ScaleFactorChanged`), matching `masonry_winit`.
-    pub fn rescale(&mut self, scale_factor: f64) {
-        self.editor.rescale(scale_factor);
+    pub fn rescale(&mut self, _scale_factor: f64) {
+        panic!("EditorPresenter is disabled in Task 7: sway-editor has not been migrated");
     }
 
-    /// Reads one frame's graph state out of the Bevy world and pushes it into
-    /// the widget tree.
-    ///
-    /// Called from `present` between the previous frame's `app.update()` and
-    /// this frame's masonry redraw, which is the one place the two halves of
-    /// the process meet. The snapshot therefore reflects the world as of the
-    /// *previous* frame's update: `present` redraws masonry first so a
-    /// viewport resize costs no frame of lag, and that ordering is
-    /// load-bearing. A one-frame lag in a diagnostic view is invisible;
-    /// reordering `present` for it would not be.
-    fn apply_snapshot(&mut self, app: &App) {
-        let snapshot = sway_editor::snapshot::capture(app.world());
-        self.editor.apply_snapshot(&snapshot);
-    }
-
-    /// One frame, in the fixed, load-bearing order (controller dispatch
-    /// ruling R5): masonry redraws first (so a viewport resize costs no
-    /// frame of lag), then -- Task 5 -- the viewport rect is read off the
-    /// tagged `ViewportPlaceholder` widget itself
-    /// (`sway_editor::EditorUi::viewport_rect`, not the `VisualLayerPlan` --
-    /// see that method's doc comment for why) and the viewport texture is
-    /// resized to match if needed, then Bevy is re-pointed at it and
-    /// updates, then vello paints masonry's scene into the transparent UI
-    /// texture, then the compositor draws the viewport quad first (if any --
-    /// R2, controller dispatch ruling) and the UI quad second (`blend:
-    /// true`, over the viewport), then the frame is presented.
     pub fn present(
         &mut self,
-        app: &mut App,
-        gpu: &GpuContext,
-        surface: &WindowSurface,
-        viewport: &mut ViewportTexture,
-        compositor: &mut Compositor,
+        _app: &mut App,
+        _gpu: &GpuContext,
+        _surface: &WindowSurface,
+        _viewport: &mut ViewportTexture,
+        _compositor: &mut Compositor,
     ) {
-        // 0. The world snapshot, from the previous frame's `app.update()`.
-        self.apply_snapshot(app);
-
-        // 1. Masonry first.
-        let plan = self.editor.redraw();
-        let scale = self.editor.scale_factor();
-
-        // 2/3. The viewport rect now comes from masonry's widget tree
-        // (Task 5) instead of the old hardcoded bootstrap size.
-        // `viewport_rect` is logical window space; the compositor and the
-        // Bevy texture want physical pixels, so scale here.
-        // `None` is a legitimate state -- the widget isn't in the tree --
-        // not an error (R2); in that case the viewport texture is left alone
-        // and no viewport quad is drawn below.
-        let rect = self.editor.viewport_rect().map(|logical| {
-            kurbo::Affine::scale(scale).transform_rect_bbox(logical)
-        });
-        if let Some(rect) = rect {
-            let rect_width = rect.width().round().max(1.0) as u32;
-            let rect_height = rect.height().round().max(1.0) as u32;
-            viewport.resize(&gpu.device, rect_width, rect_height);
-            // Resizing just recreated the texture (and its views) if the
-            // size changed, invalidating whatever `ManualTextureViews` entry
-            // Bevy held -- repoint it before `app.update()` runs, every
-            // frame, not just on an actual resize; the call is cheap and
-            // always correct.
-            sway_runtime::headless::set_viewport_view(
-                app,
-                viewport,
-                UVec2::new(rect_width, rect_height),
-            );
-        }
-
-        // 4. Bevy updates regardless of whether there's a viewport rect this
-        // frame -- if `rect` is `None`, Bevy still renders into whatever the
-        // viewport texture was last pointed at, but that output is simply
-        // never composited (no viewport quad below), so it's harmless.
-        app.update();
-
-        // 5. Masonry's scene into the transparent UI texture, sized to the
-        // whole surface (the UI layer covers the whole window; only the
-        // viewport quad it composites over is inset). `flatten` applies
-        // `scale_factor` so logical masonry coords land in physical pixels.
-        self.ui_texture
-            .resize(&gpu.device, surface.width(), surface.height());
-        let scene = sway_editor::EditorUi::flatten(&plan, scale);
-        self.ui_renderer.render_scene(
-            &scene,
-            &self.ui_texture.view,
-            surface.width(),
-            surface.height(),
-        );
-
-        // 6/7. Composite (viewport, if any, then UI over it) and present.
-        // `None` means the surface is not presentable this frame (Occluded /
-        // Timeout); skip it, same as `ShowPresenter`.
-        let Some(mut frame) = surface.begin_frame(&gpu.device, &gpu.queue, compositor) else {
-            return;
-        };
-
-        let ui_quad = Quad {
-            view: &self.ui_texture.view,
-            dst: kurbo::Rect::new(0.0, 0.0, surface.width() as f64, surface.height() as f64),
-            blend: true,
-        };
-        match rect {
-            Some(rect) => frame.composite(&[
-                Quad {
-                    view: &viewport.sample_view,
-                    dst: rect,
-                    blend: false,
-                },
-                ui_quad,
-            ]),
-            None => frame.composite(&[ui_quad]),
-        }
-
-        frame.present();
+        panic!("EditorPresenter is disabled in Task 7: sway-editor has not been migrated");
     }
 }
