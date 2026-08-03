@@ -75,16 +75,10 @@ where
 /// Reads and writes a `Product<T>`'s source through `dyn PartialReflect`, so
 /// the engine can seed an outlet and a cook can read an inlet without knowing
 /// the capability.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ProductAccess {
     pub get: fn(&dyn PartialReflect) -> Option<Entity>,
     pub set: fn(&mut dyn PartialReflect, Option<Entity>),
-}
-
-impl fmt::Debug for ProductAccess {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProductAccess").finish()
-    }
 }
 
 /// Type data marking a type as a `Product<T>` slot value.
