@@ -26,7 +26,9 @@ pub use registry::{
     SeedOutputsFn, TickFn, TickOfFn, register_node_type,
 };
 pub use schema::{
-    PortField, ReflectEventPort, SchemaError, SchemaHalf, derive_schema, register_event_port,
+    derive_fields, derive_schema, register_event_port, register_events, register_product,
+    FieldKind, FieldSpec, PortField, ProductAccess, ReflectEventList, ReflectEventPort,
+    ReflectProduct, SchemaError, SchemaHalf,
 };
 pub use slots::{
     NoOutputs, NoSlots, ReflectSlot, Slot, SlotField, SlotSource, derive_slots, register_slot,
