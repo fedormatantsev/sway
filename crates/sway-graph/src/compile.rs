@@ -48,6 +48,9 @@ pub struct NodePlan {
     pub product_inlets: Vec<(usize, ProductAccess)>,
 }
 
+/// A slot index paired with the fn that clears its `Events<T>` in place.
+pub type ClearFn = (usize, fn(&mut dyn PartialReflect));
+
 /// The output of [`compile`].
 #[derive(Resource, Debug)]
 pub struct CompiledGraph {
@@ -57,7 +60,7 @@ pub struct CompiledGraph {
     pub(crate) outlets_seeded: bool,
     /// Every `Events` slot in the graph, with the fn that empties it in
     /// place. Run once at the top of each tick.
-    pub clears: Vec<(usize, fn(&mut dyn PartialReflect))>,
+    pub clears: Vec<ClearFn>,
     /// Entity → index into `plans`, for the cook gate's source lookup.
     pub plan_index_of: HashMap<Entity, usize>,
 }
@@ -469,7 +472,7 @@ pub fn compile(world: &mut World) -> Result<CompiledGraph, CompileError> {
     }
 
     let mut plans: Vec<NodePlan> = Vec::with_capacity(n);
-    let mut clears: Vec<(usize, fn(&mut dyn PartialReflect))> = Vec::new();
+    let mut clears: Vec<ClearFn> = Vec::new();
 
     for &idx in &order {
         let layout = &layouts[idx];

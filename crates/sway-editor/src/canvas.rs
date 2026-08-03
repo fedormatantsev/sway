@@ -737,6 +737,10 @@ mod tests {
         }
     }
 
+    // A positional test fixture mirroring `EdgeView`'s own fields one for
+    // one; splitting it into a builder would cost more at each of this
+    // test module's few call sites than the lint saves.
+    #[allow(clippy::too_many_arguments)]
     fn edge(
         from: NodeId,
         from_field: u16,

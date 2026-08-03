@@ -298,10 +298,15 @@ whether the compiler would need a small table rather than one
   runs the real `EditorPresenter` unconditionally rather than needing
   `--features editor`.
 - **`cargo clippy -p sway-graph -p sway-geo -p sway-nodes -p sway-editor
-  --all-targets -- -D warnings` is not currently clean, and this task did
-  not fix it** — see "What was not proven" below; this is a real,
-  pre-existing gap this milestone's own verification step surfaced rather
-  than caused.
+  --all-targets -- -D warnings` had never actually been run to completion
+  before this milestone's own verification step ran it.** It failed twice in
+  succession, once per crate reached: `sway-graph`'s `compile.rs` (a
+  `clippy::type_complexity` pair on `Vec<(usize, fn(&mut dyn
+  PartialReflect))>`, from Task 4), then — once that was fixed and the
+  command got past `sway-graph` for the first time ever — `sway-editor`'s
+  `canvas.rs` (a `clippy::too_many_arguments` on a test-only fixture
+  function, from Task 8+9). Both are fixed (Fix round 1, see the task-10
+  report); the full four-crate gate is clean.
 
 ## Deferred minor findings
 
@@ -330,17 +335,15 @@ open:
   `ChildOf` used to be free, and ordinary noise — and none was isolated by a
   controlled experiment. Allocation counts were not taken; this is a
   wall-clock comparison only.
-- **`cargo clippy -p sway-graph -p sway-geo -p sway-nodes -p sway-editor
-  --all-targets -- -D warnings` does not currently pass.** Two
-  `clippy::type_complexity` errors on `Vec<(usize, fn(&mut dyn PartialReflect))>`
-  in `crates/sway-graph/src/compile.rs` (lines 60 and 472, both introduced
-  in Task 4's commit `7d9bc39`) abort the check before `sway-geo`,
-  `sway-nodes`, or `sway-editor` are even reached, so this milestone's own
-  brief's "expected: clean" is not established for any of the four crates,
-  only `cargo test --workspace` and the two `cargo tree` checks are. This
-  report does not fix it — `compile.rs` is outside this task's scoped
-  files — and reports it as a concern instead of guessing at scope
-  expansion; see the task-10 report for the full reasoning.
+- **Whether any *other* crate in the workspace has its own latent
+  clippy debt under this exact command was not checked.** The four-crate
+  gate is now clean, but it took two rounds to get there because it had
+  never previously been run to completion — `sway-graph` blocked it the
+  first time, `sway-editor` the second. Nothing here rules out a third
+  crate outside this specific four-crate list carrying similar debt;
+  `cargo clippy --workspace` was already known red on `main` before this
+  milestone (M2a's own finding) and this task did not attempt to fix that
+  wider scope, only the exact four-crate command the brief names.
 - **`Spatial` being "the right shape" for one engine-known capability rests
   on a small node set never having wanted a second one**, not on a positive
   argument that a second such capability couldn't arise. Eight signal nodes
