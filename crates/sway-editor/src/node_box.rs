@@ -42,7 +42,7 @@ use masonry::core::{
 use masonry::imaging::Painter;
 use masonry::layout::{LenReq, Length};
 use masonry::widgets::Label;
-use masonry_core::kurbo::{Affine, Axis, Point, RoundedRect, Size, Stroke};
+use masonry_core::kurbo::{Affine, Axis, Circle, Point, RoundedRect, Size, Stroke};
 use peniko::Color;
 
 /// Fixed footprint of every node box, in canvas-space logical pixels.
@@ -59,6 +59,9 @@ const CORNER_RADIUS: f64 = 8.0;
 
 /// Inset of the label from the box's top-left corner, in logical pixels.
 const LABEL_INSET: f64 = 10.0;
+
+/// Radius of a drawn socket dot, in logical pixels.
+const SOCKET_RADIUS: f64 = 4.0;
 
 /// What the pointer is currently doing to this node box, between a `Down`
 /// that started a gesture and the `Up`/`Cancel` that ends it.
@@ -100,6 +103,13 @@ pub struct NodeBox {
     label_text: String,
     selected: bool,
     gesture: Gesture,
+    /// Slot count per inlet field, in order -- the same numbers
+    /// `NodeView::inlets` carries, so a `Vec` inlet (e.g. a `Group`'s
+    /// `children`) draws one socket per element rather than one per field.
+    inlets: Vec<u16>,
+    /// How many outlet fields this node has. Never per-slot: an outlet can't
+    /// be a `Vec` (design §12).
+    outlets: u16,
     /// Applied to this widget's own transform on `Update::WidgetAdded`.
     ///
     /// A freshly created `WidgetPod` isn't yet registered in masonry's arena
@@ -122,6 +132,8 @@ impl NodeBox {
             label_text: label,
             selected: false,
             gesture: Gesture::None,
+            inlets: Vec::new(),
+            outlets: 0,
             initial_transform: Affine::IDENTITY,
         }
     }
@@ -135,10 +147,109 @@ impl NodeBox {
         self
     }
 
+    /// Seeds this box's socket counts. Called by `GraphCanvas::apply_snapshot`
+    /// when creating a new box, from that frame's `NodeView`; `set_sockets`
+    /// (below) is the update path for a box that already exists.
+    pub(crate) fn with_sockets(mut self, inlets: Vec<u16>, outlets: u16) -> Self {
+        self.inlets = inlets;
+        self.outlets = outlets;
+        self
+    }
+
     /// The text this box currently displays.
     pub fn label_text(&self) -> &str {
         &self.label_text
     }
+
+    /// Total inlet sockets across every inlet field -- a `Vec` field
+    /// contributes one socket per element, not one per field.
+    pub fn inlet_socket_count(&self) -> usize {
+        self.inlets.iter().map(|&len| len as usize).sum()
+    }
+
+    /// Total outlet sockets: one per outlet field.
+    pub fn outlet_socket_count(&self) -> usize {
+        self.outlets as usize
+    }
+
+    /// Canvas-space position (relative to this box's own (0,0) origin) of one
+    /// inlet socket. `field`/`index` are read directly off an edge's target
+    /// `Endpoint` -- `field` is the node's flat field ordinal with inlets
+    /// first, so it also directly indexes `inlets`.
+    pub fn inlet_socket_pos(&self, field: u16, index: u16) -> Point {
+        inlet_socket_local(&self.inlets, field, index)
+    }
+
+    /// Canvas-space position of one outlet socket. `field` is the node's flat
+    /// ordinal (inlets first), so `field - inlets.len()` is the outlet's own
+    /// ordinal among just the outlets.
+    pub fn outlet_socket_pos(&self, field: u16) -> Point {
+        outlet_socket_local(self.inlets.len() as u16, self.outlets, field)
+    }
+}
+
+/// Local (relative to a box's own (0,0)-(160,72) origin) position of one
+/// inlet socket, evenly spaced down the left edge. A free function, not just
+/// `NodeBox::inlet_socket_pos`, because `GraphCanvas::paint` needs the same
+/// math against `NodeSlot`'s own copy of `inlets`/`outlets` -- masonry gives
+/// a parent no read access to a live child's widget state from `PaintCtx`,
+/// and reaching in via `MutateCtx::get_mut` from `apply_snapshot` instead
+/// isn't an option either: a `NodeBox` created *in that same call* isn't yet
+/// registered in masonry's arena (see `NodeBox::initial_transform`'s doc
+/// comment), so `get_mut` on a brand-new node's socket -- exactly the first
+/// snapshot that draws the parenting edge in the `--editor` demo -- panics
+/// ("child not found"). `NodeSlot` mirroring the counts, same as it already
+/// does for `label`, sidesteps the whole registration-timing question.
+///
+/// Never panics: an out-of-range `field`/`index` (a stale edge against a
+/// resized or removed field) degrades to the nearest valid socket rather than
+/// crashing the whole canvas mid-paint.
+pub(crate) fn inlet_socket_local(inlets: &[u16], field: u16, index: u16) -> Point {
+    let total: usize = inlets.iter().map(|&len| len as usize).sum();
+    let before: usize = inlets
+        .get(..(field as usize).min(inlets.len()))
+        .unwrap_or(&[])
+        .iter()
+        .map(|&len| len as usize)
+        .sum();
+    Point::new(0.0, socket_y(total, before + index as usize))
+}
+
+/// Local position of one outlet socket, evenly spaced down the right edge.
+/// `field` is the node's flat ordinal (inlets first); `inlet_field_count`
+/// (== the inlet-slot-count `Vec`'s own length) is what turns that into the
+/// outlet's own ordinal among just the outlets. See `inlet_socket_local` for
+/// why this is a free function.
+pub(crate) fn outlet_socket_local(inlet_field_count: u16, outlets: u16, field: u16) -> Point {
+    let ordinal = field.saturating_sub(inlet_field_count) as usize;
+    Point::new(SIZE.width, socket_y(outlets as usize, ordinal))
+}
+
+/// Every inlet socket's local position, in slot order -- what `NodeBox::paint`
+/// draws dots at.
+fn inlet_socket_positions(inlets: &[u16]) -> impl Iterator<Item = Point> + '_ {
+    let total: usize = inlets.iter().map(|&len| len as usize).sum();
+    (0..total).map(move |ordinal| Point::new(0.0, socket_y(total, ordinal)))
+}
+
+/// Every outlet socket's local position -- what `NodeBox::paint` draws dots
+/// at.
+fn outlet_socket_positions(outlets: u16) -> impl Iterator<Item = Point> {
+    let total = outlets as usize;
+    (0..total).map(move |ordinal| Point::new(SIZE.width, socket_y(total, ordinal)))
+}
+
+/// One socket's vertical offset among `total` sockets evenly spaced over the
+/// box's height -- `total + 1` gaps so the first and last sockets sit inset
+/// from the corners, not flush with them. `total == 0` centres on the box's
+/// vertical midpoint, which is unreachable in practice (nothing asks for a
+/// position among zero sockets) but keeps this total rather than panicking.
+fn socket_y(total: usize, ordinal: usize) -> f64 {
+    if total == 0 {
+        return SIZE.height / 2.0;
+    }
+    let ordinal = ordinal.min(total - 1);
+    SIZE.height * (ordinal as f64 + 1.0) / (total as f64 + 1.0)
 }
 
 // --- MARK: WIDGETMUT
@@ -165,6 +276,19 @@ impl NodeBox {
         label.clone_into(&mut this.widget.label_text);
         let mut child = this.ctx.get_mut(&mut this.widget.label);
         Label::set_text(&mut child, label.to_string());
+    }
+
+    /// Updates this box's socket counts on an existing node -- e.g. a
+    /// `Group`'s `children` `Vec` grew or shrank across a recompile. A no-op,
+    /// paint-only change: sockets carry no state of their own, so nothing
+    /// downstream (edges are rebuilt outright every snapshot) needs telling.
+    pub fn set_sockets(this: &mut WidgetMut<'_, Self>, inlets: Vec<u16>, outlets: u16) {
+        if this.widget.inlets == inlets && this.widget.outlets == outlets {
+            return;
+        }
+        this.widget.inlets = inlets;
+        this.widget.outlets = outlets;
+        this.ctx.request_paint_only();
     }
 }
 
@@ -280,6 +404,16 @@ impl Widget for NodeBox {
         painter
             .stroke(rect, &Stroke::new(1.5), Color::from_rgb8(200, 200, 210))
             .draw();
+
+        // Sockets: one dot per slot, so every edge visibly starts and ends
+        // somewhere on the box rather than at its unmarked centre.
+        let socket_fill = Color::from_rgb8(220, 220, 230);
+        for pos in inlet_socket_positions(&self.inlets) {
+            painter.fill(Circle::new(pos, SOCKET_RADIUS), socket_fill).draw();
+        }
+        for pos in outlet_socket_positions(self.outlets) {
+            painter.fill(Circle::new(pos, SOCKET_RADIUS), socket_fill).draw();
+        }
     }
 
     fn accessibility_role(&self) -> Role {
@@ -330,5 +464,45 @@ mod tests {
 
         let action = harness.pop_action_erased();
         assert!(action.is_some(), "a press must still submit an action");
+    }
+
+    #[test]
+    fn socket_positions_sit_on_the_left_and_right_edges() {
+        let node = NodeBox::new("n".to_string()).with_sockets(vec![2, 1], 1);
+
+        // children[0], children[1], the scalar inlet: all on the left edge.
+        assert_eq!(node.inlet_socket_pos(0, 0).x, 0.0);
+        assert_eq!(node.inlet_socket_pos(0, 1).x, 0.0);
+        assert_eq!(node.inlet_socket_pos(1, 0).x, 0.0);
+        // The one outlet: on the right edge.
+        assert_eq!(node.outlet_socket_pos(2).x, SIZE.width);
+    }
+
+    #[test]
+    fn socket_positions_are_distinct_and_ordered_top_to_bottom() {
+        // 3 inlet slots across 2 fields (children[0], children[1], the
+        // scalar), so every one of them must land at a different height, in
+        // slot order -- otherwise two edges into different slots would draw
+        // on top of each other.
+        let node = NodeBox::new("n".to_string()).with_sockets(vec![2, 1], 1);
+
+        let a = node.inlet_socket_pos(0, 0).y;
+        let b = node.inlet_socket_pos(0, 1).y;
+        let c = node.inlet_socket_pos(1, 0).y;
+        assert!(a < b && b < c, "expected {a} < {b} < {c}");
+    }
+
+    #[test]
+    fn a_lone_socket_centres_on_the_box() {
+        let node = NodeBox::new("n".to_string()).with_sockets(vec![1], 1);
+        assert_eq!(node.inlet_socket_pos(0, 0).y, SIZE.height / 2.0);
+        assert_eq!(node.outlet_socket_pos(1).y, SIZE.height / 2.0);
+    }
+
+    #[test]
+    fn socket_counts_sum_a_vec_inlet_by_its_slots_not_its_fields() {
+        let node = NodeBox::new("n".to_string()).with_sockets(vec![2, 1], 1);
+        assert_eq!(node.inlet_socket_count(), 3, "2 children + 1 scalar");
+        assert_eq!(node.outlet_socket_count(), 1);
     }
 }

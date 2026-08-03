@@ -14,7 +14,7 @@
 //! `masonry::widgets::canvas::Canvas` for how to reach `imaging::Painter`
 //! from a widget's own `paint`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy_ecs::entity::Entity;
 use masonry::accesskit::{Node, Role};
@@ -62,13 +62,27 @@ struct NodeSlot {
     /// it names across a recompile, so this is refreshed from the snapshot on
     /// every `apply_snapshot`, not just when the slot is created.
     entity: Entity,
+    /// Mirrors the live `NodeBox`'s own socket counts, so `paint` (which
+    /// cannot reach into a child widget -- masonry gives a parent no read
+    /// access to a child's state from `PaintCtx`) can compute socket
+    /// positions via `node_box::inlet_socket_local`/`outlet_socket_local`
+    /// without one. Kept in sync by `apply_snapshot`, same reasoning as
+    /// `label`.
+    inlets: Vec<u16>,
+    outlets: u16,
 }
 
 /// One painted edge, resolved to node keys rather than snapshot indices so it
 /// survives a reordering.
 struct EdgeSlot {
     from: NodeId,
+    /// The source outlet's field ordinal. No matching `from_index`: an
+    /// outlet can never be a `Vec` (design §12), so an outlet socket is
+    /// always identified by field alone.
+    from_field: u16,
     to: NodeId,
+    to_field: u16,
+    to_index: u16,
     kind: EdgeKind,
     /// The source port's current value, or `None` when this edge carries no
     /// readable activity (design §4).
@@ -191,18 +205,25 @@ impl Widget for GraphCanvas {
     /// so edges are painted in the same window frame the children's
     /// transforms map into: `to_visual` applies `pan`/`zoom` by hand to every
     /// point, mirroring what each child's `set_transform` does for itself.
+    ///
+    /// Each endpoint is a socket, not the box's centre/edge midpoint --
+    /// `node_box::outlet_socket_local`/`inlet_socket_local` place it from the
+    /// edge's own `field`/`index`, using the `inlets`/`outlets` counts
+    /// `apply_snapshot` mirrors onto `NodeSlot` (see that struct's doc
+    /// comment for why `paint` can't read them off the live `NodeBox`
+    /// instead).
     fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
-        let half_height = Vec2::new(0.0, node_box::SIZE.height / 2.0);
-        let right_edge = Vec2::new(node_box::SIZE.width, 0.0) + half_height;
-
         for edge in &self.edges {
             let (Some(from_slot), Some(to_slot)) =
                 (self.slots.get(&edge.from), self.slots.get(&edge.to))
             else {
                 continue;
             };
-            let from = self.to_visual(from_slot.pos + right_edge);
-            let to = self.to_visual(to_slot.pos + half_height);
+            let from_local =
+                node_box::outlet_socket_local(from_slot.inlets.len() as u16, from_slot.outlets, edge.from_field);
+            let to_local = node_box::inlet_socket_local(&to_slot.inlets, edge.to_field, edge.to_index);
+            let from = self.to_visual(from_slot.pos + from_local.to_vec2());
+            let to = self.to_visual(to_slot.pos + to_local.to_vec2());
             let (brush, width) = edge_style(edge);
             self.paint_edge(painter, from, to, brush, width);
         }
@@ -393,6 +414,15 @@ impl GraphCanvas {
                         let mut child = this.ctx.get_mut(&mut slot.pod);
                         NodeBox::set_label(&mut child, &view.name);
                     }
+                    // Socket counts change when a `Vec` inlet is resized
+                    // (e.g. a `Group`'s `children`) -- not on every snapshot,
+                    // so this is gated the same way `label` is.
+                    if slot.inlets != view.inlets || slot.outlets != view.outlets {
+                        slot.inlets = view.inlets.clone();
+                        slot.outlets = view.outlets;
+                        let mut child = this.ctx.get_mut(&mut slot.pod);
+                        NodeBox::set_sockets(&mut child, view.inlets.clone(), view.outlets);
+                    }
                     // A `NodeId` can outlive the entity it names across a
                     // recompile, so this is refreshed every snapshot even
                     // when nothing else about the node changed.
@@ -412,11 +442,19 @@ impl GraphCanvas {
                         * Affine::translate(pos.to_vec2());
                     let pod = NodeBox::new(view.name.clone())
                         .with_initial_transform(transform)
+                        .with_sockets(view.inlets.clone(), view.outlets)
                         .prepare()
                         .to_pod();
                     this.widget.slots.insert(
                         view.id,
-                        NodeSlot { pod, pos, label: view.name.clone(), entity: view.entity },
+                        NodeSlot {
+                            pod,
+                            pos,
+                            label: view.name.clone(),
+                            entity: view.entity,
+                            inlets: view.inlets.clone(),
+                            outlets: view.outlets,
+                        },
                     );
                     this.ctx.children_changed();
                 }
@@ -425,20 +463,40 @@ impl GraphCanvas {
         this.widget.nodes = wanted;
 
         // Edges: rebuilt outright, carrying observed ranges across.
+        //
+        // "Both endpoints exist" now means "both `NodeId`s are present in
+        // this snapshot's node list" -- not, as before Task 8/9, "both
+        // indices are in range of `snap.nodes`". An edge's `from`/`to` are
+        // `NodeId`s addressed independently of list position (a compiled
+        // node's `NodeId` can be, and often is, unrelated to where it lands
+        // in `snap.nodes`), so the membership test has to be a lookup by
+        // value, not a bounds check. The intent this preserves from before
+        // is unchanged: an edge naming a node that didn't survive the
+        // snapshot (despawned, or never compiled) is dropped rather than
+        // drawn to nowhere.
+        let live_nodes: HashSet<NodeId> = snap.nodes.iter().map(|node| node.id).collect();
         this.widget.edges = snap
             .edges
             .iter()
-            .filter_map(|edge| {
-                let from = snap.nodes.get(edge.from)?.id;
-                let to = snap.nodes.get(edge.to)?.id;
-                let mut range = ranges.get(&(from, to, edge.kind)).copied();
+            .filter(|edge| live_nodes.contains(&edge.from) && live_nodes.contains(&edge.to))
+            .map(|edge| {
+                let mut range = ranges.get(&(edge.from, edge.to, edge.kind)).copied();
                 if let Some(value) = edge.activity {
                     range = Some(match range {
                         Some((lo, hi)) => (lo.min(value), hi.max(value)),
                         None => (value, value),
                     });
                 }
-                Some(EdgeSlot { from, to, kind: edge.kind, value: edge.activity, range })
+                EdgeSlot {
+                    from: edge.from,
+                    from_field: edge.from_field,
+                    to: edge.to,
+                    to_field: edge.to_field,
+                    to_index: edge.to_index,
+                    kind: edge.kind,
+                    value: edge.activity,
+                    range,
+                }
             })
             .collect();
 
@@ -622,20 +680,27 @@ impl GraphCanvas {
 
 /// Base colour per edge kind, brightened and thickened by activity.
 ///
-/// An edge with no readable activity (every event edge, every `Feeds` edge,
-/// every continuous edge carrying something other than an `f32`) draws at the
-/// base weight. Design §4 -- that is a decision, not an omission.
+/// An edge with no readable activity (every `Events` edge, every `Product`
+/// edge including `Spatial`, and a `Value` edge carrying something other than
+/// an `f32`) draws at the base weight. Design §4 -- that is a decision, not
+/// an omission.
 fn edge_style(edge: &EdgeSlot) -> (Color, f64) {
-    let base = match edge.kind {
-        EdgeKind::Param => Color::from_rgb8(140, 140, 155),
-        EdgeKind::Feeds => Color::from_rgb8(120, 165, 140),
-    };
+    let base = edge_color(edge.kind);
     let Some(t) = normalised(edge) else {
         return (base, 2.0);
     };
     let lift = |c: u8| (c as f32 + (255.0 - c as f32) * t).round().clamp(0.0, 255.0) as u8;
     let [r, g, b, _] = base.to_rgba8().to_u8_array();
     (Color::from_rgb8(lift(r), lift(g), lift(b)), 2.0 + 3.0 * t as f64)
+}
+
+fn edge_color(kind: EdgeKind) -> Color {
+    match kind {
+        EdgeKind::Value => Color::from_rgb8(140, 140, 155),
+        EdgeKind::Events => Color::from_rgb8(150, 130, 170),
+        EdgeKind::Product => Color::from_rgb8(120, 165, 140),
+        EdgeKind::Spatial => Color::from_rgb8(170, 150, 110),
+    }
 }
 
 /// The edge's current value mapped into 0..1 through its observed range.
@@ -653,6 +718,7 @@ fn normalised(edge: &EdgeSlot) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::GraphCanvas;
+    use crate::node_box::NodeBox;
     use crate::snapshot::{EdgeKind, EdgeView, NodeView, WorldSnapshot};
     use bevy_ecs::entity::Entity;
     use masonry::core::{DefaultProperties, PointerButton, Widget};
@@ -666,7 +732,22 @@ mod tests {
             id: NodeId(id),
             name: name.to_string(),
             pos,
+            inlets: Vec::new(),
+            outlets: 0,
         }
+    }
+
+    fn edge(
+        from: NodeId,
+        from_field: u16,
+        from_index: u16,
+        to: NodeId,
+        to_field: u16,
+        to_index: u16,
+        kind: EdgeKind,
+        activity: Option<f32>,
+    ) -> EdgeView {
+        EdgeView { from, from_field, from_index, to, to_field, to_index, kind, activity }
     }
 
     fn snapshot(nodes: Vec<NodeView>, edges: Vec<EdgeView>) -> WorldSnapshot {
@@ -879,11 +960,15 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    /// "Both endpoints exist" now means "both `NodeId`s are in this
+    /// snapshot's node list" -- an edge no longer carries a list index to
+    /// range-check, since `NodeId(9)` naming a node this snapshot doesn't
+    /// have is exactly the case a despawned/never-compiled node produces.
     #[test]
     fn edges_are_kept_only_when_both_endpoints_exist() {
         let harness = harness_with(snapshot(
             vec![node(0, "a", None), node(1, "b", None)],
-            vec![EdgeView { from: 0, to: 1, kind: EdgeKind::Param, activity: Some(0.5) }],
+            vec![edge(NodeId(0), 0, 0, NodeId(1), 0, 0, EdgeKind::Value, Some(0.5))],
         ));
         assert_eq!(harness.root_widget().edge_count(), 1);
 
@@ -893,10 +978,25 @@ mod tests {
                 &mut canvas,
                 &snapshot(
                     vec![node(0, "a", None)],
-                    vec![EdgeView { from: 0, to: 9, kind: EdgeKind::Param, activity: None }],
+                    vec![edge(NodeId(0), 0, 0, NodeId(9), 0, 0, EdgeKind::Value, None)],
                 ),
             );
         });
         assert_eq!(harness.root_widget().edge_count(), 0);
+    }
+
+    #[test]
+    fn a_node_box_lays_out_one_socket_per_slot() {
+        // Inlet counts are per-instance now, so sockets come from the
+        // snapshot rather than from a node type.
+        let view = NodeView { inlets: vec![2, 1], outlets: 1, ..node(0, "Group", None) };
+        let mut harness = harness_with(snapshot(vec![view], vec![]));
+        let box_id = harness.root_widget().widget_id_of(NodeId(0)).unwrap();
+
+        harness.edit_widget_with_id(box_id, |mut widget| {
+            let node_box = widget.downcast::<NodeBox>();
+            assert_eq!(node_box.widget.inlet_socket_count(), 3, "2 children + 1 scalar");
+            assert_eq!(node_box.widget.outlet_socket_count(), 1);
+        });
     }
 }

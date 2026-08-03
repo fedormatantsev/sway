@@ -410,6 +410,8 @@ mod tests {
                 id: NodeId(1),
                 name: "LFO".to_string(),
                 pos: Some(KurboPoint::new(10.0, 10.0)),
+                inlets: Vec::new(),
+                outlets: 0,
             }],
             edges: Vec::new(),
         }

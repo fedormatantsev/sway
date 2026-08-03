@@ -17,17 +17,18 @@ use bevy_ecs::world::World;
 use bevy_transform::components::Transform;
 use kurbo::Point;
 use sway_graph::{
-    CompiledGraph, EdgeFrom, EdgeTo, EditorPos, FeedsEdge, GraphNode, NodeId, NodePlan,
-    NodeTypeRegistry, ParamEdge, ParentEdge, PortArena, PortKind,
+    CompiledGraph, Edge, EdgeFrom, EdgeTo, EditorPos, FieldKind, GraphNode, NodeId, NodePlan,
+    NodeTypeRegistry, PortArena,
 };
 
-/// Which kind of edge this is. `ParentEdge` is deliberately absent: the tree
-/// pane shows parenting already, and drawing it twice makes the canvas harder
-/// to read for no gain (design §9).
+/// What an edge carries, derived from the type of the inlet it lands on.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum EdgeKind {
-    Param,
-    Feeds,
+    Value,
+    Events,
+    Product,
+    /// A product edge whose capability is `Spatial` -- parenting.
+    Spatial,
 }
 
 /// One graph node, as the canvas needs it.
@@ -40,20 +41,33 @@ pub struct NodeView {
     /// The authored [`EditorPos`], if any. The canvas treats this as a seed:
     /// read when a node box first appears and never again (design §5).
     pub pos: Option<Point>,
+    /// Per inlet field, in order: how many slots it has -- 1, or a `Vec`
+    /// field's instance length. A slot count, not a node-type property,
+    /// because a `Vec` inlet's length is per instance (`NodePlan::field_lens`,
+    /// which `compile` derives from the node's own `Inlets`).
+    pub inlets: Vec<u16>,
+    /// How many outlet fields this node has. Always a plain count, never
+    /// per-slot: an outlet can't be a `Vec` (design §12, enforced at
+    /// registration), so every outlet field is exactly one slot.
+    pub outlets: u16,
 }
 
-/// One edge, with both endpoints resolved to indices into
-/// [`WorldSnapshot::nodes`].
+/// One edge, with both endpoints addressed by node and field/index -- the
+/// same coordinates `Edge` itself uses (spec §5), so the canvas can key a
+/// socket by `(node, field, index)` without inventing its own scheme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EdgeView {
-    pub from: usize,
-    pub to: usize,
+    pub from: NodeId,
+    pub from_field: u16,
+    pub from_index: u16,
+    pub to: NodeId,
+    pub to_field: u16,
+    pub to_index: u16,
     pub kind: EdgeKind,
-    /// The source port's current value, when it is a continuous port holding
-    /// an `f32`.
+    /// The source slot's value, when it downcasts to `f32`. Events and
+    /// products get none: an event occupies one tick and a frame-rate
+    /// sampler would observe it at random, and a product is a reference.
     ///
-    /// `None` for every event edge, every `Feeds` edge, and every continuous
-    /// edge carrying something other than an `f32` (a colour, a vector).
     /// Event edges are `None` **by design**, not by omission: an event
     /// occupies exactly one tick, so a frame-rate sampler observes roughly
     /// half of them and a MIDI note would pulse at random -- a worse signal
@@ -83,7 +97,7 @@ pub enum TreeGroup {
     Scene,
     /// A `GraphNode` without a `Transform` -- geometry operators, signal nodes.
     Graph,
-    /// `ParamEdge` / `FeedsEdge` / `ParentEdge` entities.
+    /// `Edge` entities.
     Edges,
     /// Everything else, including Bevy's own internals.
     Other,
@@ -141,12 +155,7 @@ pub fn short_type_name(path: &str) -> String {
 /// panic, which is the state the editor is in on the very first frame.
 pub fn capture(world: &World) -> WorldSnapshot {
     let nodes = capture_nodes(world);
-    let index: HashMap<Entity, usize> = nodes
-        .iter()
-        .enumerate()
-        .map(|(i, node)| (node.entity, i))
-        .collect();
-    let edges = capture_edges(world, &index);
+    let edges = capture_edges(world);
     let tree = capture_tree(world);
     WorldSnapshot { tree, nodes, edges }
 }
@@ -157,6 +166,16 @@ pub fn capture(world: &World) -> WorldSnapshot {
 /// canvas's fallback grid position is indexed by this order (design §5).
 fn capture_nodes(world: &World) -> Vec<NodeView> {
     let registry = world.get_resource::<NodeTypeRegistry>();
+    let plans: HashMap<Entity, &NodePlan> = world
+        .get_resource::<CompiledGraph>()
+        .map(|compiled| {
+            compiled
+                .plans
+                .iter()
+                .map(|plan| (plan.entity, plan))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let mut ordered: Vec<Entity> = Vec::new();
     if let Some(compiled) = world.get_resource::<CompiledGraph>() {
@@ -182,6 +201,22 @@ fn capture_nodes(world: &World) -> Vec<NodeView> {
                 .and_then(|reg| reg.get(node.node_type))
                 .map(|entry| short_type_name(entry.name))
                 .unwrap_or_else(|| format!("<type {}>", node.node_type.0));
+            // Slot counts come from this node's own `NodePlan`, when it has
+            // one -- a node absent from the last compile (freshly spawned,
+            // or the graph never compiled at all) draws with no sockets
+            // rather than guessing, same "degrade, don't panic" rule as
+            // `capture_edges`.
+            let (inlets, outlets) = plans
+                .get(&entity)
+                .map(|plan| {
+                    let inlets: Vec<u16> = plan.field_lens[..plan.inlet_field_count]
+                        .iter()
+                        .map(|&len| len as u16)
+                        .collect();
+                    let outlets = (plan.fields.len() - plan.inlet_field_count) as u16;
+                    (inlets, outlets)
+                })
+                .unwrap_or_default();
             Some(NodeView {
                 entity,
                 id: node.id,
@@ -189,12 +224,14 @@ fn capture_nodes(world: &World) -> Vec<NodeView> {
                 pos: world
                     .get::<EditorPos>(entity)
                     .map(|p| Point::new(p.0.x as f64, p.0.y as f64)),
+                inlets,
+                outlets,
             })
         })
         .collect()
 }
 
-fn capture_edges(world: &World, index: &HashMap<Entity, usize>) -> Vec<EdgeView> {
+fn capture_edges(world: &World) -> Vec<EdgeView> {
     let plans: HashMap<Entity, &NodePlan> = world
         .get_resource::<CompiledGraph>()
         .map(|compiled| {
@@ -209,45 +246,73 @@ fn capture_edges(world: &World, index: &HashMap<Entity, usize>) -> Vec<EdgeView>
 
     let mut edges = Vec::new();
     for entity_ref in world.iter_entities() {
-        let (Some(EdgeFrom(source)), Some(EdgeTo(target))) =
-            (entity_ref.get::<EdgeFrom>(), entity_ref.get::<EdgeTo>())
-        else {
+        let (Some(edge), Some(EdgeFrom(source)), Some(EdgeTo(target))) = (
+            entity_ref.get::<Edge>(),
+            entity_ref.get::<EdgeFrom>(),
+            entity_ref.get::<EdgeTo>(),
+        ) else {
             continue;
         };
-        let (Some(&from), Some(&to)) = (index.get(source), index.get(target)) else {
+        let (Some(from), Some(to)) = (
+            world.get::<GraphNode>(*source).map(|node| node.id),
+            world.get::<GraphNode>(*target).map(|node| node.id),
+        ) else {
             continue;
         };
 
-        if let Some(param) = entity_ref.get::<ParamEdge>() {
-            let activity = match param.kind {
-                PortKind::Continuous => continuous_value(&plans, arena, *source, param.source_port),
-                PortKind::Event => None,
-            };
-            edges.push(EdgeView { from, to, kind: EdgeKind::Param, activity });
-        } else if entity_ref.get::<FeedsEdge>().is_some() {
-            edges.push(EdgeView { from, to, kind: EdgeKind::Feeds, activity: None });
-        }
-        // `ParentEdge` is intentionally skipped -- see `EdgeKind`.
+        let kind = edge_kind(&plans, *target, edge.to.field);
+        let activity = (kind == EdgeKind::Value)
+            .then(|| source_f32(&plans, arena, *source, edge.from.field, edge.from.index))
+            .flatten();
+
+        edges.push(EdgeView {
+            from,
+            from_field: edge.from.field,
+            from_index: edge.from.index,
+            to,
+            to_field: edge.to.field,
+            to_index: edge.to.index,
+            kind,
+            activity,
+        });
     }
     edges
 }
 
-/// The source node's output port slot, downcast to `f32`.
+/// What an edge carries, read off the target inlet's `FieldSpec` -- what an
+/// edge *does* is decided by the type of the inlet it lands on, never by the
+/// edge itself (design §2).
 ///
-/// The arena slot for a port ordinal is `continuous_base + ordinal`; the
-/// compiler uses exactly this arithmetic when it builds `continuous_copies`.
-fn continuous_value(
+/// Falls back to [`EdgeKind::Value`] when the graph has not been compiled
+/// yet: there is no schema to classify against, and the editor must still
+/// draw something rather than panic (design §2.11).
+fn edge_kind(plans: &HashMap<Entity, &NodePlan>, target: Entity, to_field: u16) -> EdgeKind {
+    plans
+        .get(&target)
+        .and_then(|plan| plan.fields.get(to_field as usize))
+        .map(|field| match field.kind {
+            FieldKind::Value => EdgeKind::Value,
+            FieldKind::Events { .. } => EdgeKind::Events,
+            FieldKind::Product { spatial: true, .. } => EdgeKind::Spatial,
+            FieldKind::Product { spatial: false, .. } => EdgeKind::Product,
+        })
+        .unwrap_or(EdgeKind::Value)
+}
+
+/// The source outlet's slot, downcast to `f32`. `None` when the graph has
+/// not been compiled, the field/index is out of range, or the slot holds
+/// anything other than an `f32` -- never a panic (design §2.11).
+fn source_f32(
     plans: &HashMap<Entity, &NodePlan>,
     arena: Option<&PortArena>,
     source: Entity,
-    source_port: u16,
+    field: u16,
+    index: u16,
 ) -> Option<f32> {
-    let slot = plans.get(&source)?.continuous_base + source_port as usize;
-    arena?
-        .continuous
-        .get(slot)?
-        .try_downcast_ref::<f32>()
-        .copied()
+    let plan = plans.get(&source)?;
+    let offset = *plan.field_offsets.get(field as usize)?;
+    let slot = plan.base + offset + index as usize;
+    arena?.values.get(slot)?.try_downcast_ref::<f32>().copied()
 }
 
 fn group_of(world: &World, entity: Entity) -> TreeGroup {
@@ -255,10 +320,7 @@ fn group_of(world: &World, entity: Entity) -> TreeGroup {
         TreeGroup::Scene
     } else if world.get::<GraphNode>(entity).is_some() {
         TreeGroup::Graph
-    } else if world.get::<ParamEdge>(entity).is_some()
-        || world.get::<FeedsEdge>(entity).is_some()
-        || world.get::<ParentEdge>(entity).is_some()
-    {
+    } else if world.get::<Edge>(entity).is_some() {
         TreeGroup::Edges
     } else {
         TreeGroup::Other
@@ -361,8 +423,8 @@ fn push_scene_subtree(world: &World, entity: Entity, depth: usize, rows: &mut Ve
 mod tests {
     use super::*;
     use crate::test_graph::{
-        Emit, Recv, app, connect, recompile, spawn_emit, spawn_named_spatial, spawn_recv,
-        spawn_spatial,
+        Emit, Recv, app, connect, fixture_with_parenting, recompile, spawn_emit,
+        spawn_named_spatial, spawn_recv, spawn_spatial,
     };
     use bevy_math::Vec2;
     use kurbo::Point;
@@ -401,51 +463,45 @@ mod tests {
     }
 
     #[test]
-    fn a_param_edge_indexes_into_the_node_list() {
-        let mut app = app();
-        let emit = spawn_emit(app.world_mut(), 0, None);
-        let recv = spawn_recv(app.world_mut(), 1, None);
-        connect(app.world_mut(), emit, Emit::OUT_VALUE, recv, Recv::AMOUNT);
-        recompile(&mut app);
-
+    fn every_edge_carries_both_of_its_endpoints() {
+        let (app, ids) = fixture_with_parenting();
         let snap = capture(app.world());
 
-        assert_eq!(snap.edges.len(), 1);
-        let from = &snap.nodes[snap.edges[0].from];
-        let to = &snap.nodes[snap.edges[0].to];
-        assert_eq!(from.entity, emit);
-        assert_eq!(to.entity, recv);
-        assert_eq!(snap.edges[0].kind, EdgeKind::Param);
+        let parenting = snap
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Spatial)
+            .expect("a parenting edge must appear in the snapshot");
+        assert_eq!(parenting.from, ids.child);
+        assert_eq!(parenting.to, ids.parent);
+        // The canvas needs a socket at each end; before this milestone
+        // parenting had neither and was dropped from the snapshot entirely.
+        assert_eq!(parenting.to_index, 0, "children[0]");
     }
 
     #[test]
-    fn a_continuous_f32_edge_reports_the_source_ports_live_value() {
-        let mut app = app();
-        let emit = spawn_emit(app.world_mut(), 0, None);
-        let recv = spawn_recv(app.world_mut(), 1, None);
-        connect(app.world_mut(), emit, Emit::OUT_VALUE, recv, Recv::AMOUNT);
-        recompile(&mut app);
-
-        // One tick, so `Emit::tick` has actually written its output port.
-        app.update();
-
-        assert_eq!(capture(app.world()).edges[0].activity, Some(0.75));
+    fn edge_kinds_distinguish_what_an_edge_carries() {
+        let (app, _) = fixture_with_parenting();
+        let snap = capture(app.world());
+        let kinds: std::collections::HashSet<_> = snap.edges.iter().map(|e| e.kind).collect();
+        assert!(kinds.contains(&EdgeKind::Value));
+        assert!(kinds.contains(&EdgeKind::Product));
+        assert!(kinds.contains(&EdgeKind::Spatial));
     }
 
     #[test]
-    fn capture_before_compilation_yields_nodes_but_no_activity() {
-        // A graph that has not been compiled has no `CompiledGraph` and an
-        // empty arena. The editor must still draw it rather than panic.
-        let mut app = app();
-        let emit = spawn_emit(app.world_mut(), 0, None);
-        let recv = spawn_recv(app.world_mut(), 1, None);
-        connect(app.world_mut(), emit, Emit::OUT_VALUE, recv, Recv::AMOUNT);
-
+    fn activity_is_some_only_for_an_f32_value_edge() {
+        let (app, _) = fixture_with_parenting();
         let snap = capture(app.world());
-
-        assert_eq!(snap.nodes.len(), 2);
-        assert_eq!(snap.edges.len(), 1);
-        assert_eq!(snap.edges[0].activity, None);
+        for edge in &snap.edges {
+            match edge.kind {
+                EdgeKind::Value => {}
+                _ => assert!(
+                    edge.activity.is_none(),
+                    "only value edges carry a sampled value"
+                ),
+            }
+        }
     }
 
     #[test]
