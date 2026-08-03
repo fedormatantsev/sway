@@ -9,19 +9,19 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
 use bevy_math::{Vec2, Vec3};
 use bevy_reflect::Reflect;
-use sway_graph::{NoOutputs, NoSlots, NodeType, PortView, SlotView, TickCtx};
+use sway_graph::{NodeType, PortView, Product, TickCtx, register_product};
 
 use crate::geometry::{Attribute, Geometry};
 
 #[derive(Reflect, Component)]
-pub struct GridParams {
+pub struct GridInlets {
     pub rows: u32,
     pub cols: u32,
     pub width: f32,
     pub height: f32,
 }
 
-impl Default for GridParams {
+impl Default for GridInlets {
     fn default() -> Self {
         Self {
             rows: 16,
@@ -30,6 +30,11 @@ impl Default for GridParams {
             height: 4.0,
         }
     }
+}
+
+#[derive(Reflect, Default)]
+pub struct GridOutlets {
+    pub geo: Product<Geometry>,
 }
 
 #[derive(Component, Default)]
@@ -42,30 +47,32 @@ impl Grid {
     pub const COLS: u16 = 1;
     pub const WIDTH: u16 = 2;
     pub const HEIGHT: u16 = 3;
+    pub const OUT_GEO: u16 = 4;
 }
 
 impl NodeType for Grid {
-    type Params = GridParams;
-    type Outputs = NoOutputs;
-    type Slots = NoSlots;
-    type Produces = Geometry;
+    type Inlets = GridInlets;
+    type Outlets = GridOutlets;
     type State = GridState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+    const ORDINALS: &'static [(&'static str, u16)] = &[
         ("rows", Self::ROWS),
         ("cols", Self::COLS),
         ("width", Self::WIDTH),
         ("height", Self::HEIGHT),
+        ("geo", Self::OUT_GEO),
     ];
     const COOKS: bool = true;
 
-    fn register(_app: &mut App) {}
+    fn register(app: &mut App) {
+        register_product::<Geometry>(app);
+    }
 
     /// Nothing per-tick: `Grid`'s whole product is its cook.
     fn tick(_world: &mut World, _node: Entity, _ports: &mut PortView, _t: &TickCtx) {}
 
-    fn cook(world: &mut World, node: Entity, _slots: &SlotView) {
-        let params = match world.get::<GridParams>(node) {
+    fn cook(world: &mut World, node: Entity, _ports: &PortView) {
+        let params = match world.get::<GridInlets>(node) {
             Some(p) => (p.rows.max(2), p.cols.max(2), p.width, p.height),
             None => return,
         };
@@ -118,12 +125,13 @@ impl NodeType for Grid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sway_graph::PortArena;
 
     fn cooked_grid(rows: u32, cols: u32) -> Geometry {
         let mut world = World::new();
         let node = world
             .spawn((
-                GridParams {
+                GridInlets {
                     rows,
                     cols,
                     width: 2.0,
@@ -132,7 +140,11 @@ mod tests {
                 GridState,
             ))
             .id();
-        Grid::cook(&mut world, node, &SlotView::new(&[]));
+        // Construct minimal PortView for testing
+        // Grid::cook doesn't use ports, so we pass empty structures
+        let mut arena = PortArena::new(0);
+        let ports = PortView::new(&mut arena, 0, &[], &[], &[], &[]);
+        Grid::cook(&mut world, node, &ports);
         world.get::<Geometry>(node).cloned().expect("Grid cooks a Geometry")
     }
 

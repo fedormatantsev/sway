@@ -5,9 +5,9 @@ pub mod displace;
 pub mod geometry;
 pub mod grid;
 
-pub use displace::{Displace, DisplaceParams, DisplaceState};
+pub use displace::{Displace, DisplaceInlets, DisplaceOutlets, DisplaceState};
 pub use geometry::{Attribute, Geometry};
-pub use grid::{Grid, GridParams, GridState};
+pub use grid::{Grid, GridInlets, GridOutlets, GridState};
 
 use bevy_app::{App, Plugin};
 
