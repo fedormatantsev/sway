@@ -3,24 +3,10 @@
 //! a masonry `RenderRoot`, painted through vello into a transparent UI
 //! texture; Task 5 makes masonry's widget tree decide the viewport rect
 //! (`sway_editor::EditorUi::viewport_rect`) instead of a hardcoded inset.
-//!
-//! NOTE (Task 7, unified-edges migration): `sway-editor` isn't migrated to
-//! the unified `Edge`/`Inlets`/`Outlets` model yet (that's Task 8) and does
-//! not currently compile. Rather than delete `EditorPresenter`, it -- and
-//! its `sway-editor` dependency -- are gated behind the `editor` Cargo
-//! feature (off by default), so `sway-app` builds and runs in
-//! `ShowPresenter` mode without needing `sway-editor` to compile. See
-//! `shell.rs` for the `--editor` CLI flag's runtime behaviour when this
-//! feature is off.
 
 use bevy::app::App;
-#[cfg(feature = "editor")]
 use bevy::math::UVec2;
-#[cfg(feature = "editor")]
 use sway_gpu::{Compositor, GpuContext, Quad, UiRenderer, UiTexture, ViewportTexture, WindowSurface};
-#[cfg(not(feature = "editor"))]
-use sway_gpu::{Compositor, GpuContext, Quad, ViewportTexture, WindowSurface};
-#[cfg(feature = "editor")]
 use winit::dpi::PhysicalSize;
 
 /// Blits the viewport fullscreen. No masonry, no vello.
@@ -61,7 +47,6 @@ impl ShowPresenter {
 /// size and the three-pane `Split` layout's fractions -- so this is purely
 /// an arbitrary, reasonable starting point; the first `present` call resizes
 /// it to whatever `EditorUi::viewport_rect` actually reports.
-#[cfg(feature = "editor")]
 pub const EDITOR_VIEWPORT_SIZE: kurbo::Size = kurbo::Size::new(640.0, 360.0);
 
 /// Masonry + vello UI, composited over the live Bevy viewport.
@@ -70,14 +55,12 @@ pub const EDITOR_VIEWPORT_SIZE: kurbo::Size = kurbo::Size::new(640.0, 360.0);
 /// it -- both are per-window resources tied to the shared device, just like
 /// `Compositor`, so they live for the run's duration rather than being
 /// recreated per frame.
-#[cfg(feature = "editor")]
 pub struct EditorPresenter {
     editor: sway_editor::EditorUi,
     ui_texture: UiTexture,
     ui_renderer: UiRenderer,
 }
 
-#[cfg(feature = "editor")]
 impl EditorPresenter {
     pub fn new(gpu: &GpuContext, size: PhysicalSize<u32>, scale_factor: f64) -> Self {
         let editor = sway_editor::EditorUi::new(size, scale_factor);

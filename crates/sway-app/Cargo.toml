@@ -16,16 +16,8 @@ sway-midi.workspace = true
 sway-nodes.workspace = true
 sway-runtime.workspace = true
 sway-gpu.workspace = true
-sway-editor = { workspace = true, optional = true }
+sway-editor.workspace = true
 winit.workspace = true
 kurbo.workspace = true
 peniko.workspace = true
 imaging.workspace = true
-
-[features]
-# sway-editor isn't migrated to the unified Edge/Inlets/Outlets model yet
-# (Task 8 of the unified-edges migration); gating it behind this feature lets
-# sway-app build and run (in ShowPresenter/non-editor mode) without needing
-# sway-editor to compile. See presenter.rs and shell.rs for the gated
-# EditorPresenter code this enables.
-editor = ["dep:sway-editor"]

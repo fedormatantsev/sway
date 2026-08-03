@@ -5,6 +5,9 @@
 **Revision:** graph engine builds on Bevy's non-rendering subcrates (§2.2–§2.7, §3)
 **Revision:** scene composition is expressed in the graph, Houdini/USD-shaped (§2.10)
 **Revision (2026-08-02):** §5 and §7 reconciled against what was actually built.
+**Revision (2026-08-03):** unified edges — one `Edge`, one arena, one compiled
+order, replacing the three edge kinds and five node-declaration mechanisms
+(§2.4, §2.5, §2.10, §2.11, §5, §7).
 M2 shipped as M2a + M2b, an unplanned M2c added the editor's first real views,
 and each completed milestone now carries the debt it did not discharge. The
 architecture sections are unchanged; where implementation contradicted them the
@@ -166,67 +169,109 @@ better than a generic node plus a dropdown, and changing a material's type
 becomes replacing a node rather than flipping a param — honest, since either way
 it invalidates every param edge attached to it.
 
-Variable arity is designed out the same way. `Merge` needs no input ports at
-all: its inputs are `ChildOf` edges, and fan-in is unbounded by nature. `Math`
-and `Switch` are binary and compose — `Switch(s1, Switch(s2, a, b), c)` covers
-the three-way case without a count param.
+Variable arity is *declared*, not designed out. A node's inlet **count**
+varies by instance; an inlet's **arity** does not — each element of a `Vec`
+field is an independent single-source inlet, so `Merge`'s inputs are
+`Vec<Product<Geometry>>` and `Sum`'s are `Vec<f32>` rather than a `ChildOf`
+fan-in or an engine-side combining rule. The compiler reads a `Vec` field's
+length off the instance once, at compile time, to lay out that many inlets and
+their arena slots — that is the one number that is per-instance rather than
+per-type. `Math` and `Switch` stay binary and compose regardless —
+`Switch(s1, Switch(s2, a, b), c)` still covers the three-way case without a
+count param — because nothing about declared arity forces every node with
+multiplicity to use it.
 
-So a registry entry is a constant derived from the params type. The compiler
-never evaluates a per-instance schema, the editor's inspector is a plain walk
-over a registered type, and there is one fewer moving part in both.
+So a registry entry is constant per type — same fields, same types, same
+ordinals — except for that one per-instance count, read from the instance at
+compile time and nowhere else. The port type registry subsumes capabilities
+the same way it subsumes everything else: a `Product<Geometry>` inlet matches
+a `Product<Geometry>` outlet by `TypeId`, through the same check that matches
+`f32` to `f32`, so there is no separate mechanism for a structural connection
+to type-check against. The editor's inspector remains a plain walk over a
+registered type.
 
-Port storage is a flat arena, not components, and holds **only signal values** —
-scalars, vectors, colours, event streams. Geometry and scene structure are not
-in it (§2.10). Ports are read and written in compiled index order by a single
-system, and the editor reads the whole arena to animate live values on edges
-(§2.8) — both are arena-shaped access patterns that per-entity components would
-only make slower and more awkward. The arena is a resource, taken out of the
-world for the duration of the tick so that a node can hold `&mut World` and
-`&mut PortView` at once.
+Port storage is a flat arena, not components, and holds **every slot value** —
+scalars, vectors, colours, event streams, and the entity references that stand
+in for structural connections. High-cardinality data itself — `Geometry`, a
+material's `Handle` — is never in the arena, only a reference to the entity
+that owns it (§2.10); that is what keeps a structural connection an ordinary
+slot rather than a bypass around the arena. Ports are read and written in
+compiled index order by a single system, and the editor reads the whole arena
+to animate live values on edges (§2.8) — both are arena-shaped access patterns
+that per-entity components would only make slower and more awkward. The arena
+is a resource, taken out of the world for the duration of the tick so that a
+node can hold `&mut World` and `&mut PortView` at once.
 
-Two port kinds:
+Three slot types, not two:
 
-- `Continuous<T>` — always holds a current value.
-- `Event<T>` — zero or more occurrences per tick, each with a sub-tick timestamp.
+- a plain reflected value (`f32`, `Vec3`, `Waveform`) — always holds a current
+  value.
+- `Events<T>` — zero or more occurrences per tick, each with a sub-tick
+  timestamp. This absorbed what used to be a separate `Event<T>` port kind: an
+  ordinary value holding a typed `Vec<Occurrence<T>>`, not a zero-sized marker
+  over a parallel arena.
+- `Product<T>` — `Option<Entity>`, the source node's entity. Unconnected, it
+  holds `None`, which is its authored value like any other slot; connected, it
+  is what a `Feeds` slot or a `ChildOf` edge used to be, expressed as an
+  ordinary typed value.
 
-The split is required. Without it there is no way to distinguish "CC is 0" from
-"no CC arrived", and note timing collapses to tick granularity. Sub-tick
-timestamps let a note landing between ticks start its envelope at the correct
-phase.
+The value/event split is still required for the reason it always was: without
+it there is no way to distinguish "CC is 0" from "no CC arrived", and note
+timing collapses to tick granularity. Sub-tick timestamps let a note landing
+between ticks start its envelope at the correct phase.
 
-Observers are the wrong tool here despite the surface resemblance to `Event<T>`.
-They fire immediately and recursively, which cannot be reconciled with
-topologically ordered evaluation, and they carry no notion of buffering several
-occurrences with sub-tick offsets to be drained at a known point.
+Observers are the wrong tool here despite the surface resemblance to
+`Events<T>`. They fire immediately and recursively, which cannot be reconciled
+with topologically ordered evaluation, and they carry no notion of buffering
+several occurrences with sub-tick offsets to be drained at a known point.
 
-**Param edges are entities**, carrying source and target relationship components
-with their port indices. Bevy maintains the reverse index, and despawning a node
-despawns its edges — which matters at M7, where the failure mode of a
-hand-rolled edge list is a dangling reference after a delete.
+**Edges are entities.** One `Edge` component carries a `from`/`to` pair of
+`(field, index)` endpoints; `EdgeFrom`/`EdgeTo` relationship components keep
+Bevy's reverse index, and despawning a node despawns its edges — which matters
+at M7, where the failure mode of a hand-rolled edge list is a dangling
+reference after a delete.
 
-They are one of three edge kinds. The other two — `ChildOf` and `Feeds` — carry
-no value at all and are relationships between node entities directly rather than
-edge entities of their own. §2.10 defines them.
+There is one edge kind, not three. What used to be three edge kinds — param,
+`Feeds`, `ChildOf` — is now one inlet-type question: a plain-value or
+`Events<T>` inlet is what a param edge fed; a `Product<T>` inlet is what a
+`Feeds` slot fed; a `Product<Spatial>` inlet is what `ChildOf` meant, and an
+edge into one still emits Bevy's `ChildOf` (§2.10). The rule that used to tell
+an author which edge kind they wanted is now a rule about which inlet type a
+node declares.
 
 ### 2.5 Compilation
 
 ```
 project.ron → spawn node entities
-            → structure pass:  ChildOf / Feeds — acyclic, single-parent
-            → dataflow pass:   param edges — validate types → topo sort
+            → validate: type match, direction, inlet-already-connected;
+                         Product<Spatial> single-consumer and parenting acyclicity
+            → one topological sort, over every edge except Product<Spatial>
             → flat Vec<Entity> + port arena layout
 ```
 
 All failure happens at load. Tick is infallible.
 
-**Two passes, not one.** Structure edges are not data dependencies and must not
-enter the topological sort — a `Transform` node's evaluation order has nothing
-to do with which entity it parents. Their validation is separate and has its own
-failure modes: a parenting cycle, a `ChildOf` fan-out (illegal, an entity has
-one parent), a `Feeds` slot filled twice, a `Feeds` slot filled with the wrong
-kind of thing (a material into a geometry slot). Each needs an error message in
-its own vocabulary; "cycle detected" is unhelpful when the author connected two
-edges to one parent socket.
+**One pass and one sort, not two.** Every edge is now a `Product<T>`-, `Events<T>`-
+or value-typed dependency between arena slots, so the old structure/dataflow
+split collapses to a single rule: **everything except `Product<Spatial>` is a
+dependency**, and enters the one topological sort. A `Product<Spatial>` edge
+still emits Bevy's `ChildOf` for the scene hierarchy, but a parent does not
+read anything from its child, so it is excluded from ordering — the one
+survivor of the old structure-pass argument, not the whole pass. Failure modes
+that used to belong to separate passes are now just edge types the validator
+already knows: a parenting cycle or fan-out is a cycle or a duplicate-consumer
+error on `Product<Spatial>` edges specifically; a slot filled twice or filled
+with the wrong kind of thing is `InletAlreadyConnected` or a type mismatch on
+any inlet, structural or not. Each is still reported in its own vocabulary;
+"cycle detected" is unhelpful when the author connected two edges to one
+parent socket.
+
+**The union of what used to be two DAGs can contain a cycle where neither did
+alone, and such a graph is now rejected.** A node feeding another that in turn
+drives a param back on the first is a genuine circular dependency; the old
+two-pass model let it compile, with one side silently reading stale data
+because phase ordering resolved it. One sort turns that into a load-time
+error, which is the better outcome.
 
 **Cycles are out of scope.** The compiler rejects them; the graph is a DAG. If
 feedback becomes interesting later, a one-tick delay node reintroduces it — edges
@@ -429,25 +474,38 @@ An entity carries either, both, or neither. That is USD's prim-with-schemas
 model: `Xform` and `Mesh` are independent capabilities of a prim, not a class
 hierarchy.
 
-#### Three edge kinds
+#### One edge, three inlet types
 
-| Kind | Compiles to | Carries | Fan-out |
+There is one edge kind (§2.4's `Edge`); what a connection means is a question
+about the **inlet's** declared type, not a choice among edge kinds:
+
+| Inlet type | Compiles to | Fan-out | Enters the compiled order |
 |---|---|---|---|
-| `ChildOf` | Bevy hierarchy | nothing | illegal — one parent |
-| `Feeds` | a Bevy relationship, into a named typed slot | nothing | legal |
-| param edge | an edge entity + arena slot | a signal value | legal |
+| `Product<Spatial>` | an `Edge` entity + arena slot; also emits Bevy's `ChildOf` | illegal — one parent | no |
+| `Product<T>` (any other capability) | an `Edge` entity + arena slot, holding the source's entity | legal | yes |
+| `Events<T>` / plain value | an `Edge` entity + arena slot, carrying the signal itself | legal | yes |
 
-Only param edges touch the port arena, and only they enter the topological sort.
-`ChildOf` composes transforms; `Feeds` is Houdini's SOP wire, and an operator
-reads its input's `Geometry` component rather than receiving a value.
+Every inlet touches the port arena, and every edge except one into a
+`Product<Spatial>` inlet enters the topological sort (§2.5). `Product<Spatial>`
+still composes transforms via Bevy's `ChildOf`; `Product<T>` for another
+capability (`Geometry` chief among them) is Houdini's SOP wire, and an
+operator reads its input's `Geometry` component off the referenced entity
+rather than receiving a value through the arena.
 
-One direction note, because it reads backwards in the compiler: dataflow runs
-leaf→root while parenting runs root→leaf, so a `ChildOf` edge's *source* is the
-child and its *target* is the parent.
+One direction note, because it reads backwards from how a hierarchy pane draws
+it: a node's own `Product<Spatial>` **outlet** holds its own entity, and it
+feeds its parent's `Product<Spatial>` **inlet** (e.g. `Group.children`) — so
+the edge's *source* is the child and its *target* is the parent, exactly as
+it was under the old `ChildOf` edge kind. Only the edge kind carrying it
+changed; the direction did not.
 
-**The rule that tells an author which edge they want:** object-level composition
-— place, group, instance, assign — is structure. Element-level operations —
-scatter, noise, displace — are data.
+**The rule that tells an author which inlet type a node declares:** object-level
+composition — place, group, instance, assign — declares a `Product<Spatial>`
+inlet. Element-level operations — scatter, noise, displace — declare a
+`Product<T>` inlet for another capability, `Geometry` chief among them.
+Driving a value — colour, rotation, intensity — is a third, separate
+question, answered by a plain-value or `Events<T>` inlet regardless of which
+of the first two a node's other inlets use.
 
 ```
 Grid ────────────── feeds(points) ──→ Scatter
@@ -472,10 +530,10 @@ entity has *is* the distinction, visible the ECS-native way. `CopyToPoints`
 produces one buffer of instances — the scattered points never individuate into
 entities.
 
-**`Mesh` is where a `Feeds` chain enters the `ChildOf` tree**, and it is the
-only place that happens other than `Asset`, which imports a glTF subtree
-directly. Naming that boundary is most of what an author needs to understand
-about the two chain kinds.
+**`Mesh` is where a `Product<Geometry>` chain enters the `Product<Spatial>`
+tree**, and it is the only place that happens other than `Asset`, which
+imports a glTF subtree directly. Naming that boundary is most of what an
+author needs to understand about the two chain kinds.
 
 #### Materials are nodes, not assignments
 
@@ -497,11 +555,13 @@ and the graph gives no indication. Here, wanting independent emissive means
 drawing a second material node, which is exactly the thought the author should
 be having.
 
-`Feeds` slots are consequently **named and typed**: `points`, `proto`, `geo`,
-`material`. A material output cannot fill a geometry slot, and that is checked
-in the structure pass (§2.5) alongside cycles and fan-out. The edge still
-carries nothing at runtime — the target reads the source's component or handle —
-but it is not untyped.
+Structural inlets are consequently **named and typed**: `points`, `proto`,
+`geo`, `material` are each a distinct `Product<T>` field. A material output
+cannot fill a `points` inlet, because `Product<StandardMaterial>` does not
+match `Product<Geometry>` by `TypeId` — the same check any other inlet's type
+gets (§2.5). The arena slot holds only the source's entity; the target still
+reads the source's component or handle through it, but the check that stops a
+material from filling a geometry inlet is no longer a separate pass.
 
 #### Two things this gets for free
 
@@ -605,15 +665,15 @@ takes over.
 PreUpdate     MIDI IO thread → timestamped event buffers
 FixedUpdate   (0..n times per frame)
                 advance Time<Transport> from the phase estimator
-                graph tick — one exclusive system, compiled order:
-                  A. read input ports, write output ports      (arena)
-                  B. apply effective params → own components
-                  C. CPU cooks run; GPU cooks are marked dirty
-                  D. fire observer triggers
+                graph tick — one exclusive system, one compiled order;
+                per node, in that order:
+                  A/C. gather its inlets, tick (write outlets), cook if dirty
+                  B.   apply effective params → own components
+                  D.   fire observer triggers
 Update        runtime systems: animation, particles, physics
 PostUpdate    transform propagation, visibility
 Extract       accumulated dirty set + ShaderParams → render world
-Render        compute subgraph in Feeds order, then the draw
+Render        compute subgraph in `Product<Geometry>` order, then the draw
 ```
 
 Because the tick is an exclusive system holding `&mut World`, **writes are
@@ -621,11 +681,47 @@ immediate**: a node later in topological order sees an earlier node's component
 writes within the same tick. Routing through `Commands` would introduce a flush
 boundary and a tick of lag, which is a concrete payoff of the §2.6 choice.
 
-#### A — signals into the arena
+#### A/C — gather, tick, and cook, per node
 
-Param edges move values from output ports to input ports in compiled index
-order. Pure arena work, no ECS involvement, and the only path that runs for
-every node on every tick.
+One step now, not two. A `Product` edge is an ordinary arena dependency, the
+same as a plain value or an `Events<T>` occurrence list, so the old split —
+every node ticks, then every node cooks — collapses into one per-node
+sequence: gather this node's connected inlets from their sources' outlet
+slots (a plain value, an event list, or a `Product<T>`'s source entity, all
+copied the same way); run its `tick`, which writes its own outlets and (§B)
+its own components; and, immediately after, if the cook gate says dirty and
+the node declares `COOKS`, run its `cook`, reading whichever entities its
+`Product` inlets reference. Pure arena gathers are the only work that runs for
+every node on every tick; a cook runs only when its node is dirty.
+
+Because gather, tick and cook for one node all complete before the next
+node's turn, a node whose tick depends on another node's cook from the same
+tick is expressible: the compiled order guarantees the producer's cook has
+already run before the consumer's tick reads it, the same way it guarantees
+one node's outlet is written before another node's inlet copies it. §7's open
+question about this is closed by that guarantee.
+
+A CPU operator's cook reads its `Product` sources' `Geometry` through the
+world, computes into a local, and inserts into itself. `Geometry`'s buffers
+are `Arc`-backed, so passing an unchanged attribute through an operator is a
+refcount bump rather than a copy. A GPU operator does none of this in the
+tick — it only joins the dirty set, and §2.10 describes where it runs.
+
+**The naive `Changed<Geometry>` filter is wrong here, and the failure is
+silent.** The filter means "changed since this system last ran", and the
+graph tick system runs every tick — so the flag is true for exactly one tick
+after an upstream write, and a node that skips cooking on that particular
+tick for any other reason misses the change permanently. Instead each node
+stores, in its `State`, the change tick of every input it last cooked
+against, and compares against `get_change_ticks::<Geometry>()` (or the
+equivalent for whatever component its `Product` inlet references). That is
+robust regardless of cadence and survives a node being added mid-session.
+
+The dirty set for GPU cooks accumulates across every tick in a frame and is
+drained at extraction, so a param changing on three consecutive ticks
+produces one dispatch. A CPU operator downstream of a GPU one cannot read its
+result during the tick at all — that is the mixed-residency ping-pong of
+§2.10, and it costs either a stall or a frame of latency.
 
 #### B — effective params into components
 
@@ -652,30 +748,6 @@ One interaction to keep in mind at M5: continuous driving plus render
 interpolation both target `Transform`, and they cannot both own it. The node
 writes a `DrivenTransform` carrying previous and next; the per-frame
 interpolator writes `Transform`.
-
-#### C — the geometry cook
-
-A CPU operator reads its `Feeds` sources' `Geometry`, computes, and writes its
-own; reads and writes touch different entities, so it reads through the world,
-computes into a local, and inserts into itself. `Geometry`'s buffers are
-`Arc`-backed, so passing an unchanged attribute through an operator is a
-refcount bump rather than a copy. A GPU operator does none of this in the tick —
-it only joins the dirty set, and §2.10 describes where it runs.
-
-**The naive `Changed<Geometry>` filter is wrong here, and the failure is
-silent.** The filter means "changed since this system last ran", and the graph
-tick system runs every tick — so the flag is true for exactly one tick after an
-upstream write, and a node that skips cooking on that particular tick for any
-other reason misses the change permanently. Instead each node stores, in its
-`State`, the change tick of every input it last cooked against, and compares
-against `get_change_ticks::<Geometry>()` on the source entity. That is robust
-regardless of cadence and survives a node being added mid-session.
-
-The dirty set for GPU cooks accumulates across every tick in a frame and is
-drained at extraction, so a param changing on three consecutive ticks produces
-one dispatch. A CPU operator downstream of a GPU one cannot read its result
-during the tick at all — that is the mixed-residency ping-pong of §2.10, and it
-costs either a stall or a frame of latency.
 
 #### D — events
 
@@ -771,8 +843,13 @@ nothing real.
 Sizes are relative, not calendar. Ordering follows two rules: get one end-to-end
 path working before deepening any layer, and pull genuinely unknown work early.
 
-**Status at 2026-08-02.** M0, M1, M1b, M2a, M2b and M2c are complete and on
-`main`; M3 is next. A completed milestone's plan is superseded by its findings
+**Status at 2026-08-03.** M0, M1, M1b, M2a, M2b and M2c are complete and on
+`main`; M3 is next. The unified-edges migration
+(`reports/2026-08-03-unified-edges-findings.md`) is also complete — done ahead
+of M3 because it is M4's opening work: one `Edge`, one arena, one compiled
+order, replacing the three-edge-kind model and five node-declaration
+mechanisms the RON format would otherwise have had to encode and then break.
+A completed milestone's plan is superseded by its findings
 report, which is linked below and is the authority on what was actually built.
 Where one left debt it carries a *Carried forward* line saying so, and the
 milestone that inherits it says so too — the point is that debt is visible in
@@ -962,8 +1039,18 @@ round-trip either. The expected shape is reflect for *reading* and a
 hand-controlled emitter for *writing*, editing the existing document in place
 rather than regenerating it.
 
-Three things this milestone inherits:
+Four things this milestone inherits:
 
+- **The unified-edges migration is this milestone's opening work, and it is
+  already complete.** One `Edge` component, one `Inlets`/`Outlets` pair per
+  node type, and one compiled order replace the three edge kinds and five
+  node-declaration mechanisms this document described before
+  2026-08-03 — a model M4's RON schema could not have been designed against
+  without encoding all of it and then breaking it
+  (`specs/2026-08-03-unified-edges-design.md` §10, "opens M4, before the RON
+  schema is written"). Findings: `reports/2026-08-03-unified-edges-findings.md`.
+  The sections this milestone revised are named in the Revision line at the
+  top of this document.
 - **The read-only inspector M2 asked for and did not build starts M4.** Its
   purpose was to find missing editor `TypeData` before an XL milestone depended
   on it, and that purpose is now sharper, not weaker: M4 decides how a params
@@ -1115,12 +1202,16 @@ Spout. Timeline sequencing.
   identity, would collapse it. Decide with GPU residency at M5, not before; the
   current arrangement is correct, just under-specified.
 
-- **A node whose tick depends on a cook from the same tick has no expression.**
-  Two passes run globally — every tick, then every cook — so a hypothetical
-  `PointCount` node, outputting its input geometry's length as a signal, inverts
-  the order and would need a third pass or a fixpoint. No node has wanted it yet.
-  Recorded so that when one is proposed it is recognised as an **architectural
-  change rather than a new node type**.
+- ~~**A node whose tick depends on a cook from the same tick has no
+  expression.**~~ — closed by the unified-edges design's §5 ("The tick").
+  The two-phase split this question depended on — every node ticks, then
+  every node cooks — is deleted: gather, tick and cook now happen per node,
+  in the one compiled order (§2.11), and a `Product` edge is an ordinary
+  dependency in that order like any other. A node can now declare a
+  `Product<T>` inlet on another node's cooked output and have it correctly
+  ordered before that node's tick runs — a hypothetical `Grid → PointCount →
+  Displace.amount`, outputting `Grid`'s cooked point count as a signal, is
+  expressible, because the edges order it rather than a global phase.
 
 - **Fixed tick rate value** is unchosen, and M2b's measurements did not choose
   it. The mechanism is settled (`Time::<Fixed>::from_hz`). The data so far: the
