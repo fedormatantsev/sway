@@ -11,6 +11,14 @@
 //! in favour of the real thing: a masonry `RenderRoot` fed winit events
 //! through this shell, painted through vello, and composited alongside the
 //! Bevy viewport by `EditorPresenter` (see `presenter.rs`).
+//!
+//! NOTE (Task 7, unified-edges migration): `EditorPresenter` and everything
+//! that dispatches to it are gated behind the `editor` Cargo feature, off by
+//! default, because `sway-editor` doesn't build until Task 8. `--editor`
+//! still parses as a CLI flag either way (see `main.rs`); `run` below fails
+//! loudly, before any window or GPU setup, if it's passed without the
+//! feature enabled, rather than silently falling back to `ShowPresenter`
+//! with a mis-sized viewport.
 
 use std::sync::Arc;
 
@@ -18,21 +26,22 @@ use bevy::app::App;
 use bevy::math::UVec2;
 use sway_gpu::{Compositor, GpuContext, ViewportTexture, WindowSurface};
 use winit::application::ApplicationHandler;
+#[cfg(feature = "editor")]
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::presenter::{ShowPresenter, EDITOR_VIEWPORT_SIZE};
-// NOTE: EditorPresenter is stubbed in Task 7 due to sway-editor migration
-// use crate::presenter::EditorPresenter;
+use crate::presenter::ShowPresenter;
+#[cfg(feature = "editor")]
+use crate::presenter::{EditorPresenter, EDITOR_VIEWPORT_SIZE};
 
 /// Which presenter this run uses, selected once at window creation
 /// (`ShellConfig::editor`) and never switched at runtime.
-/// NOTE (Task 7): EditorPresenter variant removed due to sway-editor not being migrated.
 enum Presenter {
     Show(ShowPresenter),
-    // Editor(Box<EditorPresenter>),  // Task 7: disabled due to sway-editor migration
+    #[cfg(feature = "editor")]
+    Editor(Box<EditorPresenter>),
 }
 
 /// Builds the demo-specific Bevy `App` once the window, shared device, and
@@ -47,8 +56,10 @@ pub type AppBuilder = Box<dyn FnOnce(&GpuContext, &ViewportTexture, UVec2) -> Ap
 pub struct ShellConfig {
     /// Selects the window title and, below in `resumed`, which `Presenter`
     /// this run uses: `--editor` gets the real `EditorPresenter` (masonry's
-    /// three-pane UI, see `sway_editor::EditorUi`); its absence gets the
-    /// plain `ShowPresenter` (viewport fullscreen, no masonry).
+    /// three-pane UI, see `sway_editor::EditorUi`) when built with the
+    /// `editor` feature; its absence gets the plain `ShowPresenter` (viewport
+    /// fullscreen, no masonry). `run` refuses to start if this is `true` and
+    /// the `editor` feature is off.
     pub editor: bool,
     pub build_app: AppBuilder,
 }
@@ -78,7 +89,14 @@ impl Running {
                 &self.viewport,
                 &mut self.compositor,
             ),
-            // Presenter::Editor(_) => panic!("EditorPresenter is disabled in Task 7"),
+            #[cfg(feature = "editor")]
+            Presenter::Editor(presenter) => presenter.present(
+                &mut self.app,
+                &self.gpu,
+                &self.surface,
+                &mut self.viewport,
+                &mut self.compositor,
+            ),
         }
         // Keeps the loop continuous: vsync (the surface is `Fifo`) paces us,
         // not this call. This also covers `begin_frame` returning `None`
@@ -132,6 +150,11 @@ impl ApplicationHandler for Shell {
         let size = window.inner_size();
         let (width, height) = (size.width.max(1), size.height.max(1));
         let scale_factor = window.scale_factor();
+        // Only read further down inside the `editor` feature's viewport
+        // sizing and `EditorPresenter::new`; without it, `scale_factor` is
+        // otherwise unused.
+        #[cfg(not(feature = "editor"))]
+        let _ = scale_factor;
 
         let surface = WindowSurface::new(&gpu.instance, &gpu.device, &gpu.adapter, window.clone());
 
@@ -139,6 +162,7 @@ impl ApplicationHandler for Shell {
         // fills the whole window; `Editor` bootstraps at the logical
         // `EDITOR_VIEWPORT_SIZE` converted to physical pixels so the
         // first `present` doesn't have to resize on Retina.
+        #[cfg(feature = "editor")]
         let (viewport_width, viewport_height) = if config.editor {
             (
                 (EDITOR_VIEWPORT_SIZE.width * scale_factor).round().max(1.0) as u32,
@@ -147,6 +171,11 @@ impl ApplicationHandler for Shell {
         } else {
             (width, height)
         };
+        // `run` already refused to start if `config.editor` is set without
+        // the `editor` feature, so this is always the `Show` sizing.
+        #[cfg(not(feature = "editor"))]
+        let (viewport_width, viewport_height) = (width, height);
+
         let viewport = ViewportTexture::new(&gpu.device, viewport_width, viewport_height);
         let compositor = Compositor::new(&gpu.device, surface.format());
 
@@ -169,16 +198,18 @@ impl ApplicationHandler for Shell {
         app.finish();
         app.cleanup();
 
-        // R6 (controller dispatch ruling): `--editor` now selects the real
+        // R6 (controller dispatch ruling): `--editor` selects the real
         // `EditorPresenter`, not the `ShowPresenter` fallback Task 3 left in
-        // place.
-        // NOTE (Task 7): EditorPresenter is disabled because sway-editor is
-        // broken due to unfinished migrations. Forcing ShowPresenter.
-        let presenter = /* if config.editor {
+        // place -- when built with the `editor` feature. `run` has already
+        // refused to start otherwise.
+        #[cfg(feature = "editor")]
+        let presenter = if config.editor {
             Presenter::Editor(Box::new(EditorPresenter::new(&gpu, size, scale_factor)))
-        } else { */
+        } else {
             Presenter::Show(ShowPresenter)
-        /* } */;
+        };
+        #[cfg(not(feature = "editor"))]
+        let presenter = Presenter::Show(ShowPresenter);
 
         self.running = Some(Running {
             window,
@@ -203,10 +234,10 @@ impl ApplicationHandler for Shell {
         // translate into a masonry event at all -- that's `ui-events-winit`'s
         // reducer's call, not this shell's -- so this is safe to do
         // unconditionally for every event this shell also handles below.
-        // NOTE (Task 7): EditorPresenter is disabled
-        // if let Presenter::Editor(presenter) = &mut running.presenter {
-        //     presenter.handle_winit_event(running.window.scale_factor(), &event);
-        // }
+        #[cfg(feature = "editor")]
+        if let Presenter::Editor(presenter) = &mut running.presenter {
+            presenter.handle_winit_event(running.window.scale_factor(), &event);
+        }
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -226,17 +257,30 @@ impl ApplicationHandler for Shell {
                             UVec2::new(width, height),
                         );
                     }
-                    // Presenter::Editor(_) => panic!("EditorPresenter is disabled in Task 7"),
+                    #[cfg(feature = "editor")]
+                    Presenter::Editor(presenter) => {
+                        // Carried finding from Task 4: a minimized window can
+                        // deliver `(0, 0)` here, and masonry's layout pass
+                        // has a documented panic on non-finite/negative
+                        // resolved dimensions. The show path above already
+                        // clamps before touching its own resources; this
+                        // path didn't clamp before handing `size` to
+                        // masonry, so it's fixed here too.
+                        let size = PhysicalSize::new(size.width.max(1), size.height.max(1));
+                        presenter.resize(size, running.window.scale_factor());
+                    }
                 }
             }
+            #[cfg(feature = "editor")]
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 // Mirror masonry_winit: Rescale only. A `Resized` often
                 // follows when the OS also changes the physical size.
-                // NOTE (Task 7): EditorPresenter is disabled
-                // if let Presenter::Editor(presenter) = &mut running.presenter {
-                //     presenter.rescale(scale_factor);
-                // }
+                if let Presenter::Editor(presenter) = &mut running.presenter {
+                    presenter.rescale(scale_factor);
+                }
             }
+            #[cfg(not(feature = "editor"))]
+            WindowEvent::ScaleFactorChanged { .. } => {}
             WindowEvent::RedrawRequested => running.redraw(),
             _ => {}
         }
@@ -245,6 +289,21 @@ impl ApplicationHandler for Shell {
 
 /// Runs the shell. Blocks until the window is closed.
 pub fn run(config: ShellConfig) {
+    // Fail loudly, before any window/GPU setup, rather than silently
+    // falling back to `ShowPresenter` with a viewport sized for the editor
+    // (or a title claiming "sway (editor)") when the real editor can't be
+    // built. `sway-editor` doesn't compile until Task 8 of the
+    // unified-edges migration; until then this is the only way to run
+    // `--editor` at all, so it earns a clear, deliberate failure instead of
+    // a `cfg`-invisible silent no-op.
+    #[cfg(not(feature = "editor"))]
+    if config.editor {
+        panic!(
+            "--editor requires building with `--features editor`, and sway-editor is not \
+             currently buildable (Task 8 of the unified-edges migration will fix this)"
+        );
+    }
+
     let event_loop = EventLoop::new().expect("could not create the winit event loop");
     let mut shell = Shell {
         config: Some(config),
