@@ -372,12 +372,13 @@ fn snapshot_port(app: &App, port: &TracedPort) -> Snapshot {
         PortKindSpec::NoteEvents(ordinal, event_name) => {
             // The field may be variadic (`Envelope::TRIGGERS` fans in one
             // `MidiNote` per element), so every element's occurrences are
-            // gathered here — element order first, offset second — the same
-            // rule `Envelope::merged` itself uses, and the one that keeps
-            // this trace meaningful for a fan-in of more than one source.
+            // gathered here, then sorted by offset (element index only
+            // breaks ties) — mirroring `Envelope::merged`'s own gathering
+            // rule, which keeps this trace meaningful for a fan-in of more
+            // than one source.
             let offset = plan.field_offsets[ordinal as usize];
             let len = plan.field_lens[ordinal as usize];
-            let events = (0..len)
+            let mut events: Vec<(f32, String)> = (0..len)
                 .flat_map(|index| {
                     let slot = plan.base + offset + index;
                     arena.values[slot]
@@ -396,6 +397,7 @@ fn snapshot_port(app: &App, port: &TracedPort) -> Snapshot {
                         })
                 })
                 .collect();
+            events.sort_by(|a, b| a.0.total_cmp(&b.0));
             Snapshot::Events(events)
         }
     }
