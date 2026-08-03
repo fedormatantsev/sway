@@ -1,4 +1,4 @@
-//! The node type registry. Spec §3.
+//! The node type registry.
 //!
 //! A node type is plugin-shaped; a node instance is an entity. `register`
 //! erases `tick` to a bare fn stored here, and the tick loop dispatches
@@ -12,104 +12,96 @@ use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use bevy_reflect::structs::Struct;
-use bevy_reflect::{GetTypeRegistration, PartialReflect, Reflect, TypePath, Typed};
+use bevy_reflect::{GetTypeRegistration, PartialReflect, Reflect, Typed};
 use std::collections::HashMap;
 
 use crate::compile::NodePlan;
 use crate::ports::PortArena;
-use crate::schema::{derive_schema, SchemaHalf};
+use crate::schema::{derive_fields, FieldKind, FieldSpec};
 use crate::view::{PortView, TickCtx};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct NodeTypeId(pub u32);
 
 pub type TickFn = fn(&mut World, Entity, &mut PortView, &TickCtx);
+pub type CookFn = fn(&mut World, Entity, &PortView);
 pub type PrefillFn = fn(&World, Entity, &mut PortArena, &NodePlan);
-pub type SeedOutputsFn = fn(&mut PortArena, &NodePlan);
+pub type SeedOutletsFn = fn(&mut PortArena, &NodePlan);
 pub type InsertDefaultsFn = fn(&mut World, Entity);
 pub type TickOfFn = fn(&World, Entity) -> Option<Tick>;
-pub type CookFn = fn(&mut World, Entity, &crate::view::SlotView);
 pub type ProducedTickFn = fn(&World, Entity) -> Option<Tick>;
+/// Per inlet field: how many slots this instance has. 1 for a non-`Vec`
+/// field, the instance's `Vec` length otherwise.
+pub type InletLensFn = fn(&World, Entity) -> Vec<usize>;
 
 pub trait NodeType: 'static {
-    type Params: Reflect + Typed + GetTypeRegistration + Component + Default;
-    type Outputs: Reflect + Typed + GetTypeRegistration + Default;
-    /// Named, typed `Feeds` inputs. `NoSlots` when the node has none (§4).
-    type Slots: Reflect + Typed + GetTypeRegistration + Default;
-    /// The capability a `Feeds` edge *from* this node carries. `()` means the
-    /// node cannot be a `Feeds` source. Bounded `TypePath`, not `Reflect`:
-    /// the structure pass needs identity and a name, nothing more (§4).
-    type Produces: TypePath + Send + Sync + 'static;
+    /// Everything the node consumes: authored values, event lists and
+    /// products, in one struct. Also the component holding authored values.
+    type Inlets: Reflect + Typed + GetTypeRegistration + Component + Default;
+    /// Everything the node offers. Direction comes from which struct a field
+    /// is in, so the same marker types are legal in both.
+    type Outlets: Reflect + Typed + GetTypeRegistration + Default;
     type State: Component + Default;
 
     /// `(field name, the ordinal the node's index const uses)` for every
-    /// port. Verified against the reflect-derived schema at registration, so
-    /// a field reorder fails at startup instead of silently swapping two
-    /// ports (spec §3).
-    const PORT_ORDINALS: &'static [(&'static str, u16)];
-    /// The same guard for slots. Empty for a node with no slots.
-    const SLOT_ORDINALS: &'static [(&'static str, u16)] = &[];
-    /// Does this node carry a `Transform`, i.e. may it appear in the scene
-    /// tree? Parenting a non-spatial node is a compile error (§4).
-    const SPATIAL: bool = false;
+    /// field, inlets first then outlets. Verified against the derived fields
+    /// at registration, so a field reorder fails at startup instead of
+    /// silently swapping two ports.
+    const ORDINALS: &'static [(&'static str, u16)];
+
     /// Whether `cook` is meaningful. Rust cannot distinguish a defaulted
     /// trait method from an overridden one, and the gate needs to know
-    /// whether a node has a cook at all rather than calling an empty one on
-    /// every dirty node (§4).
+    /// whether a node has a cook at all.
     const COOKS: bool = false;
 
     fn register(app: &mut App);
     fn tick(world: &mut World, node: Entity, ports: &mut PortView, t: &TickCtx);
 
-    /// Reads this node's `Feeds` sources and writes its own product. Runs in
-    /// `cook_order`, only when the gate says the node is dirty (§6, §7).
-    fn cook(_world: &mut World, _node: Entity, _slots: &crate::view::SlotView) {}
+    /// Reads this node's product inlets and writes its own product. Runs
+    /// immediately after `tick`, only when the gate says the node is dirty.
+    fn cook(_world: &mut World, _node: Entity, _ports: &PortView) {}
 
-    /// The change tick of whatever this node's `Feeds` consumers depend on.
+    /// The change tick of whatever this node's product consumers depend on.
     ///
     /// `None` — the default — means "changes to what I produce do not require
     /// my consumers to re-cook", which is correct for a material node: its
     /// consumers hold its `Handle`, and editing the material's params does
-    /// not change the handle. A geometry operator overrides this with its own
-    /// `Geometry` change tick. Keeping it node-supplied is what lets the
-    /// engine gate on geometry without `sway-graph` knowing `Geometry`
-    /// exists (§6).
+    /// not change the handle.
     fn produced_change_tick(_world: &World, _node: Entity) -> Option<Tick> {
         None
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct NodeSchema {
-    pub inputs: SchemaHalf,
-    pub outputs: SchemaHalf,
-}
-
-impl NodeSchema {
-    /// Continuous inputs then continuous outputs, contiguous (spec §4).
-    pub fn continuous_len(&self) -> usize {
-        self.inputs.continuous.len() + self.outputs.continuous.len()
-    }
-    pub fn events_len(&self) -> usize {
-        self.inputs.events.len() + self.outputs.events.len()
-    }
-}
-
 pub struct NodeTypeEntry {
     pub name: &'static str,
-    pub schema: NodeSchema,
+    pub inlets: Vec<FieldSpec>,
+    pub outlets: Vec<FieldSpec>,
     pub tick: TickFn,
     pub prefill: PrefillFn,
-    pub seed_outputs: SeedOutputsFn,
+    pub seed_outlets: SeedOutletsFn,
     pub insert_defaults: InsertDefaultsFn,
-    pub params_changed_tick: TickOfFn,
-    pub slots: Vec<crate::slots::SlotField>,
-    pub produces: core::any::TypeId,
-    pub produces_path: &'static str,
-    pub spatial: bool,
+    pub inlets_changed_tick: TickOfFn,
+    pub inlet_lens: InletLensFn,
     /// `Some` iff `N::COOKS`.
     pub cook: Option<CookFn>,
     pub produced_change_tick: ProducedTickFn,
+}
+
+impl NodeTypeEntry {
+    /// Resolves a field ordinal in the node's one flat space: inlets first,
+    /// then outlets. Returns the spec and whether it is an inlet.
+    pub fn field(&self, ordinal: u16) -> Option<(&FieldSpec, bool)> {
+        let o = ordinal as usize;
+        if o < self.inlets.len() {
+            Some((&self.inlets[o], true))
+        } else {
+            self.outlets.get(o - self.inlets.len()).map(|f| (f, false))
+        }
+    }
+
+    pub fn field_count(&self) -> usize {
+        self.inlets.len() + self.outlets.len()
+    }
 }
 
 #[derive(Resource, Default)]
@@ -134,45 +126,34 @@ pub fn register_node_type<N: NodeType>(app: &mut App) -> NodeTypeId {
     {
         let registry = app.world().resource::<AppTypeRegistry>().clone();
         let mut w = registry.write();
-        w.register::<N::Params>();
-        w.register::<N::Outputs>();
-        w.register::<N::Slots>();
+        w.register::<N::Inlets>();
+        w.register::<N::Outlets>();
     }
 
-    let schema = {
+    let (inlets, outlets) = {
         let registry = app.world().resource::<AppTypeRegistry>().clone();
         let r = registry.read();
-        NodeSchema {
-            inputs: derive_schema::<N::Params>(&r)
+        (
+            derive_fields::<N::Inlets>(&r)
                 .unwrap_or_else(|e| panic!("{}: {e}", core::any::type_name::<N>())),
-            outputs: derive_schema::<N::Outputs>(&r)
+            derive_fields::<N::Outlets>(&r)
                 .unwrap_or_else(|e| panic!("{}: {e}", core::any::type_name::<N>())),
-        }
+        )
     };
 
-    check_ordinals::<N>(&schema);
-
-    let slots = {
-        let registry = app.world().resource::<AppTypeRegistry>().clone();
-        let r = registry.read();
-        crate::slots::derive_slots::<N::Slots>(&r)
-            .unwrap_or_else(|e| panic!("{}: {e}", core::any::type_name::<N>()))
-    };
-
-    check_slot_ordinals::<N>(&slots);
+    check_ordinals::<N>(&inlets, &outlets);
+    check_outlets::<N>(&outlets);
 
     let entry = NodeTypeEntry {
         name: core::any::type_name::<N>(),
-        schema,
+        inlets,
+        outlets,
         tick: N::tick,
         prefill: prefill_of::<N>,
-        seed_outputs: seed_outputs_of::<N>,
+        seed_outlets: seed_outlets_of::<N>,
         insert_defaults: insert_defaults_of::<N>,
-        params_changed_tick: params_changed_tick_of::<N>,
-        slots,
-        produces: core::any::TypeId::of::<N::Produces>(),
-        produces_path: <N::Produces as TypePath>::type_path(),
-        spatial: N::SPATIAL,
+        inlets_changed_tick: inlets_changed_tick_of::<N>,
+        inlet_lens: inlet_lens_of::<N>,
         cook: if N::COOKS { Some(N::cook as CookFn) } else { None },
         produced_change_tick: N::produced_change_tick,
     };
@@ -185,27 +166,28 @@ pub fn register_node_type<N: NodeType>(app: &mut App) -> NodeTypeId {
     id
 }
 
-/// Spec §3's startup guard: the node's index consts must agree with the
-/// reflect-derived per-kind ordinals.
-fn check_ordinals<N: NodeType>(schema: &NodeSchema) {
+/// The startup guard: the node's index consts must agree with the derived
+/// field ordinals. Inlets occupy 0..inlets.len(); outlets follow.
+///
+/// Element indices are *not* declared — they are positional within their
+/// field, and a `Vec` field's length is per-instance.
+fn check_ordinals<N: NodeType>(inlets: &[FieldSpec], outlets: &[FieldSpec]) {
     let node = core::any::type_name::<N>();
-    let mut expected: Vec<(&'static str, u16)> = Vec::new();
-    for (i, f) in schema.inputs.continuous.iter().enumerate() {
-        expected.push((f.name, i as u16));
-    }
-    for (i, f) in schema.outputs.continuous.iter().enumerate() {
-        expected.push((f.name, (schema.inputs.continuous.len() + i) as u16));
-    }
-    for (i, f) in schema.inputs.events.iter().enumerate() {
-        expected.push((f.name, i as u16));
-    }
-    for (i, f) in schema.outputs.events.iter().enumerate() {
-        expected.push((f.name, (schema.inputs.events.len() + i) as u16));
-    }
+    let expected: Vec<(&'static str, u16)> = inlets
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name, i as u16))
+        .chain(
+            outlets
+                .iter()
+                .enumerate()
+                .map(|(i, f)| (f.name, (inlets.len() + i) as u16)),
+        )
+        .collect();
 
-    let mut matched = vec![false; N::PORT_ORDINALS.len()];
+    let mut matched = vec![false; N::ORDINALS.len()];
     for &(name, want) in &expected {
-        if let Some((index, _)) = N::PORT_ORDINALS
+        if let Some((index, _)) = N::ORDINALS
             .iter()
             .enumerate()
             .find(|(index, entry)| !matched[*index] && **entry == (name, want))
@@ -213,174 +195,197 @@ fn check_ordinals<N: NodeType>(schema: &NodeSchema) {
             matched[index] = true;
             continue;
         }
-        match N::PORT_ORDINALS
+        match N::ORDINALS
             .iter()
             .enumerate()
             .find(|(index, (declared, _))| !matched[*index] && declared == &name)
         {
             Some((_, (_, got))) => panic!(
-                "{node}: port `{name}` is ordinal {want}, but PORT_ORDINALS declares {got} \
+                "{node}: field `{name}` is ordinal {want}, but ORDINALS declares {got} \
                  — a field was reordered, or the const is stale"
             ),
             None => panic!(
-                "{node}: port `{name}` is undeclared in PORT_ORDINALS (expected ordinal {want})"
+                "{node}: field `{name}` is undeclared in ORDINALS (expected ordinal {want})"
             ),
         }
     }
-    for (index, (name, _)) in N::PORT_ORDINALS.iter().enumerate() {
+    for (index, (name, _)) in N::ORDINALS.iter().enumerate() {
         if !matched[index] {
-            panic!("{node}: PORT_ORDINALS declares `{name}`, which is not a port");
+            panic!("{node}: ORDINALS declares `{name}`, which is not a field");
         }
     }
 }
 
-/// The slot half of §3's startup guard. Slots occupy one flat space in field
-/// order, so this is simpler than `check_ordinals` — but the hazard is the
-/// same, and a swapped slot silently feeds a material into a geometry input.
-fn check_slot_ordinals<N: NodeType>(slots: &[crate::slots::SlotField]) {
+/// Two limits on `Outlets`, both deliberate (design §12):
+///
+/// - at most one product outlet, which is what keeps `produced_change_tick` a
+///   per-node function rather than a per-outlet table;
+/// - no `Vec` outlets, because nothing needs a variable number of outputs and
+///   allowing it would put a per-instance count on the source side of every
+///   edge.
+fn check_outlets<N: NodeType>(outlets: &[FieldSpec]) {
     let node = core::any::type_name::<N>();
-    for (ordinal, slot) in slots.iter().enumerate() {
-        let want = ordinal as u16;
-        match N::SLOT_ORDINALS.iter().find(|(name, _)| *name == slot.name) {
-            Some(&(_, got)) if got == want => {}
-            Some(&(_, got)) => panic!(
-                "{node}: slot `{}` is ordinal {want}, but SLOT_ORDINALS declares {got} \
-                 — a field was reordered, or the const is stale",
-                slot.name
-            ),
-            None => panic!(
-                "{node}: slot `{}` is undeclared in SLOT_ORDINALS (expected ordinal {want})",
-                slot.name
-            ),
-        }
+    let mut products = outlets
+        .iter()
+        .filter(|f| matches!(f.kind, FieldKind::Product { .. }));
+    if let (Some(first), Some(second)) = (products.next(), products.next()) {
+        panic!(
+            "{node}: outlets `{}` and `{}` are both products, and a node may have at most one \
+             — `produced_change_tick` is per node, not per outlet",
+            first.name, second.name
+        );
     }
-    for (name, _) in N::SLOT_ORDINALS {
-        if !slots.iter().any(|s| s.name == *name) {
-            panic!("{node}: SLOT_ORDINALS declares `{name}`, which is not a slot");
-        }
+    if let Some(variadic) = outlets.iter().find(|f| f.variadic) {
+        panic!(
+            "{node}: outlet `{}` is a Vec, which is not supported — a node's outlet count is \
+             fixed by its type",
+            variadic.name
+        );
     }
 }
 
-/// Copies every **unconnected** continuous input from the node's `Params`
-/// component into its arena slots. Spec §4's authored-versus-driven rule:
-/// `Params` is never written by the graph, so a disconnect returns the port
-/// to its authored value.
+/// Copies every **unconnected** inlet slot from the node's `Inlets` component
+/// into the arena. The authored-versus-driven rule: `Inlets` is never written
+/// by the graph, so a disconnect returns the slot to its authored value.
 fn prefill_of<N: NodeType>(world: &World, node: Entity, arena: &mut PortArena, plan: &NodePlan) {
-    let Some(params) = world.get::<N::Params>(node) else {
+    let Some(inlets) = world.get::<N::Inlets>(node) else {
         return;
     };
-    let params: &dyn Struct = params.reflect_ref().as_struct().expect("Params is a struct");
-    for (ordinal, field) in plan.schema.inputs.continuous.iter().enumerate() {
-        if plan.connected_continuous[ordinal] {
-            continue;
+    let inlets: &dyn Struct = inlets.reflect_ref().as_struct().expect("Inlets is a struct");
+
+    for (ordinal, spec) in plan.fields[..plan.inlet_field_count].iter().enumerate() {
+        let field = inlets
+            .field_at(spec.field_index)
+            .expect("field_index came from this type's own fields");
+        let offset = plan.field_offsets[ordinal];
+        let len = plan.field_lens[ordinal];
+
+        for index in 0..len {
+            if plan.connected[offset + index] {
+                continue;
+            }
+            let value = if spec.variadic {
+                field
+                    .reflect_ref()
+                    .as_list()
+                    .expect("a variadic field reflects as a list")
+                    .get(index)
+                    .expect("compile sized this field from the same list")
+            } else {
+                field
+            };
+            arena.values[plan.base + offset + index] = clone_authored(value);
         }
-        let value = params
-            .field_at(field.field_index)
-            .expect("field_index came from this type's own schema");
-        arena.continuous[plan.continuous_base + ordinal] = value
-            .reflect_clone()
-            .unwrap_or_else(|error| {
-                panic!(
-                    "could not clone `{}` while prefilling a node parameter: {error:?}",
-                    value.reflect_type_path()
-                )
-            })
-            .into_partial_reflect();
     }
 }
 
-fn seed_outputs_of<N: NodeType>(arena: &mut PortArena, plan: &NodePlan) {
-    let outputs = N::Outputs::default();
-    let outputs: &dyn Struct = outputs.reflect_ref().as_struct().expect("Outputs is a struct");
-    let output_base = plan.continuous_base + plan.schema.inputs.continuous.len();
-    for (ordinal, field) in plan.schema.outputs.continuous.iter().enumerate() {
-        let value = outputs
-            .field_at(field.field_index)
-            .expect("field_index came from this type's own schema");
-        arena.continuous[output_base + ordinal] = value
-            .reflect_clone()
-            .unwrap_or_else(|error| {
-                panic!(
-                    "could not clone `{}` while seeding a node output: {error:?}",
-                    value.reflect_type_path()
-                )
-            })
-            .into_partial_reflect();
+fn clone_authored(value: &dyn PartialReflect) -> Box<dyn PartialReflect> {
+    value
+        .reflect_clone()
+        .unwrap_or_else(|error| {
+            panic!(
+                "could not clone `{}` while prefilling an inlet: {error:?}",
+                value.reflect_type_path()
+            )
+        })
+        .into_partial_reflect()
+}
+
+/// Writes each outlet's default into its slot, and seeds a product outlet
+/// with the node's own entity — which is constant for the life of a compiled
+/// graph, so the node's `tick` never has to write it.
+fn seed_outlets_of<N: NodeType>(arena: &mut PortArena, plan: &NodePlan) {
+    let outlets = N::Outlets::default();
+    let outlets: &dyn Struct = outlets.reflect_ref().as_struct().expect("Outlets is a struct");
+
+    for (offset_index, spec) in plan.fields[plan.inlet_field_count..].iter().enumerate() {
+        let ordinal = plan.inlet_field_count + offset_index;
+        let slot = plan.base + plan.field_offsets[ordinal];
+        let value = outlets
+            .field_at(spec.field_index)
+            .expect("field_index came from this type's own fields");
+        arena.values[slot] = clone_authored(value);
+
+        if let FieldKind::Product { access, .. } = spec.kind {
+            (access.set)(&mut *arena.values[slot], Some(plan.entity));
+        }
     }
 }
 
 fn insert_defaults_of<N: NodeType>(world: &mut World, node: Entity) {
-    if world.get::<N::Params>(node).is_none() {
-        world.entity_mut(node).insert(N::Params::default());
+    if world.get::<N::Inlets>(node).is_none() {
+        world.entity_mut(node).insert(N::Inlets::default());
     }
     if world.get::<N::State>(node).is_none() {
         world.entity_mut(node).insert(N::State::default());
     }
 }
 
-fn params_changed_tick_of<N: NodeType>(world: &World, node: Entity) -> Option<Tick> {
+fn inlets_changed_tick_of<N: NodeType>(world: &World, node: Entity) -> Option<Tick> {
     world
         .get_entity(node)
         .ok()?
-        .get_change_ticks::<N::Params>()
+        .get_change_ticks::<N::Inlets>()
         .map(|t| t.changed)
+}
+
+fn inlet_lens_of<N: NodeType>(world: &World, node: Entity) -> Vec<usize> {
+    let Some(inlets) = world.get::<N::Inlets>(node) else {
+        return Vec::new();
+    };
+    let inlets: &dyn Struct = inlets.reflect_ref().as_struct().expect("Inlets is a struct");
+    (0..inlets.field_len())
+        .map(|i| {
+            let field = inlets.field_at(i).expect("index below field_len");
+            match field.reflect_ref().as_list() {
+                Ok(list) => list.len(),
+                Err(_) => 1,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ports::Event;
     use bevy_app::App;
     use bevy_ecs::component::Component;
     use bevy_reflect::Reflect;
 
-    #[derive(Reflect, Default, Debug, Clone, PartialEq)]
-    struct NoteMsg {
-        note: u8,
-        velocity: u8,
-    }
-
     #[derive(Reflect, Component, Default)]
-    struct ProbeParams {
+    struct ProbeInlets {
         gain: f32,
-        trigger: Event<NoteMsg>,
-        bias: f32,
-    }
-
-    #[derive(Reflect, Default)]
-    struct ProbeOut {
-        value: f32,
     }
 
     #[derive(Component, Default)]
     struct ProbeState;
+
+    #[derive(Reflect, Default)]
+    struct ProbeOutlets {
+        bias: f32,
+        value: f32,
+    }
 
     struct Probe;
 
     impl Probe {
         const GAIN: u16 = 0;
         const BIAS: u16 = 1;
-        const OUT_VALUE: u16 = 2; // inputs then outputs, within the kind
-        const TRIGGER: u16 = 0; // event space is separate
+        const OUT_VALUE: u16 = 2;
     }
 
     impl NodeType for Probe {
-        type Params = ProbeParams;
-        type Outputs = ProbeOut;
-        type Slots = crate::slots::NoSlots;
-        type Produces = ();
+        type Inlets = ProbeInlets;
+        type Outlets = ProbeOutlets;
         type State = ProbeState;
 
-        const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+        const ORDINALS: &'static [(&'static str, u16)] = &[
             ("gain", Probe::GAIN),
             ("bias", Probe::BIAS),
             ("value", Probe::OUT_VALUE),
-            ("trigger", Probe::TRIGGER),
         ];
 
-        fn register(app: &mut App) {
-            crate::schema::register_event_port::<NoteMsg>(app);
-        }
+        fn register(_app: &mut App) {}
 
         fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
     }
@@ -406,30 +411,23 @@ mod tests {
         let reg = app.world().resource::<NodeTypeRegistry>();
         let entry = reg.get(id).expect("registered");
 
-        assert_eq!(entry.schema.inputs.continuous.len(), 2);
-        assert_eq!(entry.schema.inputs.events.len(), 1);
-        assert_eq!(entry.schema.outputs.continuous.len(), 1);
-        // Spec §4: continuous inputs then continuous outputs, contiguous.
-        assert_eq!(entry.schema.continuous_len(), 3);
-        assert_eq!(entry.schema.events_len(), 1);
+        assert_eq!(entry.inlets.len(), 1);
+        assert_eq!(entry.outlets.len(), 2);
+        assert_eq!(entry.field_count(), 3);
     }
 
     #[test]
     fn a_wrong_ordinal_fails_registration_and_names_the_field() {
         struct Bad;
         impl NodeType for Bad {
-            type Params = ProbeParams;
-            type Outputs = ProbeOut;
-            type Slots = crate::slots::NoSlots;
-            type Produces = ();
+            type Inlets = ProbeInlets;
+            type Outlets = ProbeOutlets;
             type State = ProbeState;
-            // "bias" is continuous #1, not #0. This is exactly the mistake a
+            // "bias" is ordinal 1, not 0. This is exactly the mistake a
             // field reorder makes, and it must not reach the tick loop.
-            const PORT_ORDINALS: &'static [(&'static str, u16)] =
-                &[("gain", 0), ("bias", 0), ("value", 2), ("trigger", 0)];
-            fn register(app: &mut App) {
-                crate::schema::register_event_port::<NoteMsg>(app);
-            }
+            const ORDINALS: &'static [(&'static str, u16)] =
+                &[("gain", 0), ("bias", 0), ("value", 2)];
+            fn register(_app: &mut App) {}
             fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
         }
 
@@ -446,18 +444,14 @@ mod tests {
     #[test]
     fn a_missing_ordinal_declaration_fails_registration() {
         // The other half of the guard: declaring fewer consts than there are
-        // ports means some port has no name in node code at all.
+        // fields means some field has no name in node code at all.
         struct Incomplete;
         impl NodeType for Incomplete {
-            type Params = ProbeParams;
-            type Outputs = ProbeOut;
-            type Slots = crate::slots::NoSlots;
-            type Produces = ();
+            type Inlets = ProbeInlets;
+            type Outlets = ProbeOutlets;
             type State = ProbeState;
-            const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("gain", 0)];
-            fn register(app: &mut App) {
-                crate::schema::register_event_port::<NoteMsg>(app);
-            }
+            const ORDINALS: &'static [(&'static str, u16)] = &[("gain", 0)];
+            fn register(_app: &mut App) {}
             fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
         }
 
@@ -471,26 +465,21 @@ mod tests {
     }
 
     #[test]
-    fn an_ordinal_naming_a_nonexistent_port_fails_registration() {
-        // The third half of the guard: PORT_ORDINALS naming something that
-        // isn't a port at all (typo, stale const after a field rename).
+    fn an_ordinal_naming_a_nonexistent_field_fails_registration() {
+        // The third half of the guard: ORDINALS naming something that isn't
+        // a field at all (typo, stale const after a field rename).
         struct Phantom;
         impl NodeType for Phantom {
-            type Params = ProbeParams;
-            type Outputs = ProbeOut;
-            type Slots = crate::slots::NoSlots;
-            type Produces = ();
+            type Inlets = ProbeInlets;
+            type Outlets = ProbeOutlets;
             type State = ProbeState;
-            const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
+            const ORDINALS: &'static [(&'static str, u16)] = &[
                 ("gain", 0),
                 ("bias", 1),
                 ("value", 2),
-                ("trigger", 0),
                 ("does_not_exist", 99),
             ];
-            fn register(app: &mut App) {
-                crate::schema::register_event_port::<NoteMsg>(app);
-            }
+            fn register(_app: &mut App) {}
             fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
         }
 
@@ -504,25 +493,23 @@ mod tests {
     }
 
     #[test]
-    fn matching_input_and_output_names_are_checked_by_name_and_ordinal() {
+    fn matching_inlet_and_outlet_names_are_checked_by_name_and_ordinal() {
         #[derive(Reflect, Component, Default)]
-        struct SameNameParams {
+        struct SameNameInlets {
             value: f32,
         }
 
         #[derive(Reflect, Default)]
-        struct SameNameOutputs {
+        struct SameNameOutlets {
             value: f32,
         }
 
         struct SameName;
         impl NodeType for SameName {
-            type Params = SameNameParams;
-            type Outputs = SameNameOutputs;
-            type Slots = crate::slots::NoSlots;
-            type Produces = ();
+            type Inlets = SameNameInlets;
+            type Outlets = SameNameOutlets;
             type State = ProbeState;
-            const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("value", 0), ("value", 1)];
+            const ORDINALS: &'static [(&'static str, u16)] = &[("value", 0), ("value", 1)];
             fn register(_app: &mut App) {}
             fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
         }
@@ -532,114 +519,27 @@ mod tests {
     }
 
     #[test]
-    fn a_node_type_registers_its_slots_capability_and_cook_flag() {
-        use crate::slots::{NoSlots, Slot, register_slot};
-        use bevy_reflect::TypePath;
-
-        #[derive(TypePath)]
-        struct Blob;
-
-        #[derive(Reflect, Default)]
-        struct ConsumerSlots {
-            input: Slot<Blob>,
-        }
-
-        struct Producer;
-        impl NodeType for Producer {
-            type Params = ProbeParams;
-            type Outputs = ProbeOut;
-            type Slots = NoSlots;
-            type Produces = Blob;
-            type State = ProbeState;
-            const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
-                ("gain", 0),
-                ("bias", 1),
-                ("value", 2),
-                ("trigger", 0),
-            ];
-            const COOKS: bool = true;
-            fn register(app: &mut App) {
-                crate::schema::register_event_port::<NoteMsg>(app);
-            }
-            fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
-            fn cook(_w: &mut World, _n: Entity, _s: &crate::view::SlotView) {}
-        }
-
-        struct Consumer;
-        impl NodeType for Consumer {
-            type Params = ProbeParams;
-            type Outputs = ProbeOut;
-            type Slots = ConsumerSlots;
-            type Produces = ();
-            type State = ProbeState;
-            const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
-                ("gain", 0),
-                ("bias", 1),
-                ("value", 2),
-                ("trigger", 0),
-            ];
-            const SLOT_ORDINALS: &'static [(&'static str, u16)] = &[("input", 0)];
-            const SPATIAL: bool = true;
-            fn register(app: &mut App) {
-                crate::schema::register_event_port::<NoteMsg>(app);
-                register_slot::<Blob>(app);
-            }
-            fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
-        }
-
-        let mut app = App::new();
-        let producer = register_node_type::<Producer>(&mut app);
-        let consumer = register_node_type::<Consumer>(&mut app);
-        let reg = app.world().resource::<NodeTypeRegistry>();
-
-        let p = reg.get(producer).expect("registered");
-        assert!(p.slots.is_empty());
-        assert_eq!(p.produces, core::any::TypeId::of::<Blob>());
-        assert!(p.cook.is_some(), "COOKS = true must store the cook fn");
-        assert!(!p.spatial);
-
-        let c = reg.get(consumer).expect("registered");
-        assert_eq!(c.slots.len(), 1);
-        assert_eq!(c.slots[0].name, "input");
-        assert_eq!(c.slots[0].capability, core::any::TypeId::of::<Blob>());
-        assert_eq!(c.produces, core::any::TypeId::of::<()>());
-        assert!(c.cook.is_none(), "COOKS defaults false — no cook stored");
-        assert!(c.spatial);
-    }
-
-    #[test]
-    fn a_wrong_slot_ordinal_fails_registration_and_names_the_slot() {
-        use crate::slots::{Slot, register_slot};
-        use bevy_reflect::TypePath;
-
-        #[derive(TypePath)]
-        struct Blob;
+    fn two_product_outlets_fail_registration() {
+        // design §12: at most one product outlet per node, because
+        // produced_change_tick is per node.
+        use crate::ports::{Product, Spatial};
+        use crate::schema::register_product;
 
         #[derive(Reflect, Default)]
-        struct TwoSlots {
-            first: Slot<Blob>,
-            second: Slot<Blob>,
+        struct TwoProducts {
+            a: Product<Spatial>,
+            b: Product<Spatial>,
         }
 
         struct Bad;
         impl NodeType for Bad {
-            type Params = ProbeParams;
-            type Outputs = ProbeOut;
-            type Slots = TwoSlots;
-            type Produces = ();
+            type Inlets = ProbeInlets;
+            type Outlets = TwoProducts;
             type State = ProbeState;
-            const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
-                ("gain", 0),
-                ("bias", 1),
-                ("value", 2),
-                ("trigger", 0),
-            ];
-            // `second` is slot #1, not #0 — the mistake a field reorder makes.
-            const SLOT_ORDINALS: &'static [(&'static str, u16)] =
-                &[("first", 0), ("second", 0)];
+            const ORDINALS: &'static [(&'static str, u16)] =
+                &[("gain", 0), ("a", 1), ("b", 2)];
             fn register(app: &mut App) {
-                crate::schema::register_event_port::<NoteMsg>(app);
-                register_slot::<Blob>(app);
+                register_product::<Spatial>(app);
             }
             fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
         }
@@ -650,6 +550,32 @@ mod tests {
         }))
         .unwrap_err();
         let msg = panic_message(&*err);
-        assert!(msg.contains("second"), "must name the slot: {msg}");
+        assert!(msg.contains("at most one"), "{msg}");
+    }
+
+    #[test]
+    fn a_vec_outlet_fails_registration() {
+        #[derive(Reflect, Default)]
+        struct VecOutlet {
+            values: Vec<f32>,
+        }
+
+        struct Bad;
+        impl NodeType for Bad {
+            type Inlets = ProbeInlets;
+            type Outlets = VecOutlet;
+            type State = ProbeState;
+            const ORDINALS: &'static [(&'static str, u16)] = &[("gain", 0), ("values", 1)];
+            fn register(_app: &mut App) {}
+            fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
+        }
+
+        let mut app = App::new();
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            register_node_type::<Bad>(&mut app)
+        }))
+        .unwrap_err();
+        let msg = panic_message(&*err);
+        assert!(msg.contains("values"), "must name the outlet: {msg}");
     }
 }

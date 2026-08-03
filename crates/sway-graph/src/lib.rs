@@ -5,33 +5,21 @@ pub mod edges;
 pub mod ports;
 pub mod registry;
 pub mod schema;
-pub mod slots;
-mod structure;
 #[cfg(test)]
 pub(crate) mod test_nodes;
 pub mod tick;
 pub mod view;
 
 pub use compile::{CompileError, CompiledGraph, NodePlan, compile};
-pub use edges::{
-    Edge, EdgeFrom, EdgeTo, Endpoint, EditorPos, FeedsEdge, GraphNode, InEdges, NodeId,
-    NodeRuntime, OutEdges, ParamEdge, ParentEdge, PortKind,
-};
-pub use ports::{
-    clear_events_of, BoxedOccurrence, ContinuousIdx, Event, EventIdx, Events, Occurrence,
-    PortArena, Product, SlotIdx, Spatial,
-};
+pub use edges::{Edge, EdgeFrom, EdgeTo, Endpoint, EditorPos, GraphNode, InEdges, NodeId, NodeRuntime, OutEdges};
+pub use ports::{clear_events_of, Events, Occurrence, PortArena, Product, SlotIdx, Spatial};
 pub use registry::{
-    InsertDefaultsFn, NodeSchema, NodeType, NodeTypeEntry, NodeTypeId, NodeTypeRegistry, PrefillFn,
-    SeedOutputsFn, TickFn, TickOfFn, register_node_type,
+    CookFn, InletLensFn, InsertDefaultsFn, NodeType, NodeTypeEntry, NodeTypeId, NodeTypeRegistry,
+    PrefillFn, SeedOutletsFn, TickFn, TickOfFn, register_node_type,
 };
 pub use schema::{
-    derive_fields, derive_schema, register_event_port, register_events, register_product,
-    FieldKind, FieldSpec, PortField, ProductAccess, ReflectEventList, ReflectEventPort,
-    ReflectProduct, SchemaError, SchemaHalf,
-};
-pub use slots::{
-    NoOutputs, NoSlots, ReflectSlot, Slot, SlotField, SlotSource, derive_slots, register_slot,
+    derive_fields, register_events, register_product, FieldKind, FieldSpec, ProductAccess,
+    ReflectEventList, ReflectProduct, SchemaError,
 };
 pub use tick::{GraphPlugin, GraphTickCount, graph_tick};
-pub use view::{EventRef, PortView, SlotView, TickCtx};
+pub use view::{PortView, TickCtx};

@@ -1,796 +1,550 @@
-//! Shared node types for `sway-graph`'s own test suite.
-//!
-//! Shared across Tasks 3, 4 and 5 — whichever lands first creates this file,
-//! the others extend it. Task 3 used a private `Probe` defined inline in
-//! `registry.rs`'s own test module; Task 4 is the first task that needs the
-//! *same* node type visible from another module's tests, so it moves here.
-//!
-//! Task 4 added `Probe`, `IntProbe`, `Emitter` and the spawners/app builder
-//! its compiler tests need. Task 5 adds `Gain`, `Sink`, the wiring helpers
-//! (`connect`, `connect_event`), the assertion helpers (`recompile`,
-//! `port_value`, `event_count`, `sink_offsets`) and the `GraphPlugin`-backed
-//! app builders (`gain_app`, `emitter_app`), and replaces `Emitter::tick`'s
-//! no-op body now that `PortView` has real accessors.
-
-use core::sync::atomic::{AtomicU32, Ordering};
+//! Engine-only node fixtures. Deliberately not real nodes: these exist to
+//! exercise the contract, not to do anything musical.
 
 use bevy_app::App;
-use bevy_ecs::change_detection::Tick;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
-use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
-use bevy_reflect::{Reflect, TypePath};
-use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
+use bevy_reflect::Reflect;
 
-use crate::compile::compile;
-use crate::edges::{EdgeFrom, EdgeTo, GraphNode, NodeId, NodeRuntime, ParamEdge, PortKind};
-use crate::ports::{ContinuousIdx, Event, EventIdx, PortArena};
-use crate::registry::{NodeType, NodeTypeId, NodeTypeRegistry, register_node_type};
-use crate::schema::register_event_port;
-use crate::slots::{NoOutputs, NoSlots, Slot, register_slot};
+use crate::compile::{compile, CompiledGraph};
+use crate::edges::{Edge, EdgeFrom, EdgeTo, Endpoint, GraphNode, NodeId};
+use crate::ports::{Events, PortArena, Product, Spatial};
+use crate::registry::{register_node_type, NodeType, NodeTypeId, NodeTypeRegistry};
+use crate::schema::{register_events, register_product};
 use crate::tick::GraphPlugin;
-use crate::view::{PortView, SlotView, TickCtx};
+use crate::view::{PortView, TickCtx};
 
-/// Graph tick rate used by every headless test app. Matches
-/// `crates/sway-app/src/graph.rs`'s M0 provisional value (spec §11).
-pub(crate) const TICK_HZ: f64 = 120.0;
+/// A capability no real node uses, for slot-typing tests.
+#[derive(Reflect, Default)]
+pub struct Blob;
 
-/// The event payload every test node's event port carries. Its exact shape
-/// doesn't matter to Task 4's tests — only that it is a distinct, registered
-/// `Reflect` type edges can compare for a match.
+/// A second one, so a mismatch names two real capabilities.
+#[derive(Reflect, Default)]
+pub struct Sludge;
+
 #[derive(Reflect, Default, Debug, Clone, PartialEq)]
-pub(crate) struct NoteMsg {
-    pub note: u8,
-    pub velocity: u8,
+pub struct Ping {
+    pub seq: u32,
 }
 
-// --- Probe -------------------------------------------------------------
-//
-// params `gain: f32`, `trigger: Event<NoteMsg>`, `bias: f32`; outputs
-// `value: f32`. The general-purpose node most compiler tests wire up.
+// --- Gain: two value inlets, one value outlet -------------------------
 
 #[derive(Reflect, Component, Default)]
-pub(crate) struct ProbeParams {
-    pub gain: f32,
-    pub trigger: Event<NoteMsg>,
-    pub bias: f32,
-}
-
-#[derive(Reflect, Default)]
-pub(crate) struct ProbeOut {
-    pub value: f32,
-}
-
-#[derive(Component, Default)]
-pub(crate) struct ProbeState;
-
-pub(crate) struct Probe;
-
-impl Probe {
-    pub const GAIN: u16 = 0;
-    pub const BIAS: u16 = 1;
-    pub const OUT_VALUE: u16 = 2; // inputs then outputs, within the kind
-    pub const TRIGGER: u16 = 0; // event space is separate
-}
-
-impl NodeType for Probe {
-    type Params = ProbeParams;
-    type Outputs = ProbeOut;
-    type Slots = NoSlots;
-    type Produces = ();
-    type State = ProbeState;
-
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
-        ("gain", Probe::GAIN),
-        ("bias", Probe::BIAS),
-        ("value", Probe::OUT_VALUE),
-        ("trigger", Probe::TRIGGER),
-    ];
-
-    fn register(app: &mut App) {
-        register_event_port::<NoteMsg>(app);
-    }
-
-    fn tick(_world: &mut World, _node: Entity, _ports: &mut PortView, _ctx: &TickCtx) {}
-}
-
-// --- IntProbe ------------------------------------------------------------
-//
-// params `count: u32`; outputs `count_out: u32` — exists only to make a
-// type mismatch against `Probe.value: f32`.
-
-#[derive(Reflect, Component, Default)]
-pub(crate) struct IntProbeParams {
-    pub count: u32,
-}
-
-#[derive(Reflect, Default)]
-pub(crate) struct IntProbeOut {
-    pub count_out: u32,
-}
-
-#[derive(Component, Default)]
-pub(crate) struct IntProbeState;
-
-pub(crate) struct IntProbe;
-
-impl IntProbe {
-    pub const COUNT: u16 = 0;
-    pub const OUT_COUNT: u16 = 1; // one continuous input, so outputs start at 1
-}
-
-impl NodeType for IntProbe {
-    type Params = IntProbeParams;
-    type Outputs = IntProbeOut;
-    type Slots = NoSlots;
-    type Produces = ();
-    type State = IntProbeState;
-
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
-        ("count", IntProbe::COUNT),
-        ("count_out", IntProbe::OUT_COUNT),
-    ];
-
-    fn register(_app: &mut App) {}
-
-    fn tick(_world: &mut World, _node: Entity, _ports: &mut PortView, _ctx: &TickCtx) {}
-}
-
-// --- Emitter -------------------------------------------------------------
-//
-// params `at: f32`; outputs `pulse: Event<NoteMsg>`. Emits one occurrence
-// per tick, at offset `at`.
-
-#[derive(Reflect, Component, Default)]
-pub(crate) struct EmitterParams {
-    pub at: f32,
-}
-
-#[derive(Reflect, Default)]
-pub(crate) struct EmitterOut {
-    pub pulse: Event<NoteMsg>,
-}
-
-#[derive(Component, Default)]
-pub(crate) struct EmitterState;
-
-pub(crate) struct Emitter;
-
-impl Emitter {
-    pub const AT: u16 = 0;
-    pub const OUT_PULSE: u16 = 0; // no continuous ports at all, so event space starts at 0
-}
-
-impl NodeType for Emitter {
-    type Params = EmitterParams;
-    type Outputs = EmitterOut;
-    type Slots = NoSlots;
-    type Produces = ();
-    type State = EmitterState;
-
-    const PORT_ORDINALS: &'static [(&'static str, u16)] =
-        &[("at", Emitter::AT), ("pulse", Emitter::OUT_PULSE)];
-
-    fn register(app: &mut App) {
-        register_event_port::<NoteMsg>(app);
-    }
-
-    fn tick(_world: &mut World, _node: Entity, ports: &mut PortView, _ctx: &TickCtx) {
-        let at: f32 = ports.read(ContinuousIdx(Emitter::AT as u32));
-        ports.emit(EventIdx(Emitter::OUT_PULSE as u32), at, NoteMsg::default());
-    }
-}
-
-// --- Gain ------------------------------------------------------------------
-//
-// params `gain: f32`, `bias: f32`; outputs `value: f32`; tick writes
-// `gain * bias`. The general-purpose node Task 5's tick tests wire up.
-
-#[derive(Reflect, Component, Default)]
-pub(crate) struct GainParams {
+pub struct GainInlets {
     pub gain: f32,
     pub bias: f32,
 }
 
 #[derive(Reflect, Default)]
-pub(crate) struct GainOut {
+pub struct GainOutlets {
     pub value: f32,
 }
 
 #[derive(Component, Default)]
-pub(crate) struct GainState;
+pub struct GainState;
 
-pub(crate) struct Gain;
+pub struct Gain;
 
 impl Gain {
     pub const GAIN: u16 = 0;
     pub const BIAS: u16 = 1;
-    pub const OUT_VALUE: u16 = 2;
+    pub const OUT_VALUE: u16 = 2; // outlets follow inlets in one field space
 }
 
 impl NodeType for Gain {
-    type Params = GainParams;
-    type Outputs = GainOut;
-    type Slots = NoSlots;
-    type Produces = ();
+    type Inlets = GainInlets;
+    type Outlets = GainOutlets;
     type State = GainState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[
-        ("gain", Gain::GAIN),
-        ("bias", Gain::BIAS),
-        ("value", Gain::OUT_VALUE),
-    ];
+    const ORDINALS: &'static [(&'static str, u16)] =
+        &[("gain", Gain::GAIN), ("bias", Gain::BIAS), ("value", Gain::OUT_VALUE)];
 
     fn register(_app: &mut App) {}
 
-    fn tick(_world: &mut World, _node: Entity, ports: &mut PortView, _ctx: &TickCtx) {
-        let gain: f32 = ports.read(ContinuousIdx(Gain::GAIN as u32));
-        let bias: f32 = ports.read(ContinuousIdx(Gain::BIAS as u32));
-        ports.write(ContinuousIdx(Gain::OUT_VALUE as u32), gain * bias);
+    fn tick(_world: &mut World, _node: Entity, ports: &mut PortView, _t: &TickCtx) {
+        let gain: f32 = ports.read(Gain::GAIN);
+        let bias: f32 = ports.read(Gain::BIAS);
+        ports.write(Gain::OUT_VALUE, gain * bias);
     }
 }
 
-// --- Sink --------------------------------------------------------------
-//
-// params `pulse: Event<NoteMsg>`; outputs none; state records every
-// occurrence's offset, this tick only (spec §4: events clear each tick).
+// --- Sum: one variadic value inlet ------------------------------------
 
 #[derive(Reflect, Component, Default)]
-pub(crate) struct SinkParams {
-    pub pulse: Event<NoteMsg>,
+pub struct SumInlets {
+    pub terms: Vec<f32>,
 }
 
 #[derive(Reflect, Default)]
-pub(crate) struct SinkOut {}
-
-#[derive(Component, Default)]
-pub(crate) struct SinkState {
-    pub offsets: Vec<f32>,
+pub struct SumOutlets {
+    pub total: f32,
 }
 
-pub(crate) struct Sink;
+#[derive(Component, Default)]
+pub struct SumState;
+
+pub struct Sum;
+
+impl Sum {
+    pub const TERMS: u16 = 0;
+    pub const OUT_TOTAL: u16 = 1;
+}
+
+impl NodeType for Sum {
+    type Inlets = SumInlets;
+    type Outlets = SumOutlets;
+    type State = SumState;
+
+    const ORDINALS: &'static [(&'static str, u16)] =
+        &[("terms", Sum::TERMS), ("total", Sum::OUT_TOTAL)];
+
+    fn register(_app: &mut App) {}
+
+    fn tick(_world: &mut World, _node: Entity, ports: &mut PortView, _t: &TickCtx) {
+        // The combining rule lives here, in the node, not in the engine.
+        let mut total = 0.0;
+        for i in 0..ports.len(Sum::TERMS) {
+            total += ports.read_at::<f32>(Sum::TERMS, i as u16);
+        }
+        ports.write(Sum::OUT_TOTAL, total);
+    }
+}
+
+// --- Emitter / Sink: event out, event in ------------------------------
+
+#[derive(Reflect, Component, Default)]
+pub struct EmitterInlets {
+    pub period: f32,
+}
+
+#[derive(Reflect, Default)]
+pub struct EmitterOutlets {
+    pub pulse: Events<Ping>,
+}
+
+#[derive(Component, Default)]
+pub struct EmitterState {
+    pub seq: u32,
+}
+
+pub struct Emitter;
+
+impl Emitter {
+    pub const PERIOD: u16 = 0;
+    pub const OUT_PULSE: u16 = 1;
+}
+
+impl NodeType for Emitter {
+    type Inlets = EmitterInlets;
+    type Outlets = EmitterOutlets;
+    type State = EmitterState;
+
+    const ORDINALS: &'static [(&'static str, u16)] =
+        &[("period", Emitter::PERIOD), ("pulse", Emitter::OUT_PULSE)];
+
+    fn register(app: &mut App) {
+        register_events::<Ping>(app);
+    }
+
+    fn tick(world: &mut World, node: Entity, ports: &mut PortView, _t: &TickCtx) {
+        let offset = ports.read::<f32>(Emitter::PERIOD);
+        let seq = {
+            let mut state = world.get_mut::<EmitterState>(node).expect("state");
+            state.seq += 1;
+            state.seq
+        };
+        ports.emit(Emitter::OUT_PULSE, offset, Ping { seq });
+    }
+}
+
+#[derive(Reflect, Component, Default)]
+pub struct SinkInlets {
+    pub pulse: Events<Ping>,
+}
+
+#[derive(Reflect, Default)]
+pub struct SinkOutlets {}
+
+#[derive(Component, Default)]
+pub struct SinkState;
+
+pub struct Sink;
 
 impl Sink {
-    pub const IN_PULSE: u16 = 0;
+    pub const PULSE: u16 = 0;
 }
 
 impl NodeType for Sink {
-    type Params = SinkParams;
-    type Outputs = SinkOut;
-    type Slots = NoSlots;
-    type Produces = ();
+    type Inlets = SinkInlets;
+    type Outlets = SinkOutlets;
     type State = SinkState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("pulse", Sink::IN_PULSE)];
+    const ORDINALS: &'static [(&'static str, u16)] = &[("pulse", Sink::PULSE)];
 
     fn register(app: &mut App) {
-        register_event_port::<NoteMsg>(app);
+        register_events::<Ping>(app);
     }
 
-    fn tick(world: &mut World, node: Entity, ports: &mut PortView, _ctx: &TickCtx) {
-        let offsets: Vec<f32> = ports
-            .events::<NoteMsg>(EventIdx(Sink::IN_PULSE as u32))
-            .map(|e| e.offset)
-            .collect();
-        if let Some(mut state) = world.get_mut::<SinkState>(node) {
-            state.offsets = offsets;
-        }
-    }
+    fn tick(_world: &mut World, _node: Entity, _ports: &mut PortView, _t: &TickCtx) {}
 }
 
-// --- Blob / Source / SinkGeo / Group ----------------------------------------
-//
-// Task 4's structure-pass fixtures. `sway-graph` cannot depend on `sway-geo`,
-// so these carry their own capability marker and produced component rather
-// than the real `Geometry`/`Attribute` types.
-
-/// A stand-in capability. `sway-graph` cannot depend on `sway-geo`, so its
-/// structural tests carry their own marker and their own produced component.
-#[derive(TypePath)]
-pub(crate) struct Blob;
-
-/// What a `Source`/`SinkGeo` cook writes. Its change tick is what
-/// `produced_change_tick` reports.
-#[derive(Component, Default, Debug, Clone, PartialEq)]
-pub(crate) struct BlobData(pub u32);
+// --- Producer / Consumer: Product edges and the cook ------------------
 
 #[derive(Reflect, Component, Default)]
-pub(crate) struct SourceParams {
-    pub seed: f32,
-}
-
-#[derive(Component, Default)]
-pub(crate) struct SourceState;
-
-pub(crate) struct Source;
-
-impl Source {
-    pub(crate) const SEED: u16 = 0;
-}
-
-impl NodeType for Source {
-    type Params = SourceParams;
-    type Outputs = NoOutputs;
-    type Slots = NoSlots;
-    type Produces = Blob;
-    type State = SourceState;
-
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("seed", Self::SEED)];
-    const COOKS: bool = true;
-
-    fn register(_app: &mut App) {}
-
-    fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
-
-    fn cook(world: &mut World, node: Entity, _slots: &SlotView) {
-        let seed = world.get::<SourceParams>(node).map(|p| p.seed).unwrap_or(0.0);
-        world.entity_mut(node).insert(BlobData(seed as u32));
-        world.resource_mut::<CookCounter>().0 += 1;
-    }
-
-    fn produced_change_tick(world: &World, node: Entity) -> Option<Tick> {
-        world
-            .get_entity(node)
-            .ok()?
-            .get_change_ticks::<BlobData>()
-            .map(|t| t.changed)
-    }
-}
-
-/// A second, distinct capability — never equal to `Blob`. Exists so a
-/// genuine `SlotTypeMismatch` (two non-unit capabilities that simply differ)
-/// can be tested, as opposed to `SourceProducesNothing` (a `()` producer),
-/// which the check order in `structure::validate` reaches first for any
-/// non-producing source.
-#[derive(TypePath)]
-pub(crate) struct Sludge;
-
-#[derive(Reflect, Component, Default)]
-pub(crate) struct SludgeSourceParams {
-    pub seed: f32,
-}
-
-#[derive(Component, Default)]
-pub(crate) struct SludgeSourceState;
-
-pub(crate) struct SludgeSource;
-
-impl SludgeSource {
-    pub(crate) const SEED: u16 = 0;
-}
-
-impl NodeType for SludgeSource {
-    type Params = SludgeSourceParams;
-    type Outputs = NoOutputs;
-    type Slots = NoSlots;
-    type Produces = Sludge;
-    type State = SludgeSourceState;
-
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("seed", Self::SEED)];
-    const COOKS: bool = true;
-
-    fn register(_app: &mut App) {}
-
-    fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
-
-    fn cook(world: &mut World, node: Entity, _slots: &SlotView) {
-        let seed = world.get::<SludgeSourceParams>(node).map(|p| p.seed).unwrap_or(0.0);
-        world.entity_mut(node).insert(BlobData(seed as u32));
-        world.resource_mut::<CookCounter>().0 += 1;
-    }
-
-    fn produced_change_tick(world: &World, node: Entity) -> Option<Tick> {
-        world
-            .get_entity(node)
-            .ok()?
-            .get_change_ticks::<BlobData>()
-            .map(|t| t.changed)
-    }
-}
-
-#[derive(Reflect, Default)]
-pub(crate) struct SinkGeoSlots {
-    pub input: Slot<Blob>,
-}
-
-#[derive(Reflect, Component, Default)]
-pub(crate) struct SinkGeoParams {
+pub struct ProducerInlets {
     pub scale: f32,
 }
 
-#[derive(Component, Default)]
-pub(crate) struct SinkGeoState;
-
-pub(crate) struct SinkGeo;
-
-impl SinkGeo {
-    pub(crate) const SCALE: u16 = 0;
-    pub(crate) const IN_INPUT: u16 = 0;
+#[derive(Reflect, Default)]
+pub struct ProducerOutlets {
+    pub blob: Product<Blob>,
 }
 
-impl NodeType for SinkGeo {
-    type Params = SinkGeoParams;
-    type Outputs = NoOutputs;
-    type Slots = SinkGeoSlots;
-    type Produces = Blob;
-    type State = SinkGeoState;
+#[derive(Component, Default)]
+pub struct ProducerState {
+    pub cooks: u32,
+}
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("scale", Self::SCALE)];
-    const SLOT_ORDINALS: &'static [(&'static str, u16)] = &[("input", Self::IN_INPUT)];
+pub struct Producer;
+
+impl Producer {
+    pub const SCALE: u16 = 0;
+    pub const OUT_BLOB: u16 = 1;
+}
+
+impl NodeType for Producer {
+    type Inlets = ProducerInlets;
+    type Outlets = ProducerOutlets;
+    type State = ProducerState;
+
+    const ORDINALS: &'static [(&'static str, u16)] =
+        &[("scale", Producer::SCALE), ("blob", Producer::OUT_BLOB)];
     const COOKS: bool = true;
 
     fn register(app: &mut App) {
-        register_slot::<Blob>(app);
+        register_product::<Blob>(app);
     }
 
-    fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
+    fn tick(_world: &mut World, _node: Entity, _ports: &mut PortView, _t: &TickCtx) {}
 
-    fn cook(world: &mut World, node: Entity, slots: &SlotView) {
-        let upstream = slots
-            .source(SinkGeo::IN_INPUT)
-            .and_then(|src| world.get::<BlobData>(src))
-            .map(|b| b.0)
-            .unwrap_or(0);
-        let scale = world.get::<SinkGeoParams>(node).map(|p| p.scale).unwrap_or(1.0);
-        world
-            .entity_mut(node)
-            .insert(BlobData(upstream * scale as u32));
-        world.resource_mut::<CookCounter>().0 += 1;
+    fn cook(world: &mut World, node: Entity, _ports: &PortView) {
+        world.get_mut::<ProducerState>(node).expect("state").cooks += 1;
+    }
+}
+
+/// Produces `Sludge`, so a mismatch names two real capabilities.
+#[derive(Reflect, Default)]
+pub struct SludgeOutlets {
+    pub sludge: Product<Sludge>,
+}
+
+pub struct SludgeSource;
+
+impl SludgeSource {
+    pub const SCALE: u16 = 0;
+    pub const OUT_SLUDGE: u16 = 1;
+}
+
+impl NodeType for SludgeSource {
+    type Inlets = ProducerInlets;
+    type Outlets = SludgeOutlets;
+    type State = ProducerState;
+
+    const ORDINALS: &'static [(&'static str, u16)] =
+        &[("scale", SludgeSource::SCALE), ("sludge", SludgeSource::OUT_SLUDGE)];
+
+    fn register(app: &mut App) {
+        register_product::<Sludge>(app);
     }
 
-    fn produced_change_tick(world: &World, node: Entity) -> Option<Tick> {
-        world
-            .get_entity(node)
-            .ok()?
-            .get_change_ticks::<BlobData>()
-            .map(|t| t.changed)
-    }
+    fn tick(_world: &mut World, _node: Entity, _ports: &mut PortView, _t: &TickCtx) {}
 }
 
 #[derive(Reflect, Component, Default)]
-pub(crate) struct GroupParams {
-    pub y: f32,
+pub struct ConsumerInlets {
+    pub input: Product<Blob>,
+    pub scale: f32,
+}
+
+#[derive(Reflect, Default)]
+pub struct ConsumerOutlets {
+    pub blob: Product<Blob>,
 }
 
 #[derive(Component, Default)]
-pub(crate) struct GroupState;
+pub struct ConsumerState {
+    pub cooks: u32,
+}
 
-pub(crate) struct Group;
+pub struct Consumer;
+
+impl Consumer {
+    pub const INPUT: u16 = 0;
+    pub const SCALE: u16 = 1;
+    pub const OUT_BLOB: u16 = 2;
+}
+
+impl NodeType for Consumer {
+    type Inlets = ConsumerInlets;
+    type Outlets = ConsumerOutlets;
+    type State = ConsumerState;
+
+    const ORDINALS: &'static [(&'static str, u16)] = &[
+        ("input", Consumer::INPUT),
+        ("scale", Consumer::SCALE),
+        ("blob", Consumer::OUT_BLOB),
+    ];
+    const COOKS: bool = true;
+
+    fn register(app: &mut App) {
+        register_product::<Blob>(app);
+    }
+
+    fn tick(_world: &mut World, _node: Entity, _ports: &mut PortView, _t: &TickCtx) {}
+
+    fn cook(world: &mut World, node: Entity, _ports: &PortView) {
+        world.get_mut::<ConsumerState>(node).expect("state").cooks += 1;
+    }
+}
+
+// --- Group: a variadic Spatial inlet and a Spatial outlet -------------
+
+#[derive(Reflect, Component, Default)]
+pub struct GroupInlets {
+    pub children: Vec<Product<Spatial>>,
+    pub rotation_y: f32,
+}
+
+#[derive(Reflect, Default)]
+pub struct GroupOutlets {
+    pub spatial: Product<Spatial>,
+}
+
+#[derive(Component, Default)]
+pub struct GroupState;
+
+pub struct Group;
+
+impl Group {
+    pub const CHILDREN: u16 = 0;
+    pub const ROTATION_Y: u16 = 1;
+    pub const OUT_SPATIAL: u16 = 2;
+}
 
 impl NodeType for Group {
-    type Params = GroupParams;
-    type Outputs = NoOutputs;
-    type Slots = NoSlots;
-    type Produces = ();
+    type Inlets = GroupInlets;
+    type Outlets = GroupOutlets;
     type State = GroupState;
 
-    const PORT_ORDINALS: &'static [(&'static str, u16)] = &[("y", 0)];
-    const SPATIAL: bool = true;
+    const ORDINALS: &'static [(&'static str, u16)] = &[
+        ("children", Group::CHILDREN),
+        ("rotation_y", Group::ROTATION_Y),
+        ("spatial", Group::OUT_SPATIAL),
+    ];
 
-    fn register(_app: &mut App) {}
-    fn tick(_w: &mut World, _n: Entity, _p: &mut PortView, _t: &TickCtx) {}
+    fn register(app: &mut App) {
+        register_product::<Spatial>(app);
+    }
+
+    fn tick(_world: &mut World, _node: Entity, _ports: &mut PortView, _t: &TickCtx) {}
 }
 
-/// Counts cooks, so the gate's negative assertions have something to assert
-/// on rather than an output that merely happens to be unchanged (§7).
-#[derive(Resource, Default)]
-pub(crate) struct CookCounter(pub u32);
+// --- Helpers ----------------------------------------------------------
 
-// --- Spawning --------------------------------------------------------------
+/// Graph tick rate used by every test app. Matches
+/// `crates/sway-app/src/graph.rs`'s M0 provisional value.
+const TICK_HZ: f64 = 120.0;
 
-/// Monotonically increasing across the whole test binary. `NodeId` only
-/// needs to be distinct and consistently ordered *within* one compiled
-/// graph, so a process-wide counter is simplest and safe under parallel
-/// tests (each test builds its own `World`).
-static NEXT_NODE_ID: AtomicU32 = AtomicU32::new(0);
-
-fn next_node_id() -> NodeId {
-    NodeId(NEXT_NODE_ID.fetch_add(1, Ordering::Relaxed))
+pub fn engine_app() -> App {
+    let mut app = App::new();
+    // `bevy_time::TimePlugin` alone leaves `FixedUpdate` driven by wall-clock
+    // time, so a fast-running test's `app.update()` calls may accumulate
+    // less than one fixed timestep and never run `graph_tick` at all.
+    // Pinning the fixed timestep and stepping it manually makes each
+    // `app.update()` run `graph_tick` exactly once, deterministically.
+    app.add_plugins(bevy_time::TimePlugin)
+        .insert_resource(bevy_time::Time::<bevy_time::Fixed>::from_hz(TICK_HZ))
+        .insert_resource(bevy_time::TimeUpdateStrategy::FixedTimesteps(1));
+    app.add_plugins(GraphPlugin);
+    register_node_type::<Gain>(&mut app);
+    register_node_type::<Sum>(&mut app);
+    register_node_type::<Emitter>(&mut app);
+    register_node_type::<Sink>(&mut app);
+    register_node_type::<Producer>(&mut app);
+    register_node_type::<SludgeSource>(&mut app);
+    register_node_type::<Consumer>(&mut app);
+    register_node_type::<Group>(&mut app);
+    // Frame 0 runs no fixed tick (the accumulator is empty until real time
+    // has advanced once), so one warm-up `update()` is burned here — no
+    // nodes exist yet, and `graph_tick` no-ops with no `CompiledGraph` —
+    // making the caller's first `app.update()` after `recompile` run exactly
+    // one fixed tick.
+    app.update();
+    app
 }
 
-fn node_type_id<N: NodeType>(world: &World) -> NodeTypeId {
+fn type_id_of<N: NodeType>(world: &World) -> NodeTypeId {
     world
         .resource::<NodeTypeRegistry>()
         .id_of(core::any::type_name::<N>())
-        .expect("node type registered by probe_app")
+        .expect("node type registered")
 }
 
-pub(crate) fn spawn_probe(world: &mut World) -> Entity {
-    let node_type = node_type_id::<Probe>(world);
+fn next_id(world: &mut World) -> NodeId {
+    let mut query = world.query::<&GraphNode>();
+    NodeId(query.iter(world).count() as u32)
+}
+
+pub fn spawn_gain(world: &mut World, gain: f32, bias: f32) -> Entity {
+    let id = next_id(world);
+    let node_type = type_id_of::<Gain>(world);
+    world
+        .spawn((GraphNode { id, node_type }, GainInlets { gain, bias }, GainState))
+        .id()
+}
+
+pub fn spawn_sum(world: &mut World, terms: Vec<f32>) -> Entity {
+    let id = next_id(world);
+    let node_type = type_id_of::<Sum>(world);
+    world
+        .spawn((GraphNode { id, node_type }, SumInlets { terms }, SumState))
+        .id()
+}
+
+pub fn spawn_emitter(world: &mut World, period: f32) -> Entity {
+    let id = next_id(world);
+    let node_type = type_id_of::<Emitter>(world);
     world
         .spawn((
-            GraphNode {
-                id: next_node_id(),
-                node_type,
+            GraphNode { id, node_type },
+            EmitterInlets { period },
+            EmitterState::default(),
+        ))
+        .id()
+}
+
+pub fn spawn_sink(world: &mut World) -> Entity {
+    let id = next_id(world);
+    let node_type = type_id_of::<Sink>(world);
+    world
+        .spawn((GraphNode { id, node_type }, SinkInlets::default(), SinkState))
+        .id()
+}
+
+pub fn spawn_producer(world: &mut World) -> Entity {
+    let id = next_id(world);
+    let node_type = type_id_of::<Producer>(world);
+    world
+        .spawn((
+            GraphNode { id, node_type },
+            ProducerInlets::default(),
+            ProducerState::default(),
+        ))
+        .id()
+}
+
+pub fn spawn_sludge_source(world: &mut World) -> Entity {
+    let id = next_id(world);
+    let node_type = type_id_of::<SludgeSource>(world);
+    world
+        .spawn((
+            GraphNode { id, node_type },
+            ProducerInlets::default(),
+            ProducerState::default(),
+        ))
+        .id()
+}
+
+pub fn spawn_consumer(world: &mut World) -> Entity {
+    let id = next_id(world);
+    let node_type = type_id_of::<Consumer>(world);
+    world
+        .spawn((
+            GraphNode { id, node_type },
+            ConsumerInlets::default(),
+            ConsumerState::default(),
+        ))
+        .id()
+}
+
+/// `children` is sized here, because a variadic field's slot count comes
+/// from the instance.
+pub fn spawn_group(world: &mut World, children: usize) -> Entity {
+    let id = next_id(world);
+    let node_type = type_id_of::<Group>(world);
+    world
+        .spawn((
+            GraphNode { id, node_type },
+            GroupInlets {
+                children: vec![Product::<Spatial>::default(); children],
+                rotation_y: 0.0,
             },
-            ProbeParams::default(),
-            ProbeState,
-        ))
-        .id()
-}
-
-pub(crate) fn spawn_int_probe(world: &mut World) -> Entity {
-    let node_type = node_type_id::<IntProbe>(world);
-    world
-        .spawn((
-            GraphNode {
-                id: next_node_id(),
-                node_type,
-            },
-            IntProbeParams::default(),
-            IntProbeState,
-        ))
-        .id()
-}
-
-pub(crate) fn spawn_emitter(world: &mut World) -> Entity {
-    let node_type = node_type_id::<Emitter>(world);
-    world
-        .spawn((
-            GraphNode {
-                id: next_node_id(),
-                node_type,
-            },
-            EmitterParams::default(),
-            EmitterState,
-        ))
-        .id()
-}
-
-pub(crate) fn spawn_emitter_at(world: &mut World, at: f32) -> Entity {
-    let node_type = node_type_id::<Emitter>(world);
-    world
-        .spawn((
-            GraphNode {
-                id: next_node_id(),
-                node_type,
-            },
-            EmitterParams { at },
-            EmitterState,
-        ))
-        .id()
-}
-
-pub(crate) fn spawn_gain(world: &mut World, gain: f32, bias: f32) -> Entity {
-    let node_type = node_type_id::<Gain>(world);
-    world
-        .spawn((
-            GraphNode {
-                id: next_node_id(),
-                node_type,
-            },
-            GainParams { gain, bias },
-            GainState,
-        ))
-        .id()
-}
-
-pub(crate) fn spawn_source(world: &mut World) -> Entity {
-    let node_type = node_type_id::<Source>(world);
-    world
-        .spawn((
-            GraphNode { id: next_node_id(), node_type },
-            SourceParams { seed: 1.0 },
-            SourceState,
-        ))
-        .id()
-}
-
-pub(crate) fn spawn_sludge_source(world: &mut World) -> Entity {
-    let node_type = node_type_id::<SludgeSource>(world);
-    world
-        .spawn((
-            GraphNode { id: next_node_id(), node_type },
-            SludgeSourceParams { seed: 1.0 },
-            SludgeSourceState,
-        ))
-        .id()
-}
-
-pub(crate) fn spawn_sinkgeo(world: &mut World) -> Entity {
-    let node_type = node_type_id::<SinkGeo>(world);
-    world
-        .spawn((
-            GraphNode { id: next_node_id(), node_type },
-            SinkGeoParams { scale: 1.0 },
-            SinkGeoState,
-        ))
-        .id()
-}
-
-pub(crate) fn spawn_group(world: &mut World) -> Entity {
-    let node_type = node_type_id::<Group>(world);
-    world
-        .spawn((
-            GraphNode { id: next_node_id(), node_type },
-            GroupParams::default(),
             GroupState,
         ))
         .id()
 }
 
-pub(crate) fn spawn_sink(world: &mut World) -> Entity {
-    let node_type = node_type_id::<Sink>(world);
-    world
-        .spawn((
-            GraphNode {
-                id: next_node_id(),
-                node_type,
-            },
-            SinkParams::default(),
-            SinkState::default(),
-        ))
-        .id()
+pub fn connect(world: &mut World, from: Entity, from_field: u16, to: Entity, to_field: u16) -> Entity {
+    connect_at(world, from, from_field, to, to_field, 0)
 }
 
-// --- Wiring ------------------------------------------------------------------
-
-/// Spawns a continuous `ParamEdge` from `src`'s output ordinal `src_port` to
-/// `dst`'s input ordinal `dst_port`.
-pub(crate) fn connect(
+pub fn connect_at(
     world: &mut World,
-    src: Entity,
-    src_port: u16,
-    dst: Entity,
-    dst_port: u16,
+    from: Entity,
+    from_field: u16,
+    to: Entity,
+    to_field: u16,
+    to_index: u16,
 ) -> Entity {
     world
         .spawn((
-            ParamEdge {
-                source_port: src_port,
-                target_port: dst_port,
-                kind: PortKind::Continuous,
+            Edge {
+                from: Endpoint::field(from_field),
+                to: Endpoint { field: to_field, index: to_index },
             },
-            EdgeFrom(src),
-            EdgeTo(dst),
+            EdgeFrom(from),
+            EdgeTo(to),
         ))
         .id()
 }
 
-/// Spawns an event `ParamEdge` from `src`'s output ordinal `src_port` to
-/// `dst`'s input ordinal `dst_port`.
-pub(crate) fn connect_event(
-    world: &mut World,
-    src: Entity,
-    src_port: u16,
-    dst: Entity,
-    dst_port: u16,
-) -> Entity {
-    world
-        .spawn((
-            ParamEdge {
-                source_port: src_port,
-                target_port: dst_port,
-                kind: PortKind::Event,
-            },
-            EdgeFrom(src),
-            EdgeTo(dst),
-        ))
-        .id()
-}
-
-// --- Assertions ----------------------------------------------------------------
-
-/// Runs `compile`, inserts the result as a resource, and resizes `PortArena`
-/// to the new layout. `compile` deliberately does neither (Task 4's design:
-/// the compiler produces the layout, the runner applies it) — this is that
-/// application step, for tests.
-pub(crate) fn recompile(app: &mut App) {
+pub fn recompile(app: &mut App) {
     let compiled = compile(app.world_mut()).expect("compiles");
-    let continuous_len = compiled.continuous_len;
-    let events_len = compiled.events_len;
-    app.world_mut()
-        .resource_mut::<PortArena>()
-        .resize(continuous_len, events_len);
+    let slots_len = compiled.slots_len;
+    app.world_mut().resource_mut::<PortArena>().resize(slots_len);
     app.world_mut().insert_resource(compiled);
 }
 
-/// Reads a node's continuous port (by ordinal) straight from the arena, via
-/// its compiled `NodeRuntime` base.
-pub(crate) fn port_value(app: &App, node: Entity, ordinal: u16) -> f32 {
-    let base = app
-        .world()
-        .get::<NodeRuntime>(node)
-        .expect("node is compiled")
-        .continuous_base;
-    let arena = app.world().resource::<PortArena>();
-    *arena.continuous[base + ordinal as usize]
+/// Reads a node's value slot out of the arena, by field ordinal.
+pub fn port_value(app: &App, node: Entity, field: u16) -> f32 {
+    let compiled = app.world().resource::<CompiledGraph>();
+    let plan = compiled
+        .plans
+        .iter()
+        .find(|p| p.entity == node)
+        .expect("node is compiled");
+    let slot = plan.base + plan.field_offsets[field as usize];
+    app.world().resource::<PortArena>().values[slot]
         .try_downcast_ref::<f32>()
-        .expect("port holds an f32")
+        .copied()
+        .expect("slot holds an f32")
 }
 
-/// Number of occurrences currently sitting in a node's event port (by
-/// ordinal), straight from the arena.
-pub(crate) fn event_count(app: &App, node: Entity, ordinal: u16) -> usize {
-    let base = app
-        .world()
-        .get::<NodeRuntime>(node)
-        .expect("node is compiled")
-        .event_base;
-    let arena = app.world().resource::<PortArena>();
-    arena.events[base + ordinal as usize].len()
-}
-
-/// Every offset `Sink` has recorded this tick, in arrival order.
-pub(crate) fn sink_offsets(app: &App, sink: Entity) -> Vec<f32> {
-    app.world()
-        .get::<SinkState>(sink)
-        .expect("sink spawned")
-        .offsets
-        .clone()
-}
-
-// --- App builders -------------------------------------------------------------
-
-/// A bare `App` with `Probe`, `IntProbe` and `Emitter` registered — everything
-/// Task 4's compiler tests need. `compile` only reads the `World`, so this
-/// does not need a `GraphPlugin` or a fixed timestep.
-pub(crate) fn probe_app() -> App {
-    let mut app = App::new();
-    register_node_type::<Probe>(&mut app);
-    register_node_type::<IntProbe>(&mut app);
-    register_node_type::<Emitter>(&mut app);
-    app
-}
-
-/// A headless, tick-capable `App`: `GraphPlugin` plus a fixed timestep driven
-/// one step at a time. There is no real `MinimalPlugins` available from
-/// `bevy_app` alone — it is only a doc-comment alias for `NoopPluginGroup`,
-/// with no `TimePlugin` bundled — and `sway-graph` cannot depend on the
-/// `bevy` facade crate that provides the real one (spec §2), so this adds
-/// `bevy_time::TimePlugin` directly instead.
-///
-/// Frame 0 runs no fixed tick (the accumulator is empty until real time has
-/// advanced once — see `crates/sway-app/src/graph.rs`'s `headless` for the
-/// same recipe), so one warm-up `update()` is burned here before returning,
-/// making the caller's first `app.update()` run exactly one fixed tick.
-fn headless_app() -> App {
-    let mut app = App::new();
-    app.add_plugins(TimePlugin)
-        .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
-        .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
-        .add_plugins(GraphPlugin);
-    app
-}
-
-/// Headless app with `Gain` registered.
-pub(crate) fn gain_app() -> App {
-    let mut app = headless_app();
-    register_node_type::<Gain>(&mut app);
-    app.update();
-    app
-}
-
-/// Headless app with `Emitter` and `Sink` registered.
-pub(crate) fn emitter_app() -> App {
-    let mut app = headless_app();
-    register_node_type::<Emitter>(&mut app);
-    register_node_type::<Sink>(&mut app);
-    app.update();
-    app
-}
-
-/// App with `Probe`, `Source`, `SludgeSource`, `SinkGeo` and `Group`
-/// registered — everything Task 4's structure-pass tests need, plus Task 7's
-/// cook-pass tests, which do call `app.update()` and need `graph_tick` to
-/// actually run. `TimePlugin` plus a single-step `Fixed` timestep is
-/// `headless_app`'s recipe (see its doc comment for why `bevy_app` alone does
-/// not supply this); the warm-up `update()` burns frame 0's empty
-/// accumulator so the caller's first `app.update()` runs exactly one fixed
-/// tick.
-pub(crate) fn structure_app() -> App {
-    let mut app = App::new();
-    app.add_plugins(TimePlugin)
-        .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
-        .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
-        .add_plugins(crate::tick::GraphPlugin);
-    app.init_resource::<CookCounter>();
-    register_node_type::<Probe>(&mut app);
-    register_node_type::<Source>(&mut app);
-    register_node_type::<SludgeSource>(&mut app);
-    register_node_type::<SinkGeo>(&mut app);
-    register_node_type::<Group>(&mut app);
-    app.update();
-    app
+/// The occurrences on a node's event slot this tick.
+pub fn event_offsets(app: &App, node: Entity, field: u16) -> Vec<f32> {
+    let compiled = app.world().resource::<CompiledGraph>();
+    let plan = compiled
+        .plans
+        .iter()
+        .find(|p| p.entity == node)
+        .expect("node is compiled");
+    let slot = plan.base + plan.field_offsets[field as usize];
+    app.world().resource::<PortArena>().values[slot]
+        .try_downcast_ref::<Events<Ping>>()
+        .expect("slot holds Events<Ping>")
+        .occurrences
+        .iter()
+        .map(|o| o.offset)
+        .collect()
 }
