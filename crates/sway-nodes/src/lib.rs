@@ -5,6 +5,7 @@ mod math;
 mod mesh;
 mod midi;
 mod scene;
+mod transport;
 
 pub use envelope::*;
 pub use lfo::*;
@@ -13,6 +14,7 @@ pub use math::*;
 pub use mesh::*;
 pub use midi::*;
 pub use scene::*;
+pub use transport::*;
 
 /// Registers the M2b scene node set.
 pub struct SceneNodesPlugin;

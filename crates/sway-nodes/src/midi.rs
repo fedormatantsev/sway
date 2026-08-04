@@ -205,7 +205,15 @@ impl Plugin for SignalNodesPlugin {
         register_node_type::<Select>(app);
         app.init_resource::<MidiInbox>()
             .init_resource::<TickMidi>()
-            .add_systems(FixedUpdate, drain_inbox.before(graph_tick));
+            .init_resource::<crate::TransportClock>()
+            .add_systems(
+                FixedUpdate,
+                (
+                    drain_inbox,
+                    crate::advance_transport.after(drain_inbox),
+                )
+                    .before(graph_tick),
+            );
     }
 }
 
