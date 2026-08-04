@@ -77,9 +77,9 @@ impl MusicalTime {
         let beats = beats.max(0.0);
         let in_bar = beats % per_bar;
         Self {
-            bar: (beats / per_bar) as u32 + 1,
-            beat: in_bar as u32 + 1,
-            sixteenth: (in_bar.fract() * 4.0) as u32 + 1,
+            bar: ((beats / per_bar) as u32).saturating_add(1),
+            beat: (in_bar as u32).saturating_add(1),
+            sixteenth: ((in_bar.fract() * 4.0) as u32).saturating_add(1),
             bar_phase: (in_bar / per_bar) as f32,
         }
     }
@@ -230,5 +230,15 @@ mod tests {
         let mut app = bevy_app::App::new();
         app.add_plugins(crate::tick::GraphPlugin);
         assert!(app.world().get_resource::<Time<Transport>>().is_some());
+    }
+
+    #[test]
+    fn large_beat_values_do_not_panic() {
+        // Very large beat values should saturate to u32::MAX, not panic.
+        // This verifies that saturating_add prevents overflow panics.
+        let _ = MusicalTime::from_beats(1e20, 4);
+        let _ = MusicalTime::from_beats(f64::MAX, 4);
+        let _ = MusicalTime::from_beats(1e20, 3);
+        // If we get here without panicking, the test passes.
     }
 }
