@@ -203,9 +203,20 @@ impl Plugin for SignalNodesPlugin {
         register_node_type::<Remap>(app);
         register_node_type::<Switch>(app);
         register_node_type::<Select>(app);
+        register_node_type::<crate::TransportTimeNode>(app);
+        register_node_type::<crate::SyncLfo>(app);
+        register_node_type::<crate::BeatTrigger>(app);
         app.init_resource::<MidiInbox>()
             .init_resource::<TickMidi>()
-            .add_systems(FixedUpdate, drain_inbox.before(graph_tick));
+            .init_resource::<crate::TransportClock>()
+            .add_systems(
+                FixedUpdate,
+                (
+                    drain_inbox,
+                    crate::advance_transport.after(drain_inbox),
+                )
+                    .before(graph_tick),
+            );
     }
 }
 

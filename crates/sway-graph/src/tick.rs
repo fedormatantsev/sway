@@ -212,7 +212,10 @@ impl Plugin for GraphPlugin {
         app.insert_resource(PortArena::new(0))
             .init_resource::<NodeTypeRegistry>()
             .init_resource::<GraphTickCount>()
+            .init_resource::<Time<crate::transport::Transport>>()
             .register_type::<crate::edges::EditorPos>()
+            .register_type::<crate::transport::Transport>()
+            .register_type::<crate::transport::TransportState>()
             .add_systems(FixedUpdate, graph_tick);
     }
 }

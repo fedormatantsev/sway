@@ -17,6 +17,10 @@ bevy_ecs.workspace = true
 bevy_reflect.workspace = true
 bevy_time.workspace = true
 
+# The phase estimator (parent §3 puts it in sway-midi). Pure math — this
+# pulls in no Bevy and no new transitive dependency.
+sway-midi.workspace = true
+
 [dev-dependencies]
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }

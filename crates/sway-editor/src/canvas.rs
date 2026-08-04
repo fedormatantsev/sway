@@ -755,7 +755,7 @@ mod tests {
     }
 
     fn snapshot(nodes: Vec<NodeView>, edges: Vec<EdgeView>) -> WorldSnapshot {
-        WorldSnapshot { tree: Vec::new(), nodes, edges }
+        WorldSnapshot { nodes, edges, ..Default::default() }
     }
 
     fn harness_with(snap: WorldSnapshot) -> TestHarness<GraphCanvas> {

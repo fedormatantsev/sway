@@ -5,7 +5,8 @@
 //! Mesh.spatial ──→ Group("root").children[0]
 //! MidiCC 74.value ──→ Displace.amount
 //! MidiNote.note_on ──→ Envelope.triggers[0].value ──→ Rgb.r
-//! LFO.value ──→ Group("root").rotation_y
+//! SyncLfo.value ──→ Group("root").rotation_y
+//! TransportTimeNode.bar_phase ──→ Rgb.g
 //! ```
 
 use bevy::prelude::*;
@@ -15,10 +16,11 @@ use sway_graph::{
     PortArena, compile,
 };
 use sway_nodes::{
-    Envelope, EnvelopeInlets, EnvelopeState, Group, GroupInlets, GroupState, LFO, LfoInlets,
-    LfoState, MaterialState, MeshNode, MeshNodeInlets, MeshNodeState, MidiCC, MidiCCInlets,
-    MidiCCState, MidiNote, MidiNoteInlets, MidiNoteState, Rgb, RgbInlets, RgbState,
-    StandardMaterialNode, StandardMaterialInlets,
+    Envelope, EnvelopeInlets, EnvelopeState, Group, GroupInlets, GroupState, MaterialState,
+    MeshNode, MeshNodeInlets, MeshNodeState, MidiCC, MidiCCInlets, MidiCCState, MidiNote,
+    MidiNoteInlets, MidiNoteState, Rgb, RgbInlets, RgbState, StandardMaterialNode,
+    StandardMaterialInlets, SyncLfo, SyncLfoInlets, SyncLfoState, TransportTimeNode,
+    TransportTimeInlets, TransportTimeState,
 };
 
 fn node_type_id<N: NodeType>(world: &World) -> sway_graph::NodeTypeId {
@@ -125,20 +127,27 @@ pub fn setup_demo_graph(world: &mut World) {
             EditorPos(Vec2::new(240.0, 20.0)),
         ))
         .id();
-    let lfo = world
+    let sync = world
         .spawn((
-            GraphNode { id: id(), node_type: node_type_id::<LFO>(world) },
-            LfoInlets {
-                hz: 0.1,
+            GraphNode { id: id(), node_type: node_type_id::<SyncLfo>(world) },
+            SyncLfoInlets {
+                // One full turn per four-bar phrase — slow enough to read as
+                // locked rather than as a spin.
+                beats: 16.0,
                 shape: sway_nodes::Waveform::Saw,
                 phase: 0.0,
-                // A full turn (radians) of slow rotation on Group.rotation_y — clippy's
-                // `approx_constant` rejects the brief's literal `3.14`, so this uses the
-                // precise constant it approximates rather than suppressing the lint.
                 amplitude: core::f32::consts::PI,
             },
-            LfoState,
+            SyncLfoState,
             EditorPos(Vec2::new(20.0, 260.0)),
+        ))
+        .id();
+    let transport = world
+        .spawn((
+            GraphNode { id: id(), node_type: node_type_id::<TransportTimeNode>(world) },
+            TransportTimeInlets::default(),
+            TransportTimeState,
+            EditorPos(Vec2::new(240.0, 260.0)),
         ))
         .id();
 
@@ -155,7 +164,8 @@ pub fn setup_demo_graph(world: &mut World) {
     edge(world, note, MidiNote::OUT_NOTE_ON, envelope, Envelope::TRIGGERS, 0);
     edge(world, note, MidiNote::OUT_NOTE_OFF, envelope, Envelope::RELEASE_TRIGGERS, 0);
     edge(world, envelope, Envelope::OUT_VALUE, rgb, Rgb::R, 0);
-    edge(world, lfo, LFO::OUT_VALUE, root, Group::ROTATION_Y, 0);
+    edge(world, sync, SyncLfo::OUT_VALUE, root, Group::ROTATION_Y, 0);
+    edge(world, transport, TransportTimeNode::OUT_BAR_PHASE, rgb, Rgb::G, 0);
 
     let compiled = compile(world).expect("the demo graph must compile");
     world
@@ -253,5 +263,51 @@ mod tests {
             "the Mesh node's parent must be the root Group"
         );
         assert_ne!(mesh_entity, parent_entity);
+    }
+
+    #[test]
+    fn the_demo_graph_is_beat_locked() {
+        use bevy::time::Time;
+        use sway_graph::{Transport, TransportState, TransportTime};
+        use sway_nodes::SyncLfoState;
+
+        let mut app = app();
+        setup_demo_graph(app.world_mut());
+
+        // A stopped transport leaves the rotation where it is; a playing one
+        // moves it. That is the property "beat-locked" actually means.
+        app.update();
+        let stopped = app
+            .world_mut()
+            .query_filtered::<&Transform, With<GroupState>>()
+            .iter(app.world())
+            .next()
+            .copied()
+            .expect("the root group has a Transform");
+
+        {
+            let mut time = app.world_mut().resource_mut::<Time<Transport>>();
+            time.transport_mut().state = TransportState::Playing;
+            time.advance_by(core::time::Duration::from_secs_f64(1.0));
+        }
+        app.update();
+
+        let playing = app
+            .world_mut()
+            .query_filtered::<&Transform, With<GroupState>>()
+            .iter(app.world())
+            .next()
+            .copied()
+            .expect("the root group has a Transform");
+
+        assert_ne!(
+            stopped.rotation, playing.rotation,
+            "a beat of transport must turn the group"
+        );
+        assert_eq!(
+            app.world_mut().query::<&SyncLfoState>().iter(app.world()).count(),
+            1,
+            "the demo drives rotation from the tempo-synced LFO"
+        );
     }
 }

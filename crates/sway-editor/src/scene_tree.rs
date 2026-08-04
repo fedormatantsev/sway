@@ -308,7 +308,7 @@ mod tests {
     }
 
     fn tree(rows: Vec<TreeRow>) -> WorldSnapshot {
-        WorldSnapshot { tree: rows, nodes: Vec::new(), edges: Vec::new() }
+        WorldSnapshot { tree: rows, ..Default::default() }
     }
 
     fn harness_with(snap: WorldSnapshot) -> TestHarness<SceneTree> {

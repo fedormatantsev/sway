@@ -1,7 +1,7 @@
 # Sway — Design
 
 **Date:** 2026-07-25
-**Status:** In implementation — M0, M1, M1b, M2a, M2b, M2c complete; M3 next
+**Status:** In implementation — M0, M1, M1b, M2a, M2b, M2c, M3 complete; M4 next
 **Revision:** graph engine builds on Bevy's non-rendering subcrates (§2.2–§2.7, §3)
 **Revision:** scene composition is expressed in the graph, Houdini/USD-shaped (§2.10)
 **Revision (2026-08-02):** §5 and §7 reconciled against what was actually built.
@@ -843,8 +843,8 @@ nothing real.
 Sizes are relative, not calendar. Ordering follows two rules: get one end-to-end
 path working before deepening any layer, and pull genuinely unknown work early.
 
-**Status at 2026-08-03.** M0, M1, M1b, M2a, M2b and M2c are complete and on
-`main`; M3 is next. The unified-edges migration
+**Status at 2026-08-04.** M0, M1, M1b, M2a, M2b, M2c and M3 are complete on
+the M3 branch; M4 is next. The unified-edges migration
 (`reports/2026-08-03-unified-edges-findings.md`) is also complete — done ahead
 of M3 because it is M4's opening work: one `Edge`, one arena, one compiled
 order, replacing the three-edge-kind model and five node-declaration
@@ -997,24 +997,25 @@ positions do not persist (M4 serializes them, M7 writes them back), and node
 display names are shortened from `type_name` until M4's registered short names
 replace the shortening outright.
 
-### M3 — Transport and beat lock (M) — **next**
+### M3 — Transport and beat lock (M) — **complete**
 
 MIDI clock ingestion at 24 ppqn, drift-corrected phase estimator,
 start/stop/continue, tempo tracking. Transport-aware nodes: tempo-synced LFO,
 beat-quantised trigger, bar/beat/16th time base.
 
-**M2a's throwaway MIDI epoch bridge is M3's problem, and it should be replaced
-rather than patched.** It samples the mach-versus-`Time<Fixed>` offset once at
-first drain and never corrects drift, which is the same clock-alignment question
-the phase estimator exists to answer — one clock discipline, not two.
+*Outcome* (`reports/2026-08-04-m3-transport-findings.md`): a 48-pulse
+least-squares estimator follows the recorded 120→90 BPM change to within ±1 BPM
+in 1.167 s, freewheels a one-second dropout by 1.9996 beats, and re-locks
+without a tested position discontinuity. `Time<Transport>` keeps its monotone
+clock while Start/Song Position move the musical origin; the editor reads the
+same clock in a fixed 24-pixel transport strip; and the demo graph uses
+`SyncLfo` and bar phase rather than wall time.
 
-M2c's panes are the debugging surface this milestone was sequenced to have. A
-transport readout was deliberately left out of M2c, because inventing the
-display before the thing it displays is backwards; M3 adds it, as a fourth
-consumer of the same snapshot.
-
-*Exit:* visuals stay locked through recorded traces containing tempo changes and
-clock dropouts.
+*Carried forward:* `Events<Beat>` still has no consumer, and Start/Song Position
+arriving mid-tick quantize musical zero to the tick boundary (under 9 ms at
+120 Hz). MIDI sources without individual hardware timestamps can also lock
+stably to frame-rate-derived BPM when multiple clock pulses collapse in one
+frame (for example, 30 fps → 75 BPM for a 120-BPM clock).
 
 ### M4 — Project format and hot reload (M)
 
@@ -1213,17 +1214,17 @@ Spout. Timeline sequencing.
   Displace.amount`, outputting `Grid`'s cooked point count as a signal, is
   expressible, because the edges order it rather than a global phase.
 
-- **Fixed tick rate value** is unchosen, and M2b's measurements did not choose
-  it. The mechanism is settled (`Time::<Fixed>::from_hz`). The data so far: the
-  demo graph's `graph_tick` costs 624 ns with the gate closed and 13.07 µs with
-  two CPU cooks open, or 0.16% of a 120 Hz budget at worst. That is one 48×48
-  grid with no renderer, no live MIDI callback and no M5 residency traffic — not
-  the graph the number should be chosen against. Two measurement rules earned
-  the hard way and worth keeping: **time `graph_tick` directly**, because an
-  `App::update()` fixture floor of ~40 µs dwarfs the signal, and **run with
-  `--test-threads=1`**, because parallel test execution inflates timings by up
-  to 40%. M2a's 2.226 µs/tick figure is not comparable to either and should not
-  be cited.
+- **Fixed tick rate value** is **120 Hz** in the M3 transport implementation.
+  M3 added a transport-advance path every fixed tick and an estimator refit on
+  every accepted MIDI clock pulse, but took **no new direct timing measurement**
+  of either `graph_tick` or estimator cost with `--test-threads=1`. The earlier
+  M2b figures (624 ns gate closed; 13.07 µs with two CPU cooks) are not a
+  transport measurement and do not establish the rate's margin under renderer,
+  live MIDI callback, or M5 residency load. Keep the measurement rules:
+  **time `graph_tick` directly**, because an `App::update()` fixture floor of
+  ~40 µs dwarfs the signal, and **run with `--test-threads=1`**, because
+  parallel test execution inflates timings by up to 40%. M2a's 2.226 µs/tick
+  figure is not comparable and should not be cited.
 - ~~**Reflect's ergonomics under a real node set**~~ — resolved for params,
   ports and slots by M2a and M2b. Nothing resisted `Reflect`: `Event<T>` and
   `Slot<T>` both derive it with a `PhantomData<fn() -> T>` field

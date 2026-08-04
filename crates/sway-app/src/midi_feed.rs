@@ -1,12 +1,21 @@
 //! MIDI ingress: the CoreMIDI channel into the graph's timestamped inbox.
 //!
-//! Moved out of the throwaway `bridge.rs` at M2b unchanged — this is ingress,
-//! not the temporary cube graph (design §9). M2a's open finding travels with
-//! it: the epoch is sampled at first drain, and long-session mach-versus-fixed
-//! drift is uncorrected. That is M3's, with the transport.
+//! One clock discipline, not two (parent §5, M3). CoreMIDI stamps packets in
+//! mach-absolute time; the graph reasons in `Time<Fixed>::elapsed`. M2a
+//! sampled the offset between them once and never corrected it, which drifts
+//! monotonically: `Time<Fixed>` lags real time by up to one timestep normally
+//! and by an unbounded amount whenever `max_delta` drops ticks, so a fixed
+//! epoch maps arrivals ever further into the future until the lookahead guard
+//! collapses them all to "now" and sub-tick precision is gone.
+//!
+//! The sample `host_now - fixed_elapsed` is never *below* the true offset —
+//! it overshoots by however far into the current timestep the drain landed.
+//! One-sided noise means the estimator is the minimum over a sliding window,
+//! not the mean.
 
 use bevy::prelude::*;
 use crossbeam_channel::Receiver;
+use std::collections::VecDeque;
 use sway_midi::MidiEvent;
 use sway_nodes::{MidiInbox, RawMidi};
 
@@ -14,37 +23,91 @@ use sway_nodes::{MidiInbox, RawMidi};
 #[derive(Resource)]
 pub struct MidiRx(pub Receiver<MidiEvent>);
 
-/// Offset from mach-absolute seconds to the graph's fixed-clock epoch.
-#[derive(Resource, Default)]
-pub struct MidiTimeEpoch(Option<f64>);
+/// How many drains the offset estimate spans. At 60 fps this is about four
+/// seconds — long enough to see past a timestep of sampling noise, short
+/// enough to follow real drift.
+pub const OFFSET_WINDOW: usize = 240;
+
+/// How far ahead of the current tick a timestamp may sit. DAWs legitimately
+/// stamp ahead of the playhead; anything beyond this is clamped rather than
+/// collapsed to now, so ordering survives.
+pub const MAX_LOOKAHEAD: f64 = 0.5;
+
+/// Tracks the mach-to-fixed offset, and the last timestamp handed to the
+/// inbox so a moving offset can never reorder two arrivals.
+#[derive(Resource)]
+pub struct MidiClockOffset {
+    samples: VecDeque<f64>,
+    last_enqueued: f64,
+}
+
+impl Default for MidiClockOffset {
+    fn default() -> Self {
+        Self {
+            samples: VecDeque::with_capacity(OFFSET_WINDOW),
+            last_enqueued: f64::NEG_INFINITY,
+        }
+    }
+}
+
+impl MidiClockOffset {
+    /// Records one `host_now - fixed_elapsed` sample and returns the current
+    /// offset estimate: the minimum over the window.
+    pub fn observe(&mut self, sample: f64) -> f64 {
+        if self.samples.len() == OFFSET_WINDOW {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(sample);
+        self.samples
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min)
+    }
+}
+
+/// Maps one CoreMIDI host timestamp onto the graph's fixed timeline.
+///
+/// Pure, so the drift and ordering properties are testable without a mach
+/// clock. `last_enqueued` is the floor: the offset moves between drains, and
+/// two arrivals must never come out in the opposite order.
+pub fn map_timestamp(host_secs: f64, offset: f64, elapsed: f64, last_enqueued: f64) -> f64 {
+    let t = host_secs - offset;
+    let upper = elapsed + MAX_LOOKAHEAD;
+    // `f64::clamp` panics if either bound is NaN or if the bounds cross.
+    // Both happen in practice: a NaN `elapsed` (an upstream NaN period) makes
+    // `upper` NaN, and a rewound `Time<Fixed>` can put `last_enqueued` ahead
+    // of `upper`. `max`/`min` never panic and ignore NaN operands (returning
+    // the other one), so this chain degrades to "keep the floor" instead of
+    // aborting the tick. `last_enqueued > upper` still means `.min(upper)`
+    // pulls the value down, so the trailing `.max(last_enqueued)` is what
+    // makes the floor win in that case too.
+    t.max(last_enqueued).min(upper).max(last_enqueued)
+}
 
 /// Moves every CoreMIDI callback event into the graph's timestamped inbox.
 pub fn feed_midi(
     rx: Res<MidiRx>,
     time: Res<Time<Fixed>>,
-    mut epoch: ResMut<MidiTimeEpoch>,
+    mut clock: ResMut<MidiClockOffset>,
     mut inbox: ResMut<MidiInbox>,
 ) {
     let elapsed = time.elapsed_secs_f64();
+    let sample = sway_midi::host_time_to_secs(sway_midi::host_time_now()) - elapsed;
+    let offset = clock.observe(sample);
+
     while let Ok(event) = rx.0.try_recv() {
-        let epoch = *epoch.0.get_or_insert_with(|| {
-            sway_midi::host_time_to_secs(sway_midi::host_time_now()) - elapsed
-        });
-        // DAWs (Ableton) often stamp packets ahead of the audio playhead. A
-        // zero stamp means "now". Pathological far-future stamps would sit in
-        // the inbox forever; clamp those to the current fixed elapsed time.
-        let mut t = if event.host_time == 0 {
-            elapsed
+        // A zero stamp means "now" — some senders do not stamp at all.
+        let t = if event.host_time == 0 {
+            elapsed.max(clock.last_enqueued)
         } else {
-            sway_midi::host_time_to_secs(event.host_time) - epoch
+            map_timestamp(
+                sway_midi::host_time_to_secs(event.host_time),
+                offset,
+                elapsed,
+                clock.last_enqueued,
+            )
         };
-        if t > elapsed + 0.5 {
-            t = elapsed;
-        }
-        eprintln!(
-            "midi in: status=0x{:02X} data1={} data2={} t={t:.4} elapsed={elapsed:.4}",
-            event.status, event.data1, event.data2
-        );
+        clock.last_enqueued = t;
         inbox.push(
             t,
             RawMidi {
@@ -62,40 +125,6 @@ mod tests {
 
     use super::*;
     use sway_nodes::MidiInbox;
-
-    #[test]
-    fn host_time_near_now_maps_to_fixed_elapsed_time() {
-        let host_time = sway_midi::host_time_now();
-        let elapsed = 42.0;
-        // Pre-seed the epoch from the same stamp so the mapping is exact algebra,
-        // not a race between send-time and first-drain host_time_now() samples.
-        let epoch = sway_midi::host_time_to_secs(host_time) - elapsed;
-
-        let (tx, rx) = crossbeam_channel::unbounded();
-        tx.send(sway_midi::MidiEvent {
-            status: 0x90,
-            data1: 60,
-            data2: 100,
-            host_time,
-        })
-        .unwrap();
-
-        let mut fixed = Time::<Fixed>::from_hz(120.0);
-        fixed.advance_by(Duration::from_secs_f64(elapsed));
-        let mut app = App::new();
-        app.insert_resource(fixed)
-            .insert_resource(MidiRx(rx))
-            .insert_resource(MidiTimeEpoch(Some(epoch)))
-            .init_resource::<MidiInbox>()
-            .add_systems(PreUpdate, feed_midi);
-        app.update();
-
-        let mapped = app.world().resource::<MidiInbox>().events[0].0;
-        assert!(
-            (mapped - elapsed).abs() < 1e-9,
-            "near-now host timestamp mapped to {mapped}, expected fixed elapsed {elapsed}s"
-        );
-    }
 
     #[test]
     fn feed_midi_drains_every_event_into_the_inbox() {
@@ -118,7 +147,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(Time::<Fixed>::from_hz(120.0))
             .insert_resource(MidiRx(rx))
-            .init_resource::<MidiTimeEpoch>()
+            .init_resource::<MidiClockOffset>()
             .init_resource::<MidiInbox>()
             .add_systems(PreUpdate, feed_midi);
         app.update();
@@ -146,7 +175,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(fixed)
             .insert_resource(MidiRx(rx))
-            .init_resource::<MidiTimeEpoch>()
+            .init_resource::<MidiClockOffset>()
             .init_resource::<MidiInbox>()
             .add_systems(PreUpdate, feed_midi);
         app.update();
@@ -156,5 +185,125 @@ mod tests {
             (mapped - 7.0).abs() < 1e-9,
             "zero host_time must mean now; got {mapped}"
         );
+    }
+
+    #[test]
+    fn the_offset_is_the_minimum_of_the_window_not_the_mean() {
+        // `host_now - fixed_elapsed` is never below the true offset and
+        // overshoots by however far into the timestep the drain landed. The
+        // minimum recovers the truth from one-sided noise; the mean does not.
+        let mut clock = MidiClockOffset::default();
+        for sample in [1.0, 1.008, 1.003, 1.006, 1.001] {
+            clock.observe(sample);
+        }
+        assert!((clock.observe(1.004) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_offset_follows_a_drifting_fixed_clock() {
+        // The M2a bug: with a fixed epoch, an event arriving "now" maps
+        // further and further into the future as Time<Fixed> falls behind.
+        // Only samples inside the window may contribute.
+        let mut clock = MidiClockOffset::default();
+        for step in 0..(OFFSET_WINDOW * 2) {
+            clock.observe(1.0 + step as f64 * 0.001);
+        }
+        let offset = clock.observe(1.0 + (OFFSET_WINDOW * 2) as f64 * 0.001);
+        let stale = 1.0;
+        // DEVIATION (brief's test math): with OFFSET_WINDOW=240 and a
+        // 0.001/step increment, the window can carry at most (WINDOW + 1) *
+        // 0.001 ≈ 0.241 of drift above `stale` once it has fully rolled past
+        // the first sample — the brief's `stale + 0.5` threshold is above
+        // the maximum sample ever pushed (1.48) and can never be satisfied.
+        // 0.2 is the largest round margin the sliding window can actually
+        // demonstrate here, while still proving the stale sample (1.0) does
+        // not pin the offset.
+        assert!(
+            offset > stale + 0.2,
+            "a stale sample from before the window must not pin the offset: {offset}"
+        );
+    }
+
+    #[test]
+    fn a_now_event_maps_to_now_however_far_the_fixed_clock_has_drifted() {
+        let mut clock = MidiClockOffset::default();
+        // 10 seconds of drift accumulated at 1ms per drain.
+        for step in 0..OFFSET_WINDOW {
+            clock.observe(5.0 + step as f64 * 0.001);
+        }
+        let offset = clock.observe(5.0 + OFFSET_WINDOW as f64 * 0.001);
+        let elapsed = 100.0;
+        let host_secs = elapsed + offset; // an event arriving exactly now
+        let t = map_timestamp(host_secs, offset, elapsed, f64::NEG_INFINITY);
+        assert!((t - elapsed).abs() < 1e-9, "a now-event mapped to {t}, expected {elapsed}");
+    }
+
+    #[test]
+    fn a_falling_offset_never_reorders_the_inbox() {
+        // The offset moves between drains. Two events must never come out
+        // in the opposite order to the one they arrived in.
+        let first = map_timestamp(10.0, 1.0, 9.0, f64::NEG_INFINITY);
+        let second = map_timestamp(10.001, 1.5, 9.0, first);
+        assert!(second >= first, "{second} must not precede {first}");
+    }
+
+    #[test]
+    fn a_far_future_stamp_is_clamped_rather_than_collapsed_to_now() {
+        // DAWs stamp ahead of the playhead. Modest lookahead is honoured;
+        // a pathological stamp is clamped to the lookahead bound, which
+        // preserves ordering where the old "reset it to now" did not.
+        let elapsed = 4.0;
+        let t = map_timestamp(1000.0, 0.0, elapsed, f64::NEG_INFINITY);
+        assert!((t - (elapsed + MAX_LOOKAHEAD)).abs() < 1e-9, "got {t}");
+    }
+
+    #[test]
+    fn a_nan_elapsed_does_not_panic_and_holds_the_floor() {
+        // The tick is infallible: a NaN period upstream must not reach
+        // `f64::clamp`'s bounds and abort the tick. With `elapsed` NaN, the
+        // upper bound is undefined, so the floor (`last_enqueued`) wins.
+        let last_enqueued = 5.0;
+        let t = map_timestamp(1.0, 1.0, f64::NAN, last_enqueued);
+        assert!(!t.is_nan(), "got NaN instead of a sane fallback");
+        assert!((t - last_enqueued).abs() < 1e-12, "got {t}, expected the floor {last_enqueued}");
+    }
+
+    #[test]
+    fn crossed_bounds_from_a_rewound_clock_does_not_panic_and_holds_the_floor() {
+        // A rewound Time<Fixed> without a matching MidiClockOffset reset can
+        // put last_enqueued ahead of elapsed + MAX_LOOKAHEAD. The tick must
+        // still not panic, and ordering still demands the floor wins.
+        let last_enqueued = 1000.0;
+        let t = map_timestamp(10.0, 1.0, 0.0, last_enqueued);
+        assert!(
+            (t - last_enqueued).abs() < 1e-12,
+            "got {t}, expected the floor {last_enqueued}"
+        );
+    }
+
+    #[test]
+    fn a_clock_pulse_survives_the_bridge_with_its_status_intact() {
+        // Task 1 made clock reachable; nothing between the callback and the
+        // inbox may filter it out.
+        let (tx, rx) = crossbeam_channel::unbounded();
+        tx.send(sway_midi::MidiEvent {
+            status: sway_midi::CLOCK,
+            data1: 0,
+            data2: 0,
+            host_time: 0,
+        })
+        .unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(Time::<Fixed>::from_hz(120.0))
+            .insert_resource(MidiRx(rx))
+            .init_resource::<MidiClockOffset>()
+            .init_resource::<MidiInbox>()
+            .add_systems(PreUpdate, feed_midi);
+        app.update();
+
+        let inbox = app.world().resource::<MidiInbox>();
+        assert_eq!(inbox.events.len(), 1);
+        assert_eq!(inbox.events[0].1.status, sway_midi::CLOCK);
     }
 }

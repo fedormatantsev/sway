@@ -2,6 +2,7 @@
 //! high-priority thread, so the only thing done there is a channel send.
 
 use crate::ffi::*;
+use crate::parser::StreamParser;
 use crossbeam_channel::Sender;
 use std::ffi::c_void;
 
@@ -55,30 +56,18 @@ pub(crate) extern "C" fn read_proc(
             let len = ((*pkt).length as usize).min(256);
             let data = std::slice::from_raw_parts((&raw const (*pkt).data) as *const u8, len);
             let host_time = (*pkt).time_stamp;
-            // NOTE: this assumes every message in the stream is exactly three
-            // bytes (note on/off, control change, pitch bend, etc). Real MIDI
-            // streams also carry one-byte System Real-Time messages (clock,
-            // start/stop/continue), two-byte messages (Program Change,
-            // Channel Pressure), and running status (repeated status bytes
-            // omitted). Those are currently skipped or misparsed by this
-            // fixed stride. Acceptable for M0, which only needs note-on; the
-            // transport milestone (M3) needs a real byte-stream parser here.
-            let mut i = 0;
-            while i + 2 < len {
-                let status = data[i];
-                if status & 0x80 != 0 {
+            // One parser per packet: CoreMIDI packets hold complete messages,
+            // and connection-scoped state would let the hardware port and the
+            // virtual destination corrupt each other's running status.
+            let mut parser = StreamParser::new();
+            for &byte in data {
+                if let Some((status, data1, data2)) = parser.push(byte) {
                     // NOTE: `send` on an unbounded channel can allocate (to
                     // grow the internal buffer) and this runs on CoreMIDI's
                     // high-priority real-time thread (see module doc).
-                    // Acceptable for M0; revisit if this ever causes glitches.
-                    let _ = tx.send(MidiEvent {
-                        status,
-                        data1: data[i + 1],
-                        data2: data[i + 2],
-                        host_time,
-                    });
+                    // Acceptable through M3; revisit if this ever glitches.
+                    let _ = tx.send(MidiEvent { status, data1, data2, host_time });
                 }
-                i += 3;
             }
             pkt = next_packet(pkt);
         }

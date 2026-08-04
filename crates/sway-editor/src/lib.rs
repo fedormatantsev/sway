@@ -14,6 +14,7 @@ pub mod external;
 pub mod node_box;
 pub mod scene_tree;
 pub mod snapshot;
+pub mod transport_bar;
 
 #[cfg(test)]
 mod test_graph;
@@ -41,6 +42,7 @@ use crate::canvas::GraphCanvas;
 use crate::external::ViewportPlaceholder;
 use crate::scene_tree::SceneTree;
 use crate::snapshot::WorldSnapshot;
+use crate::transport_bar::{TRANSPORT_BAR_HEIGHT, TransportBar};
 
 /// Reaches the hierarchy pane from `EditorUi::apply_snapshot`.
 pub const SCENE_TREE_TAG: WidgetTag<SceneTree> = WidgetTag::named("sway-scene-tree");
@@ -54,16 +56,21 @@ pub const GRAPH_CANVAS_TAG: WidgetTag<GraphCanvas> = WidgetTag::named("sway-grap
 /// shipped with through Task 7) is wrong for any `External` widget nested
 /// under an offsetting ancestor, which the graph canvas's own `Split` is.
 pub const VIEWPORT_TAG: WidgetTag<ViewportPlaceholder> = WidgetTag::named("sway-viewport");
+/// Reaches the transport readout from `EditorUi::apply_snapshot`.
+pub const TRANSPORT_BAR_TAG: WidgetTag<TransportBar> = WidgetTag::named("sway-transport-bar");
 
-/// Builds the root widget: three panes, split twice.
+/// Builds the root widget: a transport strip above three panes, split three
+/// times.
 ///
 /// ```text
-/// +--------+------------------------------+
-/// | SCENE  |      bevy viewport           |
-/// |        |                              |
-/// | v root +------------------------------+
-/// |  v rig |  graph canvas (pan/zoom)     |
-/// +--------+------------------------------+
+/// +-------------------------------------------+
+/// |              transport bar                 |
+/// +--------+------------------------------------+
+/// | SCENE  |      bevy viewport                 |
+/// |        |                                    |
+/// | v root +------------------------------------+
+/// |  v rig |  graph canvas (pan/zoom)           |
+/// +--------+------------------------------------+
 /// ```
 ///
 /// The Bevy viewport is a sibling of the graph canvas now, not a child of it
@@ -71,7 +78,7 @@ pub const VIEWPORT_TAG: WidgetTag<ViewportPlaceholder> = WidgetTag::named("sway-
 /// which reads it directly off the tagged widget's own state -- see that
 /// method's doc comment for why.
 ///
-/// All three content panes carry a `WidgetTag` so `apply_snapshot` and
+/// All four content widgets carry a `WidgetTag` so `apply_snapshot` and
 /// `viewport_rect` can reach them typed, without downcasting through the
 /// `Split`s.
 fn graph_root() -> NewWidget<dyn Widget> {
@@ -89,10 +96,19 @@ fn graph_root() -> NewWidget<dyn Widget> {
         .solid_bar(true)
         .prepare();
 
-    Split::new(tree, right)
+    let panes = Split::new(tree, right)
         .split_axis(Axis::Horizontal)
         .split_point_from_start(260.0.px())
         .draggable(true)
+        .solid_bar(true)
+        .prepare();
+
+    let bar = TransportBar::new().prepare().with_tag(TRANSPORT_BAR_TAG);
+
+    Split::new(bar, panes)
+        .split_axis(Axis::Vertical)
+        .split_point_from_start(TRANSPORT_BAR_HEIGHT.px())
+        .draggable(false)
         .solid_bar(true)
         .prepare()
         .erased()
@@ -214,6 +230,9 @@ impl EditorUi {
         });
         self.root.edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
             GraphCanvas::apply_snapshot(&mut canvas, snap);
+        });
+        self.root.edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
+            TransportBar::apply_snapshot(&mut bar, snap);
         });
     }
 
@@ -413,7 +432,7 @@ mod tests {
                 inlets: Vec::new(),
                 outlets: 0,
             }],
-            edges: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -471,5 +490,9 @@ mod tests {
         // right, not at the window origin.
         assert!(rect.x0 >= 260.0, "viewport rect {rect:?} must sit right of the tree pane");
         assert!(rect.width() > 0.0 && rect.height() > 0.0, "viewport rect {rect:?} must have real area");
+        assert!(
+            rect.y0 >= crate::transport_bar::TRANSPORT_BAR_HEIGHT,
+            "viewport rect {rect:?} must sit below the transport strip"
+        );
     }
 }

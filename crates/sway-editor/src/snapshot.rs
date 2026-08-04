@@ -18,7 +18,7 @@ use bevy_transform::components::Transform;
 use kurbo::Point;
 use sway_graph::{
     CompiledGraph, Edge, EdgeFrom, EdgeTo, EditorPos, FieldKind, GraphNode, NodeId, NodePlan,
-    NodeTypeRegistry, PortArena,
+    NodeTypeRegistry, PortArena, TransportTime,
 };
 
 /// What an edge carries, derived from the type of the inlet it lands on.
@@ -83,6 +83,32 @@ pub struct WorldSnapshot {
     pub tree: Vec<TreeRow>,
     pub nodes: Vec<NodeView>,
     pub edges: Vec<EdgeView>,
+    pub transport: TransportView,
+}
+
+/// The transport, as the status strip needs it. Strings and plain numbers,
+/// not the clock itself: the widget layer should not have to know what a
+/// `MusicalTime` is.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct TransportView {
+    pub playing: bool,
+    pub bpm: f32,
+    /// `bar.beat.sixteenth`, already formatted.
+    pub position: String,
+    /// Whether the phase estimator has a lock. Freewheeling still plays.
+    pub locked: bool,
+}
+
+fn capture_transport(world: &World) -> TransportView {
+    let Some(time) = world.get_resource::<bevy_time::Time<sway_graph::Transport>>() else {
+        return TransportView::default();
+    };
+    TransportView {
+        playing: time.is_playing(),
+        bpm: time.bpm() as f32,
+        position: time.position().to_string(),
+        locked: time.transport().locked,
+    }
 }
 
 /// Which section of the tree pane a row belongs to.
@@ -157,7 +183,8 @@ pub fn capture(world: &World) -> WorldSnapshot {
     let nodes = capture_nodes(world);
     let edges = capture_edges(world);
     let tree = capture_tree(world);
-    WorldSnapshot { tree, nodes, edges }
+    let transport = capture_transport(world);
+    WorldSnapshot { tree, nodes, edges, transport }
 }
 
 /// Node order: the compiled topological order when a `CompiledGraph` exists,
@@ -611,6 +638,38 @@ mod tests {
 
         let snap = capture(app.world());
         assert_eq!(rows_of(&snap, TreeGroup::Edges).len(), 1);
+    }
+
+    #[test]
+    fn the_snapshot_carries_the_transport_readout() {
+        use bevy_time::Time;
+        use sway_graph::{Transport, TransportTime};
+
+        let mut app = app();
+        {
+            let mut time = app.world_mut().resource_mut::<Time<Transport>>();
+            time.transport_mut().state = sway_graph::TransportState::Playing;
+            time.transport_mut().secs_per_beat = 60.0 / 128.0;
+            time.transport_mut().locked = true;
+            time.advance_by(core::time::Duration::from_secs_f64(17.5));
+            time.reposition(17.5);
+        }
+
+        let snap = capture(app.world());
+
+        assert!(snap.transport.playing);
+        assert!(snap.transport.locked);
+        assert!((snap.transport.bpm - 128.0).abs() < 0.01);
+        assert_eq!(snap.transport.position, "005.2.3");
+    }
+
+    #[test]
+    fn a_world_with_no_transport_clock_still_captures() {
+        // `capture` degrades rather than panicking (design §2.11), and a
+        // world built before `GraphPlugin` ran is exactly that case.
+        let world = bevy_ecs::world::World::new();
+        let snap = capture(&world);
+        assert!(!snap.transport.playing);
     }
 
     #[test]

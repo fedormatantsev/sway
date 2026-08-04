@@ -1,3 +1,4 @@
+mod beat;
 mod envelope;
 mod lfo;
 mod material;
@@ -5,7 +6,9 @@ mod math;
 mod mesh;
 mod midi;
 mod scene;
+mod transport;
 
+pub use beat::*;
 pub use envelope::*;
 pub use lfo::*;
 pub use material::*;
@@ -13,6 +16,7 @@ pub use math::*;
 pub use mesh::*;
 pub use midi::*;
 pub use scene::*;
+pub use transport::*;
 
 /// Registers the M2b scene node set.
 pub struct SceneNodesPlugin;
@@ -57,5 +61,6 @@ mod tests {
         assert_eq!(Waveform::default(), Waveform::Sine);
         assert_eq!(MathOp::default(), MathOp::Add);
         assert_eq!(NoteField::default(), NoteField::Note);
+        assert_eq!(Division::default(), Division::Beat);
     }
 }
