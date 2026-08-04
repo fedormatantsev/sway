@@ -10,16 +10,76 @@ use sway_graph::{
     NodeId, NodeType, NodeTypeRegistry, PortArena,
 };
 use sway_nodes::{
-    Envelope, EnvelopeInlets, EnvelopeState, LFO, LfoInlets, LfoState, Math, MathInlets, MathOp,
-    MathState, MidiCC, MidiCCInlets, MidiCCState, MidiInbox, MidiNote, MidiNoteInlets,
-    MidiNoteState, NoteMsg, RawMidi, Remap, RemapInlets, RemapState, SignalNodesPlugin, Waveform,
+    Beat, BeatTrigger, BeatTriggerInlets, BeatTriggerState, Division, Envelope, EnvelopeInlets,
+    EnvelopeState, LFO, LfoInlets, LfoState, Math, MathInlets, MathOp, MathState, MidiCC,
+    MidiCCInlets, MidiCCState, MidiInbox, MidiNote, MidiNoteInlets, MidiNoteState, NoteMsg,
+    RawMidi, Remap, RemapInlets, RemapState, SignalNodesPlugin, TransportTimeInlets,
+    TransportTimeNode, TransportTimeState, Waveform,
 };
 
 #[derive(Debug, Deserialize)]
 struct TraceInput {
     tick_hz: f64,
     ticks: u32,
+    #[serde(default)]
     events: Vec<(f64, MidiEvent)>,
+    /// A synthesised 24 ppqn clock train. Generated rather than written out:
+    /// ten seconds at 120 BPM is 480 pulses, and a generator can carry
+    /// deterministic jitter where a hand-written list cannot.
+    #[serde(default)]
+    clock: Option<ClockSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClockSpec {
+    /// When the first pulse arrives.
+    start: f64,
+    /// `(bpm, beats)` segments, played back to back.
+    segments: Vec<(f64, f64)>,
+    /// Peak arrival jitter, in seconds. Deterministic — see `Lcg`.
+    #[serde(default)]
+    jitter: f64,
+    /// `(from, to)` in seconds: pulses inside this window are dropped.
+    #[serde(default)]
+    dropout: Option<(f64, f64)>,
+}
+
+/// A deterministic jitter source. `rand` is not an option: a golden trace
+/// that is not reproducible is not a golden trace.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next_signed(&mut self, magnitude: f64) -> f64 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let unit = (self.0 >> 11) as f64 / (1u64 << 53) as f64;
+        (unit * 2.0 - 1.0) * magnitude
+    }
+}
+
+/// Expands a `ClockSpec` into timestamped clock messages.
+fn clock_events(spec: &ClockSpec) -> Vec<(f64, RawMidi)> {
+    let mut lcg = Lcg(0xC10C_C10C);
+    let mut out = Vec::new();
+    let mut t = spec.start;
+    for &(bpm, beats) in &spec.segments {
+        let secs_per_pulse = (60.0 / bpm) / 24.0;
+        for _ in 0..((beats * 24.0).round() as usize) {
+            let dropped = spec
+                .dropout
+                .is_some_and(|(from, to)| t >= from && t < to);
+            if !dropped {
+                out.push((
+                    t + lcg.next_signed(spec.jitter),
+                    RawMidi { status: sway_midi::CLOCK, data1: 0, data2: 0 },
+                ));
+            }
+            t += secs_per_pulse;
+        }
+    }
+    // Jitter can reorder two adjacent pulses; the inbox is drained in
+    // arrival order, so sort here rather than relying on the generator.
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +105,8 @@ enum Snapshot {
 enum PortKindSpec {
     Continuous(u16),
     NoteEvents(u16, &'static str),
+    /// A `BeatTrigger`'s pulse outlet.
+    BeatEvents(u16),
 }
 
 struct TracedPort {
@@ -352,6 +414,66 @@ fn build_event_fan_in(app: &mut App) -> Vec<TracedPort> {
     ]
 }
 
+fn spawn_transport_time(app: &mut App, id: u32) -> Entity {
+    let node_type = node_type_id::<TransportTimeNode>(app);
+    app.world_mut()
+        .spawn((
+            GraphNode { id: NodeId(id), node_type },
+            TransportTimeInlets::default(),
+            TransportTimeState,
+        ))
+        .id()
+}
+
+/// Every transport trace watches the same three ports: what the estimator
+/// thinks the tempo is, where the playhead is, and whether it is running.
+fn transport_ports(node: Entity) -> Vec<TracedPort> {
+    vec![
+        TracedPort {
+            label: "transport.bpm",
+            node,
+            kind: PortKindSpec::Continuous(TransportTimeNode::OUT_BPM),
+        },
+        TracedPort {
+            label: "transport.beats",
+            node,
+            kind: PortKindSpec::Continuous(TransportTimeNode::OUT_BEATS),
+        },
+        TracedPort {
+            label: "transport.playing",
+            node,
+            kind: PortKindSpec::Continuous(TransportTimeNode::OUT_PLAYING),
+        },
+    ]
+}
+
+fn build_transport_readout(app: &mut App) -> Vec<TracedPort> {
+    let node = spawn_transport_time(app, 0);
+    compile_graph(app);
+    transport_ports(node)
+}
+
+fn build_beat_trigger(app: &mut App) -> Vec<TracedPort> {
+    let time = spawn_transport_time(app, 0);
+    let trigger_type = node_type_id::<BeatTrigger>(app);
+    let trigger = app
+        .world_mut()
+        .spawn((
+            GraphNode { id: NodeId(1), node_type: trigger_type },
+            BeatTriggerInlets { division: Division::Beat },
+            BeatTriggerState::default(),
+        ))
+        .id();
+    compile_graph(app);
+    let mut ports = transport_ports(time);
+    ports.push(TracedPort {
+        label: "beat.pulse",
+        node: trigger,
+        kind: PortKindSpec::BeatEvents(BeatTrigger::OUT_PULSE),
+    });
+    ports
+}
+
 fn snapshot_port(app: &App, port: &TracedPort) -> Snapshot {
     let compiled = app.world().resource::<CompiledGraph>();
     let plan = compiled
@@ -400,6 +522,26 @@ fn snapshot_port(app: &App, port: &TracedPort) -> Snapshot {
             events.sort_by(|a, b| a.0.total_cmp(&b.0));
             Snapshot::Events(events)
         }
+        PortKindSpec::BeatEvents(ordinal) => {
+            let slot = plan.base + plan.field_offsets[ordinal as usize];
+            let mut events: Vec<(f32, String)> = arena.values[slot]
+                .try_downcast_ref::<Events<Beat>>()
+                .expect("traced beat port is Events<Beat>")
+                .occurrences
+                .iter()
+                .map(|occurrence| {
+                    (
+                        occurrence.offset,
+                        format!(
+                            "beat({},{},{})",
+                            occurrence.value.bar, occurrence.value.beat, occurrence.value.sixteenth
+                        ),
+                    )
+                })
+                .collect();
+            events.sort_by(|a, b| a.0.total_cmp(&b.0));
+            Snapshot::Events(events)
+        }
     }
 }
 
@@ -419,6 +561,10 @@ fn run_trace(name: &str) -> TraceOutput {
         "chain-math-remap" => build_chain_math_remap(&mut app),
         "two-notes-one-tick" => build_two_notes_one_tick(&mut app),
         "event-fan-in" => build_event_fan_in(&mut app),
+        "transport-lock" | "transport-tempo-change" | "transport-dropout" => {
+            build_transport_readout(&mut app)
+        }
+        "beat-trigger" => build_beat_trigger(&mut app),
         _ => panic!("unknown trace case `{name}`"),
     };
     for (time, message) in input.events {
@@ -430,6 +576,11 @@ fn run_trace(name: &str) -> TraceOutput {
                 data2: message.data2,
             },
         );
+    }
+    if let Some(spec) = &input.clock {
+        for (time, message) in clock_events(spec) {
+            app.world_mut().resource_mut::<MidiInbox>().push(time, message);
+        }
     }
 
     let ticks = (0..input.ticks)
@@ -535,5 +686,39 @@ fn event_fan_in() {
 fn the_same_trace_twice_is_bit_identical() {
     let a = run_trace("envelope-retrigger");
     let b = run_trace("envelope-retrigger");
+    assert_eq!(a, b);
+}
+
+#[test]
+fn transport_lock() {
+    let actual = run_trace("transport-lock");
+    assert_or_bless("transport-lock", &actual);
+}
+
+#[test]
+fn transport_tempo_change() {
+    let actual = run_trace("transport-tempo-change");
+    assert_or_bless("transport-tempo-change", &actual);
+}
+
+#[test]
+fn transport_dropout() {
+    let actual = run_trace("transport-dropout");
+    assert_or_bless("transport-dropout", &actual);
+}
+
+#[test]
+fn beat_trigger() {
+    let actual = run_trace("beat-trigger");
+    assert_or_bless("beat-trigger", &actual);
+}
+
+#[test]
+fn a_transport_trace_replays_bit_identically() {
+    // The exactness claim of parent §2.6, now covering the clock path: the
+    // estimator, the offset tracker and the boundary search are all pure
+    // functions of the tick sequence.
+    let a = run_trace("transport-dropout");
+    let b = run_trace("transport-dropout");
     assert_eq!(a, b);
 }
