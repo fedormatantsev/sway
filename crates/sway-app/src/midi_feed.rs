@@ -41,10 +41,6 @@ pub fn feed_midi(
         if t > elapsed + 0.5 {
             t = elapsed;
         }
-        eprintln!(
-            "midi in: status=0x{:02X} data1={} data2={} t={t:.4} elapsed={elapsed:.4}",
-            event.status, event.data1, event.data2
-        );
         inbox.push(
             t,
             RawMidi {

@@ -4,7 +4,10 @@ pub mod ffi;
 
 pub mod input;
 
+pub mod parser;
+
 pub use input::{MidiEvent, MidiInput, VIRTUAL_DESTINATION_NAME, open_input};
+pub use parser::{CLOCK, CONTINUE, SONG_POSITION, START, STOP, StreamParser};
 
 /// Returns the current mach absolute host time in CoreMIDI's timestamp units.
 pub fn host_time_now() -> u64 {
@@ -143,6 +146,48 @@ mod tests {
             (0x90, 64, 80, 222)
         );
         assert!(rx.try_recv().is_err(), "exactly two events expected");
+    }
+
+    /// A one-byte clock packet. The alignment-sensitive `next_packet` walk
+    /// and the parser have to agree about a packet whose length is 1, which
+    /// is the shape every MIDI clock pulse arrives in.
+    #[test]
+    fn read_proc_delivers_a_one_byte_clock_packet() {
+        let (tx, rx) = crossbeam_channel::unbounded::<MidiEvent>();
+        let tx = Box::new(tx);
+        let mut buf_u32 = vec![0u32; 1024];
+        let buf = unsafe {
+            std::slice::from_raw_parts_mut(buf_u32.as_mut_ptr() as *mut u8, buf_u32.len() * 4)
+        };
+        // SAFETY: same construction as `read_proc_parses_multiple_packets`.
+        unsafe {
+            let list = buf.as_mut_ptr() as *mut MIDIPacketList;
+            (*list).num_packets = 2;
+
+            let p1 = (&raw mut (*list).packet) as *mut MIDIPacket;
+            (*p1).time_stamp = 10;
+            (*p1).length = 1;
+            (*p1).data[0] = crate::parser::CLOCK;
+
+            let p2 = crate::input::next_packet(p1) as *mut MIDIPacket;
+            (*p2).time_stamp = 20;
+            (*p2).length = 3;
+            (*p2).data[0] = 0x90;
+            (*p2).data[1] = 60;
+            (*p2).data[2] = 100;
+
+            crate::input::read_proc(
+                list,
+                (&*tx) as *const crossbeam_channel::Sender<MidiEvent> as *mut c_void,
+                std::ptr::null_mut(),
+            );
+        }
+
+        let clock = rx.try_recv().expect("the clock packet must arrive");
+        assert_eq!((clock.status, clock.host_time), (crate::parser::CLOCK, 10));
+        let note = rx.try_recv().expect("the note packet must arrive");
+        assert_eq!((note.status, note.data1, note.data2), (0x90, 60, 100));
+        assert!(rx.try_recv().is_err());
     }
 
     /// Opens an input with a filter that matches no source (or every source,
