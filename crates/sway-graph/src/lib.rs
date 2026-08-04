@@ -8,6 +8,7 @@ pub mod schema;
 #[cfg(test)]
 pub(crate) mod test_nodes;
 pub mod tick;
+pub mod transport;
 pub mod view;
 
 pub use compile::{ClearFn, CompileError, CompiledGraph, NodePlan, compile};
@@ -22,4 +23,5 @@ pub use schema::{
     ReflectEventList, ReflectProduct, SchemaError,
 };
 pub use tick::{GraphPlugin, GraphTickCount, graph_tick};
+pub use transport::{MusicalTime, Transport, TransportState, TransportTime};
 pub use view::{PortView, TickCtx};
