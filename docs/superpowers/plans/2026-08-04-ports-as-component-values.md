@@ -4,7 +4,7 @@
 
 **Goal:** Remove `FieldKind`, `EdgeKind`, `Product`, `Spatial`, and `PortArena` so port values live on `Inlets`/`Outlets` components, hierarchy uses plain `Entity` fields, and buffer flow uses handle values — with engine policy keyed only by `TypeId` / type data.
 
-**Architecture:** Gather copies outlet fields into inlet fields on the node entities themselves. `Outlets` becomes an ECS component beside `Inlets`. Compile special-cases `TypeId::of::<Entity>()` for `ChildOf`, single-consumer fan-out, and sort exclusion. Events still clear via `ReflectEventList`. Geometry and materials move over `GeoHandle` / `MaterialHandle` (small reflect values); cook-source change ticks register through new `ReflectCookSource` type data so `sway-graph` never names those handle types. `PortView` becomes a view over one node's taken `Inlets`/`Outlets` structs for the duration of tick+cook.
+**Architecture:** Gather copies outlet fields into inlet fields on the node entities themselves. `Outlets` becomes an ECS component beside `Inlets`. Compile special-cases `TypeId::of::<Entity>()` for `ChildOf`, single-consumer fan-out, and sort exclusion. Events still clear via `ReflectEventList`. Geometry and materials move over store-keyed `GeoHandle` / `MaterialHandle` values (index + generation — **not** entities); cook-source change ticks register through a TypeId-keyed registry so `sway-graph` never names those handle types. `PortView` becomes a view over one node's taken `Inlets`/`Outlets` structs for the duration of tick+cook.
 
 **Tech Stack:** Rust 2024, bevy 0.19 subcrates (`bevy_ecs`, `bevy_reflect`, `bevy_app`, `bevy_time`, `bevy_transform`, `bevy_math`), masonry (editor).
 
@@ -24,17 +24,19 @@
 
 These are implementation choices the spec leaves open. Record them here so every task agrees.
 
-1. **`GeoHandle` / `MaterialHandle` pack an `Entity` as a CPU-only representation.** Public fields are `bits: u64` (`u64::MAX` = unset). Crate-private `from_node` / `node` convert to/from `Entity`. The graph matches them by `TypeId` like `f32`. A later GPU store can change the bit layout without touching the graph model. This satisfies "Entity ids appear only for hierarchy" at the *port type* level: the field's type is the handle, not `Entity`.
+1. **`GeoHandle` / `MaterialHandle` are store keys, not entities.** Each is `{ index: u32, generation: u32 }` with `index == u32::MAX` meaning unset. They name a slot in a CPU table (`GeometryStore` in `sway-geo`, `MaterialStore` in `sway-nodes`). No `Entity` appears in the handle type or its public API. Heavy data (`Geometry`, Bevy `Handle<StandardMaterial>`) lives in the store; only the small key travels on edges. A later GPU residency layer can keep the same key shape (design §7).
 
-2. **`ReflectCookSource` type data** carries `fn(&World, &dyn PartialReflect) -> Option<Tick>`. `sway-geo` registers it on `GeoHandle` (look up `Geometry` change tick on the packed entity). `MaterialHandle` does **not** register it (material param edits do not require consumers to re-cook — same as today's `produced_change_tick` defaulting to `None` on the material node). Compile collects inlet slots that have this type data into `NodePlan.cook_sources`.
+2. **`Geometry` stops being an ECS component on the producer node.** Grid/Displace insert into `GeometryStore` and write the returned `GeoHandle` on their `Outlets`. Mesh reads geometry from the store by handle. Per-slot `changed: Tick` (or a monotonic revision the cook gate maps to `Option<Tick>`) drives consumer recooks.
 
-3. **`Outlets: Component`.** Both halves sit on the node entity. `insert_defaults` inserts both. Gather reads/writes component fields in place. Around each node's tick+cook, the runner `take`s both components into a `PortView`, then `insert`s them back so the next node in order can gather from this node's outlets.
+3. **Cook-source registry** carries `fn(&World, &dyn PartialReflect) -> Option<Tick>`. `sway-geo` registers it for `GeoHandle` (look up the store slot's change tick). `MaterialHandle` does **not** register it (material param edits do not require mesh consumers to re-cook — same as today's material `produced_change_tick` → `None`). Compile collects inlet slots that have a cook-source entry into `NodePlan.cook_sources`.
 
-4. **Prefill goes away.** Values live on the components. Unconnected inlets are whatever the component holds (editor-authored, or the last gathered value after a disconnect). Recompile no longer restores a shadowed authored copy — that dual store was the arena. Update disconnect tests to the new rule.
+4. **`Outlets: Component`.** Both halves sit on the node entity. `insert_defaults` inserts both. Gather reads/writes component fields in place. Around each node's tick+cook, the runner `take`s both components into a `PortView`, then `insert`s them back so the next node in order can gather from this node's outlets.
 
-5. **`PortView::source` is deleted.** Nodes that needed a product entity read `GeoHandle` / `MaterialHandle` / `Entity` with `read` and resolve through the handle API or use the `Entity` value directly.
+5. **Prefill goes away.** Values live on the components. Unconnected inlets are whatever the component holds (editor-authored, or the last gathered value after a disconnect). Recompile no longer restores a shadowed authored copy — that dual store was the arena. Update disconnect tests to the new rule.
 
-6. **Error rename:** `SpatialFanOut` → `ParentFanOut`. Display text says parenting / `ChildOf`, not `Spatial`.
+6. **`PortView::source` is deleted.** Nodes read `GeoHandle` / `MaterialHandle` / `Entity` with `read` and resolve handles through the store API (`store.get(handle)`), or use `Entity` values directly for hierarchy.
+
+7. **Error rename:** `SpatialFanOut` → `ParentFanOut`. Display text says parenting / `ChildOf`, not `Spatial`.
 
 ## Expected build state during the flip
 
@@ -59,7 +61,7 @@ These are implementation choices the spec leaves open. Record them here so every
 | File | Responsibility after this work |
 |---|---|
 | `ports.rs` | `Occurrence<T>`, `Events<T>`, `clear_events_of` — **no** `PortArena`, `Product`, or `Spatial` |
-| `schema.rs` | `FieldSpec` without `kind`; `derive_fields`; `ReflectEventList` + `register_events`; **new** `ReflectCookSource`; **deleted** `FieldKind`, `ReflectProduct`, `ProductAccess`, `register_product` |
+| `schema.rs` | `FieldSpec` without `kind`; `derive_fields`; `ReflectEventList` + `register_events`; **new** `CookSourceRegistry` + `register_cook_source`; **deleted** `FieldKind`, `ReflectProduct`, `ProductAccess`, `register_product` |
 | `field_ops.rs` | **new** — reflect helpers: read/write a struct field or `Vec` element by index; used by gather, clear, seed, and `PortView` |
 | `edges.rs` | unchanged edge shape; `NodeRuntime.last_product_ticks` → `last_source_ticks` |
 | `registry.rs` | `Outlets: Component`; drop `prefill` / arena `seed_outlets`; `with_ports` take/insert; drop product outlet limit |
@@ -68,71 +70,128 @@ These are implementation choices the spec leaves open. Record them here so every
 | `view.rs` | `PortView` over `&mut dyn Struct` inlets + outlets |
 | `test_nodes.rs` | Entity hierarchy fixtures; handle-free cook fixtures use a local `Blob` component + optional test handle type data if needed |
 
-**Other crates:** `sway-geo` (`GeoHandle`, `grid`, `displace`, `geometry`), `sway-nodes` (`scene`, `mesh`, `material`, signals), `sway-app` (`demo_graph`), `sway-editor` (`snapshot`, `canvas`, `test_graph`).
+**Other crates:** `sway-geo` (`GeoHandle`, `GeometryStore`, `grid`, `displace`, `geometry`), `sway-nodes` (`MaterialHandle`, `MaterialStore`, `scene`, `mesh`, `material`, signals), `sway-app` (`demo_graph`), `sway-editor` (`snapshot`, `canvas`, `test_graph`).
 
 ---
 
-### Task 1: `GeoHandle` and `MaterialHandle`
+### Task 1: `GeoHandle`, `GeometryStore`, `MaterialHandle`, `MaterialStore`
 
-Adds the two handle types as ordinary reflect values. Nothing in the graph consumes them yet. Geometry stays an ECS component on the producing node; the handle names that node for CPU lookup.
+Adds store-keyed handles and the CPU tables they name. Nothing in the graph consumes them yet. **No `Entity` in either handle.**
 
 **Files:**
-- Create: `crates/sway-geo/src/handle.rs`
+- Create: `crates/sway-geo/src/handle.rs` — `GeoHandle`
+- Create: `crates/sway-geo/src/store.rs` — `GeometryStore` resource
 - Modify: `crates/sway-geo/src/lib.rs`
-- Create: `crates/sway-nodes/src/handles.rs` (or add `MaterialHandle` beside `MaterialOf` in `material.rs` — prefer `handles.rs` only if material stays free of geo; put `MaterialHandle` in `material.rs`)
-- Modify: `crates/sway-nodes/src/material.rs`
-- Modify: `crates/sway-nodes/src/lib.rs` (re-export if public)
+- Modify: `crates/sway-nodes/src/material.rs` — `MaterialHandle` + `MaterialStore` (Bevy `Handle<StandardMaterial>` values; this crate already depends on `bevy`)
 
 **Interfaces:**
-- Produces: `GeoHandle { bits: u64 }` with `UNSET`, `from_node(Entity)`, `node(self) -> Option<Entity>`, `Default`/`Reflect`/`Copy`/`Clone`/`PartialEq`/`Eq`.
-- Produces: `MaterialHandle` with the same shape in `sway-nodes`.
+- Produces: `GeoHandle { index: u32, generation: u32 }` with `UNSET` (`index == u32::MAX`), `is_unset`, `Default`/`Reflect`/`Copy`/`Clone`/`PartialEq`/`Eq`/`Hash`. **No** `from_node` / `node` / `Entity`.
+- Produces: `GeometryStore` resource with `insert(Geometry) -> GeoHandle`, `update(GeoHandle, Geometry) -> Option<GeoHandle>` (bumps generation or keeps index and bumps a revision), `get(GeoHandle) -> Option<&Geometry>`, `change_tick(GeoHandle) -> Option<Tick>`.
+- Produces: `MaterialHandle` with the same key shape; `MaterialStore` holding `Handle<StandardMaterial>` with the same insert/get API (no cook-source registration).
 - Consumes: nothing from later tasks.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing `GeoHandle` / store tests**
 
 Add `crates/sway-geo/src/handle.rs`:
 
 ```rust
-//! `GeoHandle` — a small value naming a CPU geometry buffer set.
+//! `GeoHandle` — a small value naming a slot in [`GeometryStore`](crate::store::GeometryStore).
 //!
-//! The graph matches this by `TypeId` like `f32`. The bit layout is a CPU
-//! implementation detail (design §7): today it packs the producing node's
-//! `Entity` so cooks can `world.get::<Geometry>(entity)`. A later GPU store
-//! may change the layout without touching the graph model.
+//! The graph matches this by `TypeId` like `f32`. It does not carry an
+//! `Entity`: high-cardinality geometry lives in the store; only this key
+//! travels on edges (design §7).
 
-use bevy_ecs::entity::Entity;
 use bevy_reflect::Reflect;
 
-/// Unset / unconnected handle.
-pub const GEO_HANDLE_UNSET: u64 = u64::MAX;
+/// Unset / unconnected handle (`index == u32::MAX`).
+pub const GEO_HANDLE_UNSET_INDEX: u32 = u32::MAX;
 
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GeoHandle {
-    /// Packed entity bits, or [`GEO_HANDLE_UNSET`].
-    pub bits: u64,
+    pub index: u32,
+    pub generation: u32,
 }
 
 impl Default for GeoHandle {
     fn default() -> Self {
-        Self { bits: GEO_HANDLE_UNSET }
+        Self { index: GEO_HANDLE_UNSET_INDEX, generation: 0 }
     }
 }
 
 impl GeoHandle {
-    pub fn from_node(entity: Entity) -> Self {
-        Self { bits: entity.to_bits() }
+    pub fn is_unset(self) -> bool {
+        self.index == GEO_HANDLE_UNSET_INDEX
     }
+}
+```
 
-    pub fn node(self) -> Option<Entity> {
-        if self.bits == GEO_HANDLE_UNSET {
-            None
+Add `crates/sway-geo/src/store.rs`:
+
+```rust
+//! CPU geometry table. Keys are [`GeoHandle`]s; values are [`Geometry`].
+
+use bevy_ecs::change_detection::Tick;
+use bevy_ecs::resource::Resource;
+
+use crate::geometry::Geometry;
+use crate::handle::{GeoHandle, GEO_HANDLE_UNSET_INDEX};
+
+struct Slot {
+    generation: u32,
+    geo: Geometry,
+    /// Advanced on every `insert`/`update` that writes this slot.
+    changed: Tick,
+}
+
+#[derive(Resource, Default)]
+pub struct GeometryStore {
+    slots: Vec<Option<Slot>>,
+    free: Vec<u32>,
+}
+
+impl GeometryStore {
+    pub fn insert(&mut self, geo: Geometry, now: Tick) -> GeoHandle {
+        let slot = Slot { generation: 0, geo, changed: now };
+        if let Some(index) = self.free.pop() {
+            let handle = GeoHandle { index, generation: 0 };
+            self.slots[index as usize] = Some(slot);
+            handle
         } else {
-            Some(Entity::from_bits(self.bits))
+            let index = self.slots.len() as u32;
+            self.slots.push(Some(slot));
+            GeoHandle { index, generation: 0 }
         }
     }
 
-    pub fn is_unset(self) -> bool {
-        self.bits == GEO_HANDLE_UNSET
+    /// Overwrite an existing slot in place (same index, generation unchanged).
+    /// Returns `None` if the handle is stale or unset. Advances `changed`.
+    pub fn update(&mut self, handle: GeoHandle, geo: Geometry, now: Tick) -> Option<()> {
+        if handle.is_unset() {
+            return None;
+        }
+        let slot = self.slots.get_mut(handle.index as usize)?.as_mut()?;
+        if slot.generation != handle.generation {
+            return None;
+        }
+        slot.geo = geo;
+        slot.changed = now;
+        Some(())
+    }
+
+    pub fn get(&self, handle: GeoHandle) -> Option<&Geometry> {
+        if handle.is_unset() {
+            return None;
+        }
+        let slot = self.slots.get(handle.index as usize)?.as_ref()?;
+        (slot.generation == handle.generation).then_some(&slot.geo)
+    }
+
+    pub fn change_tick(&self, handle: GeoHandle) -> Option<Tick> {
+        if handle.is_unset() {
+            return None;
+        }
+        let slot = self.slots.get(handle.index as usize)?.as_ref()?;
+        (slot.generation == handle.generation).then_some(slot.changed)
     }
 }
 
@@ -143,7 +202,7 @@ mod tests {
 
     #[test]
     fn a_geo_handle_survives_reflect_clone() {
-        let original = GeoHandle::from_node(Entity::from_raw_u32(7).unwrap());
+        let original = GeoHandle { index: 3, generation: 1 };
         let cloned = original
             .reflect_clone()
             .expect("GeoHandle must reflect_clone")
@@ -152,80 +211,67 @@ mod tests {
             .try_downcast_ref::<GeoHandle>()
             .expect("reflect_clone must preserve the concrete type");
         assert_eq!(*cloned, original);
-        assert_eq!(cloned.node(), Entity::from_raw_u32(7));
     }
 
     #[test]
-    fn an_unset_geo_handle_has_no_node() {
+    fn store_insert_get_and_update_advance_change_tick() {
+        let mut store = GeometryStore::default();
+        let t0 = Tick::new(1);
+        let t1 = Tick::new(2);
+        let handle = store.insert(Geometry::new(1), t0);
+        assert!(!handle.is_unset());
+        assert_eq!(store.get(handle).map(|g| g.point_count()), Some(1));
+        assert_eq!(store.change_tick(handle), Some(t0));
+
+        store.update(handle, Geometry::new(4), t1).expect("live handle");
+        assert_eq!(store.get(handle).map(|g| g.point_count()), Some(4));
+        assert_eq!(store.change_tick(handle), Some(t1));
+    }
+
+    #[test]
+    fn an_unset_handle_misses_the_store() {
+        let store = GeometryStore::default();
         assert!(GeoHandle::default().is_unset());
-        assert_eq!(GeoHandle::default().node(), None);
+        assert!(store.get(GeoHandle::default()).is_none());
+        assert_eq!(GEO_HANDLE_UNSET_INDEX, u32::MAX);
     }
 }
 ```
 
-Wire the module in `crates/sway-geo/src/lib.rs` (`mod handle; pub use handle::GeoHandle;`).
+Wire in `lib.rs`: `mod handle; mod store; pub use handle::GeoHandle; pub use store::GeometryStore;`.
 
-In `crates/sway-nodes/src/material.rs`, add the parallel type (same tests in the file's `tests` module):
+In `material.rs`, mirror the key type and a `MaterialStore` resource whose slots hold `Handle<StandardMaterial>` (same insert/update/get; **no** `change_tick` required for the cook gate). Tests: reflect_clone + insert/get.
 
-```rust
-pub const MATERIAL_HANDLE_UNSET: u64 = u64::MAX;
+- [ ] **Step 2: Run tests**
 
-#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MaterialHandle {
-    pub bits: u64,
-}
+Run: `cargo test -p sway-geo --lib store::`
+Expected: FAIL until wired, then PASS.
 
-impl Default for MaterialHandle {
-    fn default() -> Self {
-        Self { bits: MATERIAL_HANDLE_UNSET }
-    }
-}
-
-impl MaterialHandle {
-    pub fn from_node(entity: Entity) -> Self {
-        Self { bits: entity.to_bits() }
-    }
-    pub fn node(self) -> Option<Entity> {
-        if self.bits == MATERIAL_HANDLE_UNSET {
-            None
-        } else {
-            Some(Entity::from_bits(self.bits))
-        }
-    }
-    pub fn is_unset(self) -> bool {
-        self.bits == MATERIAL_HANDLE_UNSET
-    }
-}
-```
-
-- [ ] **Step 2: Run tests to verify they fail / types missing**
-
-Run: `cargo test -p sway-geo --lib handle::`
-Expected: FAIL to compile until the module is wired, then PASS once Step 1's impl is complete. If you added tests first against an empty module, expect `cannot find type GeoHandle`.
+Run: `cargo test -p sway-nodes --lib material::` (or the module holding `MaterialStore` tests)
+Expected: PASS once `MaterialHandle` / `MaterialStore` exist.
 
 - [ ] **Step 3: Ensure workspace still green**
 
 Run: `cargo test --workspace`
-Expected: PASS (handles are unused).
+Expected: PASS (stores unused by nodes yet; plugin insert of the resources can wait until Task 4/5, or insert empty stores now in `GeoNodesPlugin` / material plugin — either is fine).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/sway-geo/src/handle.rs crates/sway-geo/src/lib.rs crates/sway-nodes/src/material.rs
+git add crates/sway-geo/src/handle.rs crates/sway-geo/src/store.rs crates/sway-geo/src/lib.rs crates/sway-nodes/src/material.rs
 git commit -m "$(cat <<'EOF'
-feat(geo,nodes): add GeoHandle and MaterialHandle value types
+feat(geo,nodes): store-keyed GeoHandle and MaterialHandle
 
-Small reflect values for buffer/material ports so the later ports-as-
-component-values flip can drop Product without inventing kinds.
+Handles are index+generation keys into CPU tables — no Entity on the wire.
 EOF
 )"
 ```
 
 ---
 
-### Task 2: `ReflectCookSource` and field reflect helpers
+### Task 2: Cook-source registry and field reflect helpers
 
-Additive engine support: type data for cook-source ticks, and pure reflect field get/set used by the later gather. Register `ReflectCookSource` on `GeoHandle` from `sway-geo`. Nothing switches storage yet.
+Additive engine support: a TypeId-keyed cook-source change-tick registry, and pure reflect field get/set used by the later gather. `sway-geo` registers `GeoHandle` → `GeometryStore::change_tick`. Nothing switches node storage yet.
 
 **Files:**
 - Create: `crates/sway-graph/src/field_ops.rs`
@@ -235,9 +281,9 @@ Additive engine support: type data for cook-source ticks, and pure reflect field
 - Modify: `crates/sway-geo/src/grid.rs` / plugin to call registration (or `GeoNodesPlugin`)
 
 **Interfaces:**
-- Produces: `ReflectCookSource { change_tick: fn(&World, &dyn PartialReflect) -> Option<Tick> }` with `FromType` unused (manual registration); `register_cook_source::<T>(app, change_tick)`.
+- Produces: `CookSourceRegistry` resource mapping `TypeId → fn(&World, &dyn PartialReflect) -> Option<Tick>`; `register_cook_source::<T>(app, change_tick)`.
 - Produces: `field_ops::{read_slot, write_slot, clone_slot_value}` operating on `&dyn Struct` / `&mut dyn Struct` with `(field_index, element_index, variadic)`.
-- Consumes: `GeoHandle` from Task 1.
+- Consumes: `GeoHandle` + `GeometryStore` from Task 1.
 
 - [ ] **Step 1: Write the failing field_ops tests**
 
@@ -414,24 +460,24 @@ Pick **one** approach in this task and use it consistently in Task 3. The resour
 - [ ] **Step 3: Register GeoHandle's cook source from sway-geo**
 
 ```rust
-// sway-geo, e.g. in GeoNodesPlugin::build or register_geo_types(app)
+// sway-geo — e.g. register_geo_handle(app) called from GeoNodesPlugin
 use sway_graph::register_cook_source;
 use crate::handle::GeoHandle;
-use crate::geometry::Geometry;
+use crate::store::GeometryStore;
 
 fn geo_handle_change_tick(world: &World, value: &dyn PartialReflect) -> Option<Tick> {
-    let handle = value.try_downcast_ref::<GeoHandle>()?;
-    let entity = handle.node()?;
-    world.get_entity(entity).ok()?.get_change_ticks::<Geometry>().map(|t| t.changed)
+    let handle = *value.try_downcast_ref::<GeoHandle>()?;
+    world.resource::<GeometryStore>().change_tick(handle)
 }
 
 pub fn register_geo_handle(app: &mut App) {
+    app.init_resource::<GeometryStore>();
     app.register_type::<GeoHandle>();
     register_cook_source::<GeoHandle>(app, geo_handle_change_tick);
 }
 ```
 
-Call `register_geo_handle` from the geo plugin before registering `Grid`/`Displace`.
+Call `register_geo_handle` from the geo plugin before registering `Grid`/`Displace`. **Do not** look up any `Entity` or `Geometry` component.
 
 - [ ] **Step 4: Run tests**
 
@@ -445,12 +491,12 @@ Expected: PASS
 
 ```bash
 git add crates/sway-graph/src/field_ops.rs crates/sway-graph/src/schema.rs crates/sway-graph/src/lib.rs \
-  crates/sway-graph/src/registry.rs crates/sway-geo/src/lib.rs crates/sway-geo/src/handle.rs
+  crates/sway-graph/src/registry.rs crates/sway-geo/src/lib.rs crates/sway-geo/src/store.rs
 git commit -m "$(cat <<'EOF'
 feat(graph,geo): field reflect helpers and GeoHandle cook-source registry
 
-Additive scaffolding for gather-on-components and a TypeId-keyed cook gate
-that does not name GeoHandle inside sway-graph.
+Cook gate watches GeometryStore slot ticks via TypeId, without naming
+GeoHandle inside sway-graph and without Entity on the handle.
 EOF
 )"
 ```
@@ -784,11 +830,12 @@ EOF
 **Files:**
 - Modify: `crates/sway-geo/src/grid.rs`
 - Modify: `crates/sway-geo/src/displace.rs`
+- Modify: `crates/sway-geo/src/geometry.rs` — drop `Component` derive from `Geometry` if nothing else needs it as a component (it becomes a plain store value). Keep `TypePath` only if still useful; otherwise leave as a normal struct.
 - Modify: tests in those files
 
 **Interfaces:**
-- Consumes: `GeoHandle`, `register_geo_handle`, component `Outlets`, kindless graph.
-- Produces: `GridOutlets { geo: GeoHandle }` as `Component`; cook writes `Geometry` on self and `ports.write(OUT_GEO, GeoHandle::from_node(node))`. `DisplaceInlets.geo: GeoHandle`; cook resolves `handle.node()`, reads `Geometry`, writes output `Geometry` + outlet handle.
+- Consumes: `GeoHandle`, `GeometryStore`, `register_geo_handle`, component `Outlets`, kindless graph.
+- Produces: cooks that `insert`/`update` the store and `ports.write` the `GeoHandle`. **No** `world.entity_mut(node).insert(geo)`. `produced_change_tick` on Grid/Displace can return `None` — consumers watch the handle via cook-source registry. Optionally keep a `GeoHandle` on node state to reuse the same store slot across cooks (`update` in place).
 
 - [ ] **Step 1: Update Grid**
 
@@ -798,48 +845,74 @@ pub struct GridOutlets {
     pub geo: GeoHandle,
 }
 
+#[derive(Component, Default)]
+pub struct GridState {
+    /// Slot this node owns in GeometryStore; unset until first cook.
+    pub handle: GeoHandle,
+}
+
 fn register(app: &mut App) {
     register_geo_handle(app);
 }
 
-fn cook(world: &mut World, node: Entity, ports: &PortView) {
-    // ... build Geometry as today ...
-    world.entity_mut(node).insert(geo);
-    // PortView still held by caller — write outlet through ports:
-    // BUT cook receives &PortView not &mut. Today cook takes &PortView.
-}
-```
-
-**Outlet write during cook:** change `CookFn` to `&mut PortView` **or** write the outlet on the component after cook in a seed step **or** have cook write via `world.get_mut::<GridOutlets>`. During cook, ports are taken out of the world — so cook **must** use `&mut PortView` to write the handle, **or** the runner writes `GeoHandle::from_node(node)` into Entity-like handle outlets automatically.
-
-Simplest rule matching Entity outlet seeding:
-
-**Compile/tick seeds nothing for GeoHandle.** Grid's cook receives `&mut PortView` and writes the handle. Change:
-
-```rust
 pub type CookFn = fn(&mut World, Entity, &mut PortView);
+
 fn cook(world: &mut World, node: Entity, ports: &mut PortView) {
-    // ... insert Geometry ...
-    ports.write(Self::OUT_GEO, GeoHandle::from_node(node));
+    // ... build `geo: Geometry` as today ...
+    let now = /* current change tick: world.change_tick() or equivalent bevy 0.19 API */;
+    let prior = world.get::<GridState>(node).map(|s| s.handle).unwrap_or_default();
+    let handle = {
+        let mut store = world.resource_mut::<GeometryStore>();
+        if prior.is_unset() {
+            store.insert(geo, now)
+        } else {
+            store.update(prior, geo, now).expect("node owns this slot");
+            prior
+        }
+    };
+    if let Some(mut state) = world.get_mut::<GridState>(node) {
+        state.handle = handle;
+    }
+    ports.write(Self::OUT_GEO, handle);
+}
+
+fn produced_change_tick(_world: &World, _node: Entity) -> Option<Tick> {
+    // Consumers watch the GeoHandle via CookSourceRegistry, not this node.
+    None
 }
 ```
 
-Update the trait + all cooks in this and later tasks. Signal nodes that cook? Only COOKS nodes. Mesh/Displace/Grid/Material-if-any.
+Use the real bevy 0.19 API for "now" (`ChangeTick` / `World::change_tick`). If `Tick` cannot be manufactured in tests, store a `u32` revision on the slot and have `change_tick` synthesize or compare revisions inside the cook gate — keep one approach and use it in Task 1's store.
 
 Displace:
 
 ```rust
 fn cook(world: &mut World, node: Entity, ports: &mut PortView) {
-    let handle: GeoHandle = ports.read(Self::IN_GEO);
-    let Some(source) = handle.node() else { return };
-    let Some(input) = world.get::<Geometry>(source).cloned() else { return };
-    // ... displace ...
-    world.entity_mut(node).insert(out);
-    ports.write(Self::OUT_GEO, GeoHandle::from_node(node));
+    let input_handle: GeoHandle = ports.read(Self::IN_GEO);
+    let input = {
+        let store = world.resource::<GeometryStore>();
+        store.get(input_handle).cloned()?
+    };
+    // ... displace into `out: Geometry` ...
+    let now = /* change tick */;
+    let prior = world.get::<DisplaceState>(node).map(|s| s.handle).unwrap_or_default();
+    let handle = {
+        let mut store = world.resource_mut::<GeometryStore>();
+        if prior.is_unset() {
+            store.insert(out, now)
+        } else {
+            store.update(prior, out, now).expect("node owns this slot");
+            prior
+        }
+    };
+    if let Some(mut state) = world.get_mut::<DisplaceState>(node) {
+        state.handle = handle;
+    }
+    ports.write(Self::OUT_GEO, handle);
 }
 ```
 
-- [ ] **Step 2: Fix geo unit tests** that built manual `PortArena`/`ProductAccess` — use real components + `PortView` over structs, or call cook with a mutable view.
+- [ ] **Step 2: Fix geo unit tests** that used `Product` / `PortArena` / `world.get::<Geometry>(entity)` — drive the store and mutable `PortView` instead.
 
 - [ ] **Step 3: Run tests**
 
@@ -851,9 +924,9 @@ Expected: PASS
 ```bash
 git add crates/sway-geo
 git commit -m "$(cat <<'EOF'
-feat(geo): Grid and Displace speak GeoHandle on component outlets
+feat(geo): Grid and Displace write GeometryStore keys on outlets
 
-Cook writes Geometry on the node and a GeoHandle value on Outlets.
+Geometry leaves the ECS component path; cooks own store slots and emit GeoHandle.
 EOF
 )"
 ```
@@ -864,13 +937,13 @@ EOF
 
 **Files:**
 - Modify: `crates/sway-nodes/src/scene.rs` — `children: Vec<Entity>`, `GroupOutlets { entity: Entity }` as Component; drop `register_product`
-- Modify: `crates/sway-nodes/src/mesh.rs` — `geo: GeoHandle`, `material: MaterialHandle`, `MeshNodeOutlets { entity: Entity }`; cook uses handles; `CookFn` mut ports
-- Modify: `crates/sway-nodes/src/material.rs` — `StandardMaterialOutlets { material: MaterialHandle }`; tick/cook writes `MaterialHandle::from_node(node)` onto outlets (tick is fine — material already updates handle in tick)
+- Modify: `crates/sway-nodes/src/mesh.rs` — `geo: GeoHandle`, `material: MaterialHandle`, `MeshNodeOutlets { entity: Entity }`; cook reads stores by handle; `CookFn` mut ports
+- Modify: `crates/sway-nodes/src/material.rs` — `StandardMaterialOutlets { material: MaterialHandle }`; tick updates `MaterialStore` and writes the store key on outlets (not an entity)
 - Modify: signal nodes only as needed for `Outlets: Component` + `Default` derives
 - Modify: `crates/sway-nodes/tests/traces.rs` and per-node tests
 
 **Interfaces:**
-- Consumes: Task 3 graph + Task 4 geo + Task 1 handles.
+- Consumes: Task 3 graph + Task 4 geo stores + Task 1 handles.
 - Produces: all production nodes on the new port model.
 
 - [ ] **Step 1: Group**
@@ -905,11 +978,28 @@ pub struct StandardMaterialOutlets {
     pub material: MaterialHandle,
 }
 
-// at end of tick, after ensuring MaterialState.handle exists:
-ports.write(Self::OUT_MATERIAL, MaterialHandle::from_node(node));
+#[derive(Component, Default)]
+pub struct MaterialState {
+    /// Slot this node owns in MaterialStore.
+    pub handle: MaterialHandle,
+    // Bevy asset handle lives in the store, not here — or keep a cache copy if useful for tick.
+}
+
+// in tick, after Assets<StandardMaterial> add/update:
+let store_handle = {
+    let mut store = world.resource_mut::<MaterialStore>();
+    let prior = /* MaterialState.handle */;
+    if prior.is_unset() {
+        store.insert(asset_handle)
+    } else {
+        store.update(prior, asset_handle);
+        prior
+    }
+};
+ports.write(Self::OUT_MATERIAL, store_handle);
 ```
 
-Drop `MaterialOf` **only if unused**. If nothing else references `MaterialOf`, delete it and `register_product` calls. If tests still mention it, remove them.
+Drop `MaterialOf` **only if unused**. Delete `register_product` calls.
 
 - [ ] **Step 3: MeshNode**
 
@@ -927,14 +1017,15 @@ pub struct MeshNodeOutlets {
 
 fn cook(world: &mut World, node: Entity, ports: &mut PortView) {
     let material: MaterialHandle = ports.read(Self::IN_MATERIAL);
-    if let Some(source) = material.node()
-        && let Some(handle) = world.get::<MaterialState>(source).and_then(|s| s.handle.clone())
-    { /* MeshMaterial3d as today */ }
+    if let Some(asset) = world.resource::<MaterialStore>().get(material).cloned() {
+        // MeshMaterial3d as today, comparing asset handles
+    }
 
     let geo_handle: GeoHandle = ports.read(Self::IN_GEO);
-    let Some(source) = geo_handle.node() else { return };
-    let Some(geo) = world.get::<Geometry>(source).cloned() else { return };
-    // fingerprint / upload as today
+    let Some(geo) = world.resource::<GeometryStore>().get(geo_handle).cloned() else {
+        return;
+    };
+    // fingerprint / upload as today — fingerprint still uses Geometry buffers, not Entity
 }
 ```
 
@@ -954,10 +1045,10 @@ Expected: PASS
 ```bash
 git add crates/sway-nodes
 git commit -m "$(cat <<'EOF'
-feat(nodes): hierarchy via Entity ports, mesh via handles
+feat(nodes): hierarchy via Entity ports, mesh via store handles
 
-Group/Mesh seed Entity outlets; Grid/material/mesh flow GeoHandle and
-MaterialHandle on component Outlets.
+Group/Mesh seed Entity outlets; geometry/material flow index+generation
+keys from GeometryStore and MaterialStore.
 EOF
 )"
 ```
@@ -1090,9 +1181,10 @@ Expected: PASS
 
 - [ ] No `FieldKind`, `EdgeKind`, `Product`, `Spatial`, or `PortArena` in the graph crate (or editor snapshot kinds enum)
 - [ ] Hierarchy expressible as ordinary graph edges, backed by `ChildOf`
-- [ ] Geometry / material flow via handle values with TypeId matching
+- [ ] Geometry / material flow via store-keyed handle values (`index`+`generation`, **no** `Entity` in the handle) with TypeId matching
 - [ ] `Events<T>` ordinary reflected value with type-data clearing
 - [ ] Policies only as TypeId / type-data branches in compile and tick
+- [ ] `rg 'GeoHandle|MaterialHandle' -n crates` shows no `Entity` / `from_node` / `.node(` API on those types
 
 - [ ] **Step 4: Commit if any cleanup landed**
 
@@ -1120,7 +1212,7 @@ EOF
 | §4 FieldSpec without kind; derive_fields | 3 |
 | §5 Compile expand/validate/parent/order/emit | 3 (passes renamed to match code) |
 | §6 Tick clear/gather/tick/cook; PortView over components | 3 |
-| §7 Handles | 1, 4, 5 |
+| §7 Handles | 1, 4, 5 — store keys, not packed entities |
 | §9 Out of scope (GPU, RON, MIDI, Events clear still required) | not scheduled |
 | §10 Success criteria | 8 |
 
