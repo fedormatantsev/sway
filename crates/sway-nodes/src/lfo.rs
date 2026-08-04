@@ -72,20 +72,27 @@ impl NodeType for LFO {
 
         // Absolute time — never accumulate phase across ticks (spec §6).
         let p = (ctx.tick_start * hz as f64 + phase as f64).rem_euclid(1.0) as f32;
+        ports.write(Self::OUT_VALUE, wave(shape, p) * amplitude);
+    }
+}
 
-        let wave = match shape {
-            Waveform::Sine => (p * TAU).sin(),
-            Waveform::Triangle => 4.0 * (p - 0.5).abs() - 1.0,
-            Waveform::Saw => 2.0 * p - 1.0,
-            Waveform::Square => {
-                if p < 0.5 {
-                    1.0
-                } else {
-                    -1.0
-                }
+/// One cycle of a waveform, bipolar, at `phase` in `0.0..1.0`.
+///
+/// Shared with `SyncLfo`: the only difference between a wall-clock LFO and a
+/// tempo-synced one is where the phase comes from, and duplicating four lines
+/// of trigonometry to say so would be worse than exposing this.
+pub(crate) fn wave(shape: Waveform, phase: f32) -> f32 {
+    match shape {
+        Waveform::Sine => (phase * TAU).sin(),
+        Waveform::Triangle => 4.0 * (phase - 0.5).abs() - 1.0,
+        Waveform::Saw => 2.0 * phase - 1.0,
+        Waveform::Square => {
+            if phase < 0.5 {
+                1.0
+            } else {
+                -1.0
             }
-        };
-        ports.write(Self::OUT_VALUE, wave * amplitude);
+        }
     }
 }
 

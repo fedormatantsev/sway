@@ -1,3 +1,4 @@
+mod beat;
 mod envelope;
 mod lfo;
 mod material;
@@ -7,6 +8,7 @@ mod midi;
 mod scene;
 mod transport;
 
+pub use beat::*;
 pub use envelope::*;
 pub use lfo::*;
 pub use material::*;
