@@ -115,7 +115,7 @@ impl ClockEstimator {
         // and a NaN period would reach `Duration::from_secs_f64`.
         let slope = covariance / variance;
         self.fit = (variance > 0.0 && slope.is_finite() && slope > 0.0)
-            .then(|| (slope, mean_y - slope * mean_x));
+            .then_some((slope, mean_y - slope * mean_x));
     }
 
     /// Whether there is a usable fit.
