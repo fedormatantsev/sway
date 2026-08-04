@@ -6,8 +6,11 @@ pub mod input;
 
 pub mod parser;
 
+pub mod transport;
+
 pub use input::{MidiEvent, MidiInput, VIRTUAL_DESTINATION_NAME, open_input};
 pub use parser::{CLOCK, CONTINUE, SONG_POSITION, START, STOP, StreamParser};
+pub use transport::{ClockEstimator, PULSES_PER_QUARTER};
 
 /// Returns the current mach absolute host time in CoreMIDI's timestamp units.
 pub fn host_time_now() -> u64 {
