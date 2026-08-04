@@ -72,8 +72,16 @@ impl MidiClockOffset {
 /// two arrivals must never come out in the opposite order.
 pub fn map_timestamp(host_secs: f64, offset: f64, elapsed: f64, last_enqueued: f64) -> f64 {
     let t = host_secs - offset;
-    t.clamp(last_enqueued.max(f64::MIN), elapsed + MAX_LOOKAHEAD)
-        .max(last_enqueued)
+    let upper = elapsed + MAX_LOOKAHEAD;
+    // `f64::clamp` panics if either bound is NaN or if the bounds cross.
+    // Both happen in practice: a NaN `elapsed` (an upstream NaN period) makes
+    // `upper` NaN, and a rewound `Time<Fixed>` can put `last_enqueued` ahead
+    // of `upper`. `max`/`min` never panic and ignore NaN operands (returning
+    // the other one), so this chain degrades to "keep the floor" instead of
+    // aborting the tick. `last_enqueued > upper` still means `.min(upper)`
+    // pulls the value down, so the trailing `.max(last_enqueued)` is what
+    // makes the floor win in that case too.
+    t.max(last_enqueued).min(upper).max(last_enqueued)
 }
 
 /// Moves every CoreMIDI callback event into the graph's timestamped inbox.
@@ -247,6 +255,30 @@ mod tests {
         let elapsed = 4.0;
         let t = map_timestamp(1000.0, 0.0, elapsed, f64::NEG_INFINITY);
         assert!((t - (elapsed + MAX_LOOKAHEAD)).abs() < 1e-9, "got {t}");
+    }
+
+    #[test]
+    fn a_nan_elapsed_does_not_panic_and_holds_the_floor() {
+        // The tick is infallible: a NaN period upstream must not reach
+        // `f64::clamp`'s bounds and abort the tick. With `elapsed` NaN, the
+        // upper bound is undefined, so the floor (`last_enqueued`) wins.
+        let last_enqueued = 5.0;
+        let t = map_timestamp(1.0, 1.0, f64::NAN, last_enqueued);
+        assert!(!t.is_nan(), "got NaN instead of a sane fallback");
+        assert!((t - last_enqueued).abs() < 1e-12, "got {t}, expected the floor {last_enqueued}");
+    }
+
+    #[test]
+    fn crossed_bounds_from_a_rewound_clock_does_not_panic_and_holds_the_floor() {
+        // A rewound Time<Fixed> without a matching MidiClockOffset reset can
+        // put last_enqueued ahead of elapsed + MAX_LOOKAHEAD. The tick must
+        // still not panic, and ordering still demands the floor wins.
+        let last_enqueued = 1000.0;
+        let t = map_timestamp(10.0, 1.0, 0.0, last_enqueued);
+        assert!(
+            (t - last_enqueued).abs() < 1e-12,
+            "got {t}, expected the floor {last_enqueued}"
+        );
     }
 
     #[test]
