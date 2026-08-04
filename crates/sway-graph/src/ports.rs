@@ -118,10 +118,6 @@ where
     }
 }
 
-/// Absolute index into [`PortArena`]'s slots.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
-pub struct SlotIdx(pub u32);
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -485,6 +485,7 @@ mod tests {
         let snap = capture(app.world());
         let kinds: std::collections::HashSet<_> = snap.edges.iter().map(|e| e.kind).collect();
         assert!(kinds.contains(&EdgeKind::Value));
+        assert!(kinds.contains(&EdgeKind::Events));
         assert!(kinds.contains(&EdgeKind::Product));
         assert!(kinds.contains(&EdgeKind::Spatial));
     }

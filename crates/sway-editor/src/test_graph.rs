@@ -15,9 +15,9 @@ use bevy_reflect::Reflect;
 use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
 use bevy_transform::components::Transform;
 use sway_graph::{
-    compile, register_node_type, register_product, Edge, EdgeFrom, EdgeTo, EditorPos, Endpoint,
-    GraphNode, GraphPlugin, NodeId, NodeType, NodeTypeId, NodeTypeRegistry, PortArena, PortView,
-    Product, Spatial, TickCtx,
+    compile, register_events, register_node_type, register_product, Edge, EdgeFrom, EdgeTo,
+    EditorPos, Endpoint, Events, GraphNode, GraphPlugin, NodeId, NodeType, NodeTypeId,
+    NodeTypeRegistry, PortArena, PortView, Product, Spatial, TickCtx,
 };
 
 /// Graph tick rate for the fixture app. Matches `sway-graph`'s own test
@@ -84,6 +84,75 @@ impl NodeType for Recv {
     const ORDINALS: &'static [(&'static str, u16)] = &[("amount", Recv::AMOUNT)];
 
     fn register(_app: &mut App) {}
+
+    fn tick(_world: &mut World, _node: Entity, _ports: &mut PortView, _ctx: &TickCtx) {}
+}
+
+// --- Trigger / Listener: an Events edge. ---------------------------------
+
+#[derive(Reflect, Default, Debug, Clone, PartialEq)]
+pub(crate) struct Ping {
+    pub seq: u32,
+}
+
+#[derive(Reflect, Component, Default)]
+pub(crate) struct TriggerInlets {}
+
+#[derive(Reflect, Default)]
+pub(crate) struct TriggerOutlets {
+    pub pulse: Events<Ping>,
+}
+
+#[derive(Component, Default)]
+pub(crate) struct TriggerState;
+
+pub(crate) struct Trigger;
+
+impl Trigger {
+    pub const OUT_PULSE: u16 = 0;
+}
+
+impl NodeType for Trigger {
+    type Inlets = TriggerInlets;
+    type Outlets = TriggerOutlets;
+    type State = TriggerState;
+
+    const ORDINALS: &'static [(&'static str, u16)] = &[("pulse", Trigger::OUT_PULSE)];
+
+    fn register(app: &mut App) {
+        register_events::<Ping>(app);
+    }
+
+    fn tick(_world: &mut World, _node: Entity, _ports: &mut PortView, _ctx: &TickCtx) {}
+}
+
+#[derive(Reflect, Component, Default)]
+pub(crate) struct ListenerInlets {
+    pub pulse: Events<Ping>,
+}
+
+#[derive(Reflect, Default)]
+pub(crate) struct ListenerOutlets {}
+
+#[derive(Component, Default)]
+pub(crate) struct ListenerState;
+
+pub(crate) struct Listener;
+
+impl Listener {
+    pub const PULSE: u16 = 0;
+}
+
+impl NodeType for Listener {
+    type Inlets = ListenerInlets;
+    type Outlets = ListenerOutlets;
+    type State = ListenerState;
+
+    const ORDINALS: &'static [(&'static str, u16)] = &[("pulse", Listener::PULSE)];
+
+    fn register(app: &mut App) {
+        register_events::<Ping>(app);
+    }
 
     fn tick(_world: &mut World, _node: Entity, _ports: &mut PortView, _ctx: &TickCtx) {}
 }
@@ -216,6 +285,8 @@ pub(crate) fn app() -> App {
         .add_plugins(GraphPlugin);
     register_node_type::<Emit>(&mut app);
     register_node_type::<Recv>(&mut app);
+    register_node_type::<Trigger>(&mut app);
+    register_node_type::<Listener>(&mut app);
     register_node_type::<Producer>(&mut app);
     register_node_type::<Consumer>(&mut app);
     register_node_type::<Group>(&mut app);
@@ -252,6 +323,26 @@ pub(crate) fn spawn_recv(world: &mut World, id: u32, pos: Option<Vec2>) -> Entit
         entity.insert(EditorPos(pos));
     }
     entity.id()
+}
+
+pub(crate) fn spawn_trigger(world: &mut World, id: u32) -> Entity {
+    world
+        .spawn((
+            GraphNode { id: NodeId(id), node_type: type_id::<Trigger>(world) },
+            TriggerInlets {},
+            TriggerState,
+        ))
+        .id()
+}
+
+pub(crate) fn spawn_listener(world: &mut World, id: u32) -> Entity {
+    world
+        .spawn((
+            GraphNode { id: NodeId(id), node_type: type_id::<Listener>(world) },
+            ListenerInlets::default(),
+            ListenerState,
+        ))
+        .id()
 }
 
 pub(crate) fn spawn_producer(world: &mut World, id: u32) -> Entity {
@@ -358,8 +449,9 @@ pub(crate) struct ParentingIds {
 }
 
 /// Builds a graph exercising every `EdgeKind`: a `Value` edge (`Emit` ->
-/// `Recv`), a non-spatial `Product` edge (`Producer` -> `Consumer`), and a
-/// `Spatial` product edge -- a `Group` child parented under a `Group`.
+/// `Recv`), an `Events` edge (`Trigger` -> `Listener`), a non-spatial
+/// `Product` edge (`Producer` -> `Consumer`), and a `Spatial` product edge --
+/// a `Group` child parented under a `Group`.
 pub(crate) fn fixture_with_parenting() -> (App, ParentingIds) {
     let mut app = app();
     let world = app.world_mut();
@@ -367,6 +459,10 @@ pub(crate) fn fixture_with_parenting() -> (App, ParentingIds) {
     let emit = spawn_emit(world, 0, None);
     let recv = spawn_recv(world, 1, None);
     connect(world, emit, Emit::OUT_VALUE, recv, Recv::AMOUNT);
+
+    let trigger = spawn_trigger(world, 6);
+    let listener = spawn_listener(world, 7);
+    connect(world, trigger, Trigger::OUT_PULSE, listener, Listener::PULSE);
 
     let producer = spawn_producer(world, 2);
     let consumer = spawn_consumer(world, 3);

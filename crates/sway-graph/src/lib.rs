@@ -12,7 +12,7 @@ pub mod view;
 
 pub use compile::{ClearFn, CompileError, CompiledGraph, NodePlan, compile};
 pub use edges::{Edge, EdgeFrom, EdgeTo, Endpoint, EditorPos, GraphNode, InEdges, NodeId, NodeRuntime, OutEdges};
-pub use ports::{clear_events_of, Events, Occurrence, PortArena, Product, SlotIdx, Spatial};
+pub use ports::{clear_events_of, Events, Occurrence, PortArena, Product, Spatial};
 pub use registry::{
     CookFn, InletLensFn, InsertDefaultsFn, NodeType, NodeTypeEntry, NodeTypeId, NodeTypeRegistry,
     PrefillFn, SeedOutletsFn, TickFn, TickOfFn, register_node_type,
