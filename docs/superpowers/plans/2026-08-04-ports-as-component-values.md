@@ -4,7 +4,7 @@
 
 **Goal:** Remove `FieldKind`, `EdgeKind`, `Product`, `Spatial`, and `PortArena` so port values live on `Inlets`/`Outlets` components, hierarchy uses plain `Entity` fields, and buffer flow uses handle values — with engine policy keyed only by `TypeId` / type data.
 
-**Architecture:** Gather copies outlet fields into inlet fields on the node entities themselves. `Outlets` becomes an ECS component beside `Inlets`. Compile special-cases `TypeId::of::<Entity>()` for `ChildOf`, single-consumer fan-out, and sort exclusion. Events still clear via `ReflectEventList`. Geometry and materials move over store-keyed `GeoHandle` / `MaterialHandle` values (index + generation — **not** entities); cook-source change ticks register through a TypeId-keyed registry so `sway-graph` never names those handle types. `PortView` becomes a view over one node's taken `Inlets`/`Outlets` structs for the duration of tick+cook.
+**Architecture:** Gather copies outlet fields into inlet fields on the node entities themselves. `Outlets` becomes an ECS component beside `Inlets`. Compile special-cases `TypeId::of::<Entity>()` for `ChildOf`, single-consumer fan-out, and sort exclusion. Events still clear via `ReflectEventList`. Heavy geometry moves over store-keyed `GeoHandle` values (index + generation into `GeometryStore` — **not** entities). Materials already have a small key — Bevy's `Handle<StandardMaterial>` travels on the port directly; there is no second material table. Cook-source change ticks register through a TypeId-keyed registry so `sway-graph` never names `GeoHandle`. `PortView` becomes a view over one node's taken `Inlets`/`Outlets` structs for the duration of tick+cook.
 
 **Tech Stack:** Rust 2024, bevy 0.19 subcrates (`bevy_ecs`, `bevy_reflect`, `bevy_app`, `bevy_time`, `bevy_transform`, `bevy_math`), masonry (editor).
 
@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- `sway-graph` depends on `bevy_app`, `bevy_ecs`, `bevy_math`, `bevy_reflect`, `bevy_time`, `bevy_transform` only. **Not** the `bevy` facade, **not** `bevy_render`, **not** `sway-geo`. The manifest is the only place this is enforced. Therefore `GeoHandle` / `MaterialHandle` must not appear by name in `sway-graph`; cook-source policy reaches the engine only as `ReflectCookSource` type data.
+- `sway-graph` depends on `bevy_app`, `bevy_ecs`, `bevy_math`, `bevy_reflect`, `bevy_time`, `bevy_transform` only. **Not** the `bevy` facade, **not** `bevy_render`, **not** `sway-geo`. The manifest is the only place this is enforced. Therefore `GeoHandle` must not appear by name in `sway-graph`; cook-source policy reaches the engine only as the cook-source registry.
 - `sway-editor` may depend on `sway-graph`, `bevy_ecs`, `bevy_math`, `bevy_reflect`, `bevy_transform`. **Not** `bevy`, `bevy_render`, `wgpu`, `vello`, `imaging_vello`.
 - The graph model has **no** `FieldKind`, **no** `EdgeKind`, **no** stored "this is a product edge" flag. Editor colour may map `TypeId` → style locally; it must not persist a kind enum.
 - The tick is infallible. All validation happens in `compile`.
@@ -24,17 +24,17 @@
 
 These are implementation choices the spec leaves open. Record them here so every task agrees.
 
-1. **`GeoHandle` / `MaterialHandle` are store keys, not entities.** Each is `{ index: u32, generation: u32 }` with `index == u32::MAX` meaning unset. They name a slot in a CPU table (`GeometryStore` in `sway-geo`, `MaterialStore` in `sway-nodes`). No `Entity` appears in the handle type or its public API. Heavy data (`Geometry`, Bevy `Handle<StandardMaterial>`) lives in the store; only the small key travels on edges. A later GPU residency layer can keep the same key shape (design §7).
+1. **`GeoHandle` is a store key, not an entity.** `{ index: u32, generation: u32 }` with `index == u32::MAX` meaning unset. It names a slot in `GeometryStore` (`sway-geo`). No `Entity` in the type or API. **`Geometry` stops being an ECS component on the producer** — Grid/Displace insert into the store and write the key on `Outlets`; Mesh reads via `store.get`. Per-slot change ticks drive consumer recooks. A later GPU residency layer can keep the same key shape (design §7).
 
-2. **`Geometry` stops being an ECS component on the producer node.** Grid/Displace insert into `GeometryStore` and write the returned `GeoHandle` on their `Outlets`. Mesh reads geometry from the store by handle. Per-slot `changed: Tick` (or a monotonic revision the cook gate maps to `Option<Tick>`) drives consumer recooks.
+2. **Material ports carry Bevy's `Handle<StandardMaterial>` directly.** That handle is already a small asset key — it is **not** heavy data and does **not** need a `MaterialStore` or a parallel `MaterialHandle` slab. `MaterialState` keeps owning the handle as today; tick also writes it onto `Outlets`. If `Handle<StandardMaterial>` is not `Reflect` out of the box in bevy 0.19, register it (or a one-field newtype that is still the Bevy handle, still not a second table).
 
-3. **Cook-source registry** carries `fn(&World, &dyn PartialReflect) -> Option<Tick>`. `sway-geo` registers it for `GeoHandle` (look up the store slot's change tick). `MaterialHandle` does **not** register it (material param edits do not require mesh consumers to re-cook — same as today's material `produced_change_tick` → `None`). Compile collects inlet slots that have a cook-source entry into `NodePlan.cook_sources`.
+3. **Cook-source registry** carries `fn(&World, &dyn PartialReflect) -> Option<Tick>`. `sway-geo` registers it for `GeoHandle` (look up the store slot's change tick). Material asset handles do **not** register (param edits do not require mesh consumers to re-cook — same as today's material `produced_change_tick` → `None`). Compile collects inlet slots that have a cook-source entry into `NodePlan.cook_sources`.
 
 4. **`Outlets: Component`.** Both halves sit on the node entity. `insert_defaults` inserts both. Gather reads/writes component fields in place. Around each node's tick+cook, the runner `take`s both components into a `PortView`, then `insert`s them back so the next node in order can gather from this node's outlets.
 
 5. **Prefill goes away.** Values live on the components. Unconnected inlets are whatever the component holds (editor-authored, or the last gathered value after a disconnect). Recompile no longer restores a shadowed authored copy — that dual store was the arena. Update disconnect tests to the new rule.
 
-6. **`PortView::source` is deleted.** Nodes read `GeoHandle` / `MaterialHandle` / `Entity` with `read` and resolve handles through the store API (`store.get(handle)`), or use `Entity` values directly for hierarchy.
+6. **`PortView::source` is deleted.** Nodes read `GeoHandle` / `Handle<StandardMaterial>` / `Entity` with `read`. Resolve geometry through `GeometryStore::get`; use the material handle as today with `Assets` / `MeshMaterial3d`; use `Entity` values directly for hierarchy.
 
 7. **Error rename:** `SpatialFanOut` → `ParentFanOut`. Display text says parenting / `ChildOf`, not `Spatial`.
 
@@ -70,24 +70,22 @@ These are implementation choices the spec leaves open. Record them here so every
 | `view.rs` | `PortView` over `&mut dyn Struct` inlets + outlets |
 | `test_nodes.rs` | Entity hierarchy fixtures; handle-free cook fixtures use a local `Blob` component + optional test handle type data if needed |
 
-**Other crates:** `sway-geo` (`GeoHandle`, `GeometryStore`, `grid`, `displace`, `geometry`), `sway-nodes` (`MaterialHandle`, `MaterialStore`, `scene`, `mesh`, `material`, signals), `sway-app` (`demo_graph`), `sway-editor` (`snapshot`, `canvas`, `test_graph`).
+**Other crates:** `sway-geo` (`GeoHandle`, `GeometryStore`, `grid`, `displace`, `geometry`), `sway-nodes` (`scene`, `mesh`, `material`, signals), `sway-app` (`demo_graph`), `sway-editor` (`snapshot`, `canvas`, `test_graph`).
 
 ---
 
-### Task 1: `GeoHandle`, `GeometryStore`, `MaterialHandle`, `MaterialStore`
+### Task 1: `GeoHandle` and `GeometryStore`
 
-Adds store-keyed handles and the CPU tables they name. Nothing in the graph consumes them yet. **No `Entity` in either handle.**
+Adds the geometry store key and the CPU table it names. Nothing in the graph consumes them yet. **No `Entity` in the handle.** Materials are out of scope here — they already have Bevy's asset `Handle`.
 
 **Files:**
 - Create: `crates/sway-geo/src/handle.rs` — `GeoHandle`
 - Create: `crates/sway-geo/src/store.rs` — `GeometryStore` resource
 - Modify: `crates/sway-geo/src/lib.rs`
-- Modify: `crates/sway-nodes/src/material.rs` — `MaterialHandle` + `MaterialStore` (Bevy `Handle<StandardMaterial>` values; this crate already depends on `bevy`)
 
 **Interfaces:**
 - Produces: `GeoHandle { index: u32, generation: u32 }` with `UNSET` (`index == u32::MAX`), `is_unset`, `Default`/`Reflect`/`Copy`/`Clone`/`PartialEq`/`Eq`/`Hash`. **No** `from_node` / `node` / `Entity`.
-- Produces: `GeometryStore` resource with `insert(Geometry) -> GeoHandle`, `update(GeoHandle, Geometry) -> Option<GeoHandle>` (bumps generation or keeps index and bumps a revision), `get(GeoHandle) -> Option<&Geometry>`, `change_tick(GeoHandle) -> Option<Tick>`.
-- Produces: `MaterialHandle` with the same key shape; `MaterialStore` holding `Handle<StandardMaterial>` with the same insert/get API (no cook-source registration).
+- Produces: `GeometryStore` resource with `insert(Geometry) -> GeoHandle`, `update(GeoHandle, Geometry) -> Option<()>`, `get(GeoHandle) -> Option<&Geometry>`, `change_tick(GeoHandle) -> Option<Tick>`.
 - Consumes: nothing from later tasks.
 
 - [ ] **Step 1: Write the failing `GeoHandle` / store tests**
@@ -240,29 +238,25 @@ mod tests {
 
 Wire in `lib.rs`: `mod handle; mod store; pub use handle::GeoHandle; pub use store::GeometryStore;`.
 
-In `material.rs`, mirror the key type and a `MaterialStore` resource whose slots hold `Handle<StandardMaterial>` (same insert/update/get; **no** `change_tick` required for the cook gate). Tests: reflect_clone + insert/get.
-
 - [ ] **Step 2: Run tests**
 
 Run: `cargo test -p sway-geo --lib store::`
 Expected: FAIL until wired, then PASS.
 
-Run: `cargo test -p sway-nodes --lib material::` (or the module holding `MaterialStore` tests)
-Expected: PASS once `MaterialHandle` / `MaterialStore` exist.
-
 - [ ] **Step 3: Ensure workspace still green**
 
 Run: `cargo test --workspace`
-Expected: PASS (stores unused by nodes yet; plugin insert of the resources can wait until Task 4/5, or insert empty stores now in `GeoNodesPlugin` / material plugin — either is fine).
+Expected: PASS (store unused by nodes yet; `GeoNodesPlugin` may `init_resource::<GeometryStore>()` now or in Task 4).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/sway-geo/src/handle.rs crates/sway-geo/src/store.rs crates/sway-geo/src/lib.rs crates/sway-nodes/src/material.rs
+git add crates/sway-geo/src/handle.rs crates/sway-geo/src/store.rs crates/sway-geo/src/lib.rs
 git commit -m "$(cat <<'EOF'
-feat(geo,nodes): store-keyed GeoHandle and MaterialHandle
+feat(geo): store-keyed GeoHandle and GeometryStore
 
-Handles are index+generation keys into CPU tables — no Entity on the wire.
+Geometry buffers live in a CPU table; the port carries index+generation,
+not an Entity and not a second wrapper around Bevy asset handles.
 EOF
 )"
 ```
@@ -937,13 +931,13 @@ EOF
 
 **Files:**
 - Modify: `crates/sway-nodes/src/scene.rs` — `children: Vec<Entity>`, `GroupOutlets { entity: Entity }` as Component; drop `register_product`
-- Modify: `crates/sway-nodes/src/mesh.rs` — `geo: GeoHandle`, `material: MaterialHandle`, `MeshNodeOutlets { entity: Entity }`; cook reads stores by handle; `CookFn` mut ports
-- Modify: `crates/sway-nodes/src/material.rs` — `StandardMaterialOutlets { material: MaterialHandle }`; tick updates `MaterialStore` and writes the store key on outlets (not an entity)
+- Modify: `crates/sway-nodes/src/mesh.rs` — `geo: GeoHandle`, `material: Handle<StandardMaterial>` (or `Option<Handle<…>>` if unset must be representable without a default handle), `MeshNodeOutlets { entity: Entity }`; cook reads `GeometryStore` + uses the material handle; `CookFn` mut ports
+- Modify: `crates/sway-nodes/src/material.rs` — `StandardMaterialOutlets { material: Handle<StandardMaterial> }`; tick writes the same handle it already keeps in `MaterialState` onto outlets. Drop `MaterialOf` / `register_product`. **No** `MaterialStore` / `MaterialHandle`.
 - Modify: signal nodes only as needed for `Outlets: Component` + `Default` derives
 - Modify: `crates/sway-nodes/tests/traces.rs` and per-node tests
 
 **Interfaces:**
-- Consumes: Task 3 graph + Task 4 geo stores + Task 1 handles.
+- Consumes: Task 3 graph + Task 4 geo store + Task 1 `GeoHandle`.
 - Produces: all production nodes on the new port model.
 
 - [ ] **Step 1: Group**
@@ -975,38 +969,29 @@ Entity outlet seeding in compile sets `entity` to the node — Group tick does n
 ```rust
 #[derive(Reflect, Component, Default)]
 pub struct StandardMaterialOutlets {
-    pub material: MaterialHandle,
+    pub material: Handle<StandardMaterial>,
 }
 
 #[derive(Component, Default)]
 pub struct MaterialState {
-    /// Slot this node owns in MaterialStore.
-    pub handle: MaterialHandle,
-    // Bevy asset handle lives in the store, not here — or keep a cache copy if useful for tick.
+    pub handle: Option<Handle<StandardMaterial>>,
 }
 
-// in tick, after Assets<StandardMaterial> add/update:
-let store_handle = {
-    let mut store = world.resource_mut::<MaterialStore>();
-    let prior = /* MaterialState.handle */;
-    if prior.is_unset() {
-        store.insert(asset_handle)
-    } else {
-        store.update(prior, asset_handle);
-        prior
-    }
-};
-ports.write(Self::OUT_MATERIAL, store_handle);
+// in tick, after Assets<StandardMaterial> add/update — same as today —
+// also publish onto the outlet:
+ports.write(Self::OUT_MATERIAL, handle.clone());
 ```
 
-Drop `MaterialOf` **only if unused**. Delete `register_product` calls.
+Register `Handle<StandardMaterial>` for reflect if needed. Drop `MaterialOf` and every `register_product` call.
+
+If an unconnected material inlet must be distinguishable from a live handle and `Handle::default()` is unsafe to treat as "none", use `Option<Handle<StandardMaterial>>` on both the inlet and the outlet (still no store).
 
 - [ ] **Step 3: MeshNode**
 
 ```rust
 pub struct MeshNodeInlets {
     pub geo: GeoHandle,
-    pub material: MaterialHandle,
+    pub material: Handle<StandardMaterial>, // or Option<Handle<_>>
     // transforms...
 }
 
@@ -1016,16 +1001,14 @@ pub struct MeshNodeOutlets {
 }
 
 fn cook(world: &mut World, node: Entity, ports: &mut PortView) {
-    let material: MaterialHandle = ports.read(Self::IN_MATERIAL);
-    if let Some(asset) = world.resource::<MaterialStore>().get(material).cloned() {
-        // MeshMaterial3d as today, comparing asset handles
-    }
+    let material: Handle<StandardMaterial> = ports.read(Self::IN_MATERIAL);
+    // MeshMaterial3d as today — compare/insert the asset handle directly
 
     let geo_handle: GeoHandle = ports.read(Self::IN_GEO);
     let Some(geo) = world.resource::<GeometryStore>().get(geo_handle).cloned() else {
         return;
     };
-    // fingerprint / upload as today — fingerprint still uses Geometry buffers, not Entity
+    // fingerprint / upload as today
 }
 ```
 
@@ -1045,10 +1028,10 @@ Expected: PASS
 ```bash
 git add crates/sway-nodes
 git commit -m "$(cat <<'EOF'
-feat(nodes): hierarchy via Entity ports, mesh via store handles
+feat(nodes): Entity hierarchy ports; GeoHandle and asset Handle on mesh
 
-Group/Mesh seed Entity outlets; geometry/material flow index+generation
-keys from GeometryStore and MaterialStore.
+Group/Mesh seed Entity outlets. Geometry uses GeometryStore keys;
+materials put Bevy's Handle on the wire — no MaterialStore.
 EOF
 )"
 ```
@@ -1181,10 +1164,10 @@ Expected: PASS
 
 - [ ] No `FieldKind`, `EdgeKind`, `Product`, `Spatial`, or `PortArena` in the graph crate (or editor snapshot kinds enum)
 - [ ] Hierarchy expressible as ordinary graph edges, backed by `ChildOf`
-- [ ] Geometry / material flow via store-keyed handle values (`index`+`generation`, **no** `Entity` in the handle) with TypeId matching
+- [ ] Geometry / material flow via handle values with TypeId matching (`GeoHandle` store keys for geometry; Bevy `Handle<StandardMaterial>` on the wire for materials — **no** `MaterialStore`)
 - [ ] `Events<T>` ordinary reflected value with type-data clearing
 - [ ] Policies only as TypeId / type-data branches in compile and tick
-- [ ] `rg 'GeoHandle|MaterialHandle' -n crates` shows no `Entity` / `from_node` / `.node(` API on those types
+- [ ] `rg 'struct GeoHandle|fn from_node|fn node\(' -n crates/sway-geo` — GeoHandle has no Entity API; `rg MaterialStore|MaterialHandle crates` is empty
 
 - [ ] **Step 4: Commit if any cleanup landed**
 
@@ -1212,13 +1195,13 @@ EOF
 | §4 FieldSpec without kind; derive_fields | 3 |
 | §5 Compile expand/validate/parent/order/emit | 3 (passes renamed to match code) |
 | §6 Tick clear/gather/tick/cook; PortView over components | 3 |
-| §7 Handles | 1, 4, 5 — store keys, not packed entities |
+| §7 Handles | 1, 4, 5 — `GeoHandle` store keys; material = Bevy `Handle` on the port |
 | §9 Out of scope (GPU, RON, MIDI, Events clear still required) | not scheduled |
 | §10 Success criteria | 8 |
 
 **Placeholder scan:** none intentional — `CookFn` mutability and cook-source registry vs type-data are decided in Task 2/4 notes.
 
-**Type consistency:** `GeoHandle`/`MaterialHandle` bits API; `ParentFanOut`; `last_source_ticks`; `CopyEdge`; `Outlets: Component`; `CookFn(... &mut PortView)`.
+**Type consistency:** `GeoHandle` index+generation; material ports use `Handle<StandardMaterial>` (or `Option<Handle<_>>`); `ParentFanOut`; `last_source_ticks`; `CopyEdge`; `Outlets: Component`; `CookFn(... &mut PortView)`.
 
 ---
 
