@@ -1,11 +1,11 @@
 //! Transport-aware nodes (parent §5, M3): a beat time base, a tempo-synced
 //! oscillator, and a beat-quantised trigger.
 //!
-//! All three are pure functions of the beat position `advance_transport`
-//! maintains. That is parent §2.2's rule — derive from absolute time, never
-//! accumulate — restated in beats: a dropped tick, a tempo change and a
-//! reposition all leave the output correct, because nothing here remembers
-//! where it was last tick.
+//! `TransportTime` and `SyncLfo` are pure functions of the beat position
+//! `advance_transport` maintains. `BeatTrigger` also remembers its preceding
+//! endpoint so adjacent event windows abut exactly; it discards that endpoint
+//! when a transport reposition changes the origin. Thus a dropped tick, tempo
+//! change, or reposition still produces output from the correct beat window.
 
 use bevy_app::App;
 use bevy_ecs::component::Component;
@@ -238,6 +238,9 @@ pub struct BeatTriggerState {
     /// consecutive windows exactly abutting: this tick's `start` is the exact
     /// same value last tick reported as `end`, no recomputation involved.
     prev_end: Option<f64>,
+    /// Transport origin paired with `prev_end`. Reposition changes this after
+    /// an advance, making the prior endpoint a stale search start.
+    prev_origin: Option<f64>,
 }
 
 pub struct BeatTrigger;
@@ -266,13 +269,14 @@ impl NodeType for BeatTrigger {
     fn tick(world: &mut World, node: Entity, ports: &mut PortView, ctx: &TickCtx) {
         let division: Division = ports.read(Self::DIVISION);
 
-        let (playing, beats_per_bar, end, advanced) = {
+        let (playing, beats_per_bar, end, advanced, origin) = {
             let time = world.resource::<Time<Transport>>();
             (
                 time.is_playing(),
                 time.transport().beats_per_bar,
                 time.beats(),
                 time.delta_secs_f64(),
+                time.transport().origin_beats,
             )
         };
 
@@ -283,14 +287,22 @@ impl NodeType for BeatTrigger {
             // to resume from, so it falls back to reconstructing its own
             // start (first tick after Play).
             state.prev_end = None;
+            state.prev_origin = None;
             return;
         }
 
         // Reuse the previous tick's own `end` as this tick's `start` when
-        // there is one; only the first tick after Play falls back to
-        // reconstructing it from `end - advanced`.
-        let start = state.prev_end.unwrap_or((end - advanced).max(0.0));
+        // the transport origin is unchanged. Start and Song Position apply
+        // after advancing the clock, so their new origin makes that endpoint
+        // stale; reconstruct this tick's small window instead.
+        let start = match (state.prev_end, state.prev_origin) {
+            (Some(previous_end), Some(previous_origin)) if previous_origin == origin => {
+                previous_end
+            }
+            _ => (end - advanced).max(0.0),
+        };
         state.prev_end = Some(end);
+        state.prev_origin = Some(origin);
 
         let step = division.beats(beats_per_bar);
 
@@ -654,6 +666,53 @@ mod tests {
         assert!(
             offsets.iter().any(|&o| o > 1e-6),
             "every offset was zero — the boundary was not located inside the window"
+        );
+    }
+
+    #[test]
+    fn song_position_repositions_while_playing_only_search_the_current_tick() {
+        // `advance_transport` advances first and applies Start/Song Position
+        // afterwards. The jump must discard the previous search endpoint:
+        // these one-tenth-beat windows cross no integer boundary, so neither
+        // direction may synthesize historical Beat pulses.
+        let mut app = beat_app();
+        let node = spawn_beat_trigger(&mut app, Division::Beat);
+        compile_graph(&mut app);
+        play_at(&mut app, 120.0);
+
+        {
+            let mut time = app.world_mut().resource_mut::<Time<Transport>>();
+            time.advance_by(core::time::Duration::from_secs_f64(0.1));
+        }
+        app.update();
+        assert!(pulses(&app, node).is_empty());
+
+        // Forward Song Position: the actual tick window is (100.0, 100.1].
+        {
+            let mut time = app.world_mut().resource_mut::<Time<Transport>>();
+            time.advance_by(core::time::Duration::from_secs_f64(0.1));
+            time.reposition(100.1);
+        }
+        app.update();
+        assert!(
+            pulses(&app, node).is_empty(),
+            "a forward reposition must not replay historical boundaries"
+        );
+
+        // Backward Song Position: the actual tick window is (0.9, 1.0], so
+        // it contains precisely the beat-one boundary.
+        {
+            let mut time = app.world_mut().resource_mut::<Time<Transport>>();
+            time.advance_by(core::time::Duration::from_secs_f64(0.1));
+            time.reposition(1.0);
+        }
+        app.update();
+        let backward = pulses(&app, node);
+        assert_eq!(backward.len(), 1, "only the current window may be searched");
+        assert_eq!(
+            (backward[0].value.bar, backward[0].value.beat, backward[0].value.sixteenth),
+            (1, 2, 1),
+            "the backward reposition must emit the beat-one boundary"
         );
     }
 
