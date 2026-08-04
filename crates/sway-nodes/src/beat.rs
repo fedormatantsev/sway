@@ -13,7 +13,9 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
 use bevy_reflect::Reflect;
 use bevy_time::Time;
-use sway_graph::{NodeType, PortView, TickCtx, Transport, TransportTime};
+use sway_graph::{
+    Events, MusicalTime, NodeType, PortView, TickCtx, Transport, TransportTime, register_events,
+};
 
 use crate::Waveform;
 use crate::lfo::wave;
@@ -165,6 +167,154 @@ impl NodeType for SyncLfo {
     }
 }
 
+/// How often a [`BeatTrigger`] fires.
+///
+/// An enum-valued behaviour param, in the same family as `LFO.shape` and
+/// `Math.op` — not a type selector. It changes a number, not which node this
+/// is (parent §2.4).
+///
+/// `Beat` is the first variant and carries `#[default]`: firing once per beat
+/// is what an author expects from a node called `BeatTrigger`, and the
+/// workspace-wide rule that a default is the first variant listed needs no
+/// exception here.
+#[derive(Reflect, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Division {
+    #[default]
+    Beat,
+    Bar,
+    Eighth,
+    Sixteenth,
+}
+
+impl Division {
+    /// This division's length, in beats.
+    pub fn beats(self, beats_per_bar: u32) -> f64 {
+        match self {
+            Self::Bar => beats_per_bar.max(1) as f64,
+            Self::Beat => 1.0,
+            Self::Eighth => 0.5,
+            Self::Sixteenth => 0.25,
+        }
+    }
+}
+
+/// What a [`BeatTrigger`] emits: the musical position of the boundary it
+/// fired on.
+#[derive(Reflect, Default, Debug, Clone, PartialEq, Eq)]
+pub struct Beat {
+    pub bar: u32,
+    pub beat: u32,
+    pub sixteenth: u32,
+}
+
+/// Ceiling on occurrences per tick. A tick that somehow spans a thousand
+/// beats — a stalled app resuming, a reposition far ahead — must not flood
+/// every downstream event list; the tick is infallible and this is what makes
+/// it so here.
+pub const MAX_PULSES_PER_TICK: usize = 64;
+
+#[derive(Reflect, Component, Default)]
+pub struct BeatTriggerInlets {
+    pub division: Division,
+}
+
+#[derive(Reflect, Default)]
+pub struct BeatTriggerOutlets {
+    pub pulse: Events<Beat>,
+}
+
+#[derive(Component, Default)]
+pub struct BeatTriggerState {
+    /// This node's own previous tick's `end` (in beats), reused as the start
+    /// of the next boundary search.
+    ///
+    /// `end - advanced` looks like it should reconstruct the same value, but
+    /// `end` and `advanced` come from two independent `Duration -> f64`
+    /// conversions inside `Time<Transport>` (`elapsed_secs_f64()` and
+    /// `delta_secs_f64()`), which round separately and are not guaranteed to
+    /// agree to the bit. A boundary sitting near a tick seam can land on the
+    /// wrong side of that reconstructed `start` and get double-counted (or
+    /// skipped). Carrying the previous tick's own `end` forward instead keeps
+    /// consecutive windows exactly abutting: this tick's `start` is the exact
+    /// same value last tick reported as `end`, no recomputation involved.
+    prev_end: Option<f64>,
+}
+
+pub struct BeatTrigger;
+
+impl BeatTrigger {
+    pub const DIVISION: u16 = 0;
+    pub const OUT_PULSE: u16 = 1;
+}
+
+impl NodeType for BeatTrigger {
+    type Inlets = BeatTriggerInlets;
+    type Outlets = BeatTriggerOutlets;
+    type State = BeatTriggerState;
+
+    const ORDINALS: &'static [(&'static str, u16)] =
+        &[("division", Self::DIVISION), ("pulse", Self::OUT_PULSE)];
+
+    fn register(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<bevy_ecs::reflect::AppTypeRegistry>()
+            .write()
+            .register::<Division>();
+        register_events::<Beat>(app);
+    }
+
+    fn tick(world: &mut World, node: Entity, ports: &mut PortView, ctx: &TickCtx) {
+        let division: Division = ports.read(Self::DIVISION);
+
+        let (playing, beats_per_bar, end, advanced) = {
+            let time = world.resource::<Time<Transport>>();
+            (
+                time.is_playing(),
+                time.transport().beats_per_bar,
+                time.beats(),
+                time.delta_secs_f64(),
+            )
+        };
+
+        let mut state = world.get_mut::<BeatTriggerState>(node).expect("BeatTriggerState");
+        if !playing || advanced <= 0.0 {
+            // Nothing advanced this tick, so there is no window to continue.
+            // The next tick that does advance has no continuous predecessor
+            // to resume from, so it falls back to reconstructing its own
+            // start (first tick after Play).
+            state.prev_end = None;
+            return;
+        }
+
+        // Reuse the previous tick's own `end` as this tick's `start` when
+        // there is one; only the first tick after Play falls back to
+        // reconstructing it from `end - advanced`.
+        let start = state.prev_end.unwrap_or((end - advanced).max(0.0));
+        state.prev_end = Some(end);
+
+        let step = division.beats(beats_per_bar);
+
+        // Every multiple of `step` in `(start, end]`. Half-open at the start,
+        // so a boundary is never emitted twice across two ticks.
+        let first = (start / step).floor() as i64 + 1;
+        let last = (end / step).floor() as i64;
+        for index in first..=last.min(first + MAX_PULSES_PER_TICK as i64 - 1) {
+            let boundary = index as f64 * step;
+            // Invert this tick's own advance to place the crossing inside
+            // the window. Linear within a tick, which is exact for a steady
+            // tempo and within a tick's worth of error otherwise.
+            let offset = (ctx.dt as f64 * (boundary - start) / advanced)
+                .clamp(0.0, ctx.dt as f64) as f32;
+            let at = MusicalTime::from_beats(boundary, beats_per_bar);
+            ports.emit(
+                Self::OUT_PULSE,
+                offset,
+                Beat { bar: at.bar, beat: at.beat, sixteenth: at.sixteenth },
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use bevy_app::App;
@@ -196,6 +346,7 @@ mod tests {
             .add_plugins(GraphPlugin);
         sway_graph::register_node_type::<TransportTimeNode>(&mut app);
         sway_graph::register_node_type::<SyncLfo>(&mut app);
+        sway_graph::register_node_type::<BeatTrigger>(&mut app);
         app.update();
         app
     }
@@ -362,5 +513,182 @@ mod tests {
         app.update();
 
         assert!(out(&app, node, SyncLfo::OUT_VALUE).is_finite());
+    }
+
+    fn spawn_beat_trigger(app: &mut App, division: Division) -> Entity {
+        let node_type = node_type_id::<BeatTrigger>(app);
+        app.world_mut()
+            .spawn((
+                GraphNode { id: NodeId(2), node_type },
+                BeatTriggerInlets { division },
+                BeatTriggerState::default(),
+            ))
+            .id()
+    }
+
+    fn pulses(app: &App, node: Entity) -> Vec<sway_graph::Occurrence<Beat>> {
+        let compiled = app.world().resource::<CompiledGraph>();
+        let plan = compiled.plans.iter().find(|p| p.entity == node).expect("compiled");
+        let slot = plan.base + plan.field_offsets[BeatTrigger::OUT_PULSE as usize];
+        app.world().resource::<PortArena>().values[slot]
+            .try_downcast_ref::<sway_graph::Events<Beat>>()
+            .expect("pulse is Events<Beat>")
+            .occurrences
+            .clone()
+    }
+
+    /// Runs `ticks` ticks with the transport advancing `beats_per_tick`, and
+    /// returns every occurrence seen, tick by tick.
+    fn collect(app: &mut App, node: Entity, ticks: usize, beats_per_tick: f64) -> Vec<Beat> {
+        let mut seen = Vec::new();
+        for _ in 0..ticks {
+            {
+                let mut time = app.world_mut().resource_mut::<Time<Transport>>();
+                time.advance_by(core::time::Duration::from_secs_f64(beats_per_tick));
+            }
+            app.update();
+            seen.extend(pulses(app, node).into_iter().map(|o| o.value));
+        }
+        seen
+    }
+
+    #[test]
+    fn a_beat_division_fires_once_per_beat() {
+        let mut app = beat_app();
+        let node = spawn_beat_trigger(&mut app, Division::Beat);
+        compile_graph(&mut app);
+        play_at(&mut app, 120.0);
+
+        // Four beats' worth, at a tenth of a beat per tick.
+        let fired = collect(&mut app, node, 40, 0.1);
+
+        assert_eq!(fired.len(), 4, "four beats, four pulses: {fired:?}");
+    }
+
+    #[test]
+    fn a_bar_division_fires_once_per_bar() {
+        let mut app = beat_app();
+        let node = spawn_beat_trigger(&mut app, Division::Bar);
+        compile_graph(&mut app);
+        play_at(&mut app, 120.0);
+
+        let fired = collect(&mut app, node, 80, 0.1); // eight beats = two bars
+        assert_eq!(fired.len(), 2);
+        assert_eq!(fired[1].bar, 3, "the second pulse opens bar 3");
+    }
+
+    #[test]
+    fn a_sixteenth_division_fires_four_times_per_beat() {
+        let mut app = beat_app();
+        let node = spawn_beat_trigger(&mut app, Division::Sixteenth);
+        compile_graph(&mut app);
+        play_at(&mut app, 120.0);
+
+        let fired = collect(&mut app, node, 20, 0.1); // two beats
+        assert_eq!(fired.len(), 8);
+    }
+
+    #[test]
+    fn a_pulse_carries_the_musical_position_of_its_boundary() {
+        let mut app = beat_app();
+        let node = spawn_beat_trigger(&mut app, Division::Beat);
+        compile_graph(&mut app);
+        play_at(&mut app, 120.0);
+
+        let fired = collect(&mut app, node, 40, 0.1);
+        assert_eq!(
+            (fired[0].bar, fired[0].beat, fired[0].sixteenth),
+            (1, 2, 1),
+            "the first crossing after position 0 is beat 2"
+        );
+    }
+
+    #[test]
+    fn a_pulse_offset_lands_inside_the_tick_window() {
+        // Sub-tick timestamps are the whole point of an event port: an
+        // envelope downstream starts at the correct phase (parent §2.4).
+        let mut app = beat_app();
+        let node = spawn_beat_trigger(&mut app, Division::Beat);
+        compile_graph(&mut app);
+        play_at(&mut app, 120.0);
+
+        let dt = (1.0 / TICK_HZ) as f32;
+        for _ in 0..40 {
+            {
+                let mut time = app.world_mut().resource_mut::<Time<Transport>>();
+                time.advance_by(core::time::Duration::from_secs_f64(0.1));
+            }
+            app.update();
+            for occurrence in pulses(&app, node) {
+                assert!(
+                    (0.0..=dt).contains(&occurrence.offset),
+                    "offset {} outside [0, {dt}]",
+                    occurrence.offset
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_boundary_landing_mid_tick_is_not_placed_at_zero() {
+        // Half a beat per tick starting from 0.25 beats puts every boundary
+        // squarely inside a window; an implementation that stamped 0.0 would
+        // pass every count-based test above and still be wrong.
+        let mut app = beat_app();
+        let node = spawn_beat_trigger(&mut app, Division::Beat);
+        compile_graph(&mut app);
+        play_at(&mut app, 120.0);
+        app.world_mut().resource_mut::<Time<Transport>>().reposition(0.25);
+
+        let mut offsets = Vec::new();
+        for _ in 0..8 {
+            {
+                let mut time = app.world_mut().resource_mut::<Time<Transport>>();
+                time.advance_by(core::time::Duration::from_secs_f64(0.5));
+            }
+            app.update();
+            offsets.extend(pulses(&app, node).into_iter().map(|o| o.offset));
+        }
+
+        assert!(!offsets.is_empty());
+        assert!(
+            offsets.iter().any(|&o| o > 1e-6),
+            "every offset was zero — the boundary was not located inside the window"
+        );
+    }
+
+    #[test]
+    fn a_stopped_transport_fires_nothing() {
+        let mut app = beat_app();
+        let node = spawn_beat_trigger(&mut app, Division::Sixteenth);
+        compile_graph(&mut app);
+        // No play_at: the transport is stopped and never advances.
+
+        for _ in 0..40 {
+            app.update();
+            assert!(pulses(&app, node).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_long_freeze_does_not_flood_a_single_tick() {
+        // A stalled app resuming, or a reposition far ahead, must not emit
+        // thousands of occurrences in one tick.
+        let mut app = beat_app();
+        let node = spawn_beat_trigger(&mut app, Division::Sixteenth);
+        compile_graph(&mut app);
+        play_at(&mut app, 120.0);
+
+        {
+            let mut time = app.world_mut().resource_mut::<Time<Transport>>();
+            time.advance_by(core::time::Duration::from_secs_f64(1000.0));
+        }
+        app.update();
+
+        assert!(
+            pulses(&app, node).len() <= MAX_PULSES_PER_TICK,
+            "a thousand beats in one tick produced {} occurrences",
+            pulses(&app, node).len()
+        );
     }
 }

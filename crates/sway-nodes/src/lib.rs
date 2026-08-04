@@ -61,5 +61,6 @@ mod tests {
         assert_eq!(Waveform::default(), Waveform::Sine);
         assert_eq!(MathOp::default(), MathOp::Add);
         assert_eq!(NoteField::default(), NoteField::Note);
+        assert_eq!(Division::default(), Division::Beat);
     }
 }

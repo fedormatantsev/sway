@@ -205,6 +205,7 @@ impl Plugin for SignalNodesPlugin {
         register_node_type::<Select>(app);
         register_node_type::<crate::TransportTimeNode>(app);
         register_node_type::<crate::SyncLfo>(app);
+        register_node_type::<crate::BeatTrigger>(app);
         app.init_resource::<MidiInbox>()
             .init_resource::<TickMidi>()
             .init_resource::<crate::TransportClock>()
