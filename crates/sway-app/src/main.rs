@@ -9,7 +9,7 @@ use bevy::math::UVec2;
 use bevy::prelude::*;
 use bevy::window::Monitor;
 use demo_graph::setup_demo_graph;
-use midi_feed::{MidiRx, MidiTimeEpoch, feed_midi};
+use midi_feed::{MidiClockOffset, MidiRx, feed_midi};
 use scene::setup_scene;
 use sway_geo::GeoNodesPlugin;
 use sway_graph::GraphPlugin;
@@ -208,7 +208,7 @@ fn main() {
         ))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
         .insert_resource(MidiRx(rx))
-        .init_resource::<MidiTimeEpoch>()
+        .init_resource::<MidiClockOffset>()
         .add_systems(Startup, setup_demo_graph)
         .add_systems(PreUpdate, feed_midi)
         .add_systems(Update, (log_monitors, log_fps));
