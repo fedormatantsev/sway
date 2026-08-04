@@ -72,6 +72,24 @@ impl ClockEstimator {
             return;
         }
 
+        // A pulse that does not land strictly after the previous one carries no
+        // new phase information the fit can use — it is indistinguishable from
+        // "the same pulse observed again." This happens for real: a caller can
+        // hand several same-frame MIDI events a shared "now" timestamp (see
+        // `sway-app`'s `feed_midi`, which does exactly this for host_time == 0
+        // messages), collapsing them onto one instant. Blindly assigning such a
+        // pulse a fresh index would tell the fit "a pulse happened in zero
+        // time," dragging the slope toward zero — and because the *next*
+        // pulse's index is inferred from this fit, the error compounds pulse
+        // over pulse rather than averaging out. Dropping it here is lossless:
+        // `beats_at` depends only on the fitted line, never on the index
+        // bookkeeping, and the next pulse that *does* advance time recovers
+        // whatever this one couldn't distinguish via the same elapsed-pulses-
+        // across-a-gap inference already used for genuinely missed pulses.
+        if self.last_time.is_some_and(|last| t <= last) {
+            return;
+        }
+
         // Infer how many pulse periods elapsed rather than counting pulses,
         // so a dropped pulse does not shear the fit.
         let index = match (self.last_time, self.fit) {
@@ -266,5 +284,62 @@ mod tests {
         }
         assert!(estimator.bpm().is_none_or(|bpm| bpm.is_finite()));
         assert!(estimator.beats_at(1.0).is_none_or(f64::is_finite));
+    }
+
+    #[test]
+    fn same_instant_duplicate_pulses_do_not_corrupt_the_fit() {
+        // This is what `feed_midi`'s host_time == 0 handling produces when more
+        // than one real clock pulse is queued when a frame drains: every pulse
+        // in that batch shares the identical mapped timestamp. Before the fix,
+        // this fed the regression a "pulse happened in zero time" sample, and
+        // because the next pulse's index was inferred from the (now wrong) fit,
+        // the error compounded instead of averaging out.
+        let mut estimator = ClockEstimator::new();
+        let mut t = 0.0;
+        for _ in 0..20 {
+            // A correctly-spaced pulse...
+            estimator.push_pulse(t);
+            // ...followed by a same-instant duplicate, as a collapsed batch
+            // would produce.
+            estimator.push_pulse(t);
+            estimator.push_pulse(t);
+            t += SPP_120;
+        }
+        let bpm = estimator.bpm().expect("locked");
+        assert!(
+            (bpm - 120.0).abs() < 1.0,
+            "duplicate pulses corrupted the fit: {bpm} BPM instead of ~120"
+        );
+    }
+
+    #[test]
+    fn duplicate_stragglers_are_dropped_silently_without_resetting_the_fit() {
+        // A strictly-increasing train interleaved with occasional exact-
+        // duplicate stragglers should still lock to the correct tempo, and
+        // dropping the duplicates must be silent and cheap: it must not walk
+        // the MAX_GAP_PULSES reset path (which only genuinely-long gaps
+        // should trigger), so `generation()` must not change.
+        let mut estimator = ClockEstimator::new();
+        let mut t = 0.0;
+        for i in 0..48 {
+            estimator.push_pulse(t);
+            if i % 5 == 0 {
+                // A straggler: the same pulse observed again at the same
+                // instant, as a collapsed batch would produce.
+                estimator.push_pulse(t);
+            }
+            t += SPP_120;
+        }
+        let generation_after_lock = estimator.generation();
+        assert_eq!(generation_after_lock, 0, "duplicates must never trigger a reset");
+
+        let bpm = estimator.bpm().expect("locked");
+        assert!((bpm - 120.0).abs() < 1.0, "stragglers moved the tempo to {bpm}");
+
+        // A few more duplicates after lock must still leave the generation
+        // untouched.
+        estimator.push_pulse(t - SPP_120);
+        estimator.push_pulse(t - SPP_120);
+        assert_eq!(estimator.generation(), generation_after_lock, "duplicates after lock must not reset");
     }
 }
