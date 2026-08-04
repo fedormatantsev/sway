@@ -4,7 +4,7 @@
 
 **Goal:** Remove `FieldKind`, `EdgeKind`, `Product`, `Spatial`, and `PortArena` so port values live on `Inlets`/`Outlets` components, hierarchy uses plain `Entity` fields, and buffer flow uses handle values — with engine policy keyed only by `TypeId` / type data.
 
-**Architecture:** Gather copies outlet fields into inlet fields on the node entities themselves. `Outlets` becomes an ECS component beside `Inlets`. Compile special-cases `TypeId::of::<Entity>()` for `ChildOf`, single-consumer fan-out, and sort exclusion. Events still clear via `ReflectEventList`. Buffer-like ports carry Bevy asset handles — `Handle<Geometry>` and `Handle<StandardMaterial>` — with heavy data in `Assets<T>`. No custom geometry/material tables. Cook-source change ticks register through a TypeId-keyed registry so `sway-graph` never names `Handle<Geometry>`. `PortView` becomes a view over one node's taken `Inlets`/`Outlets` structs for the duration of tick+cook.
+**Architecture:** Gather copies outlet fields into inlet fields on the node entities themselves. `Outlets` becomes an ECS component beside `Inlets`. Compile special-cases `TypeId::of::<Entity>()` for `ChildOf`, single-consumer fan-out, and sort exclusion. Events still clear via `ReflectEventList`. Buffer-like ports carry Bevy asset handles — `Handle<Geometry>` and `Handle<StandardMaterial>` — with heavy data in `Assets<T>`. No custom geometry/material tables. Cook-source change ticks register through a TypeId-keyed registry so `sway-graph` never names `Handle<Geometry>`. Nodes tick/cook against their **typed** `&mut Inlets` / `&mut Outlets` — there is no `PortView` and no arena.
 
 **Tech Stack:** Rust 2024, bevy 0.19 subcrates (`bevy_ecs`, `bevy_reflect`, `bevy_app`, `bevy_time`, `bevy_transform`, `bevy_math`), masonry (editor).
 
@@ -28,11 +28,11 @@ These are implementation choices the spec leaves open. Record them here so every
 
 2. **Cook-source registry** carries `fn(&World, &dyn PartialReflect) -> Option<Tick>`. `sway-geo` registers it for `Handle<Geometry>`, using Bevy's asset-change machinery available in-tree (prefer whatever `Assets` / `AssetId` / `AssetEvent::Modified` path bevy 0.19 already gives — do not invent a parallel revision table unless the asset API truly has no signal). Material handles do **not** register (param edits do not require mesh consumers to re-cook). Compile collects inlet slots that have a cook-source entry into `NodePlan.cook_sources`.
 
-3. **`Outlets: Component`.** Both halves sit on the node entity. `insert_defaults` inserts both. Gather reads/writes component fields in place. Around each node's tick+cook, the runner `take`s both components into a `PortView`, then `insert`s them back so the next node in order can gather from this node's outlets.
+3. **`Outlets: Component`.** Both halves sit on the node entity. `insert_defaults` inserts both. Gather reads/writes component fields in place (via `field_ops` reflect helpers). Around each node's tick+cook, the runner `take`s both components and passes **typed** `&mut N::Inlets` / `&mut N::Outlets` into `N::tick` / `N::cook`, then `insert`s them back so the next node can gather from this node's outlets.
 
 4. **Prefill goes away.** Values live on the components. Unconnected inlets are whatever the component holds (editor-authored, or the last gathered value after a disconnect). Recompile no longer restores a shadowed authored copy — that dual store was the arena. Update disconnect tests to the new rule.
 
-5. **`PortView::source` is deleted.** Nodes read `Handle<Geometry>` / `Handle<StandardMaterial>` / `Entity` with `read`. Resolve buffers via `Assets<T>`; use `Entity` values directly for hierarchy.
+5. **`PortView` is deleted.** The arena-era ordinal API (`read`/`write`/`emit`/`source`) goes with it. Node bodies use ordinary field access (`inlets.gain`, `outlets.pulse.occurrences.push(...)`, `inlets.geo`). `ORDINALS` remain for edges, compile, and the editor — not for node logic. Resolve buffers via `Assets<T>`; hierarchy uses `Entity` fields directly.
 
 6. **Error rename:** `SpatialFanOut` → `ParentFanOut`. Display text says parenting / `ChildOf`, not `Spatial`.
 
@@ -60,13 +60,13 @@ These are implementation choices the spec leaves open. Record them here so every
 |---|---|
 | `ports.rs` | `Occurrence<T>`, `Events<T>`, `clear_events_of` — **no** `PortArena`, `Product`, or `Spatial` |
 | `schema.rs` | `FieldSpec` without `kind`; `derive_fields`; `ReflectEventList` + `register_events`; **new** `CookSourceRegistry` + `register_cook_source`; **deleted** `FieldKind`, `ReflectProduct`, `ProductAccess`, `register_product` |
-| `field_ops.rs` | **new** — reflect helpers: read/write a struct field or `Vec` element by index; used by gather, clear, seed, and `PortView` |
+| `field_ops.rs` | **new** — reflect helpers: read/write a struct field or `Vec` element by index; used by gather, clear, and Entity outlet seeding only |
 | `edges.rs` | unchanged edge shape; `NodeRuntime.last_product_ticks` → `last_source_ticks` |
-| `registry.rs` | `Outlets: Component`; drop `prefill` / arena `seed_outlets`; `with_ports` take/insert; drop product outlet limit |
-| `compile.rs` | no arena layout; copies are field addresses; Entity TypeId policies; cook_sources from `ReflectCookSource`; seed Entity outlets |
-| `tick.rs` | clear Events on components; gather field→field; take ports; tick; cook gate via `cook_sources`; no `PortArena` resource |
-| `view.rs` | `PortView` over `&mut dyn Struct` inlets + outlets |
-| `test_nodes.rs` | Entity hierarchy fixtures; handle-free cook fixtures use a local `Blob` component + optional test handle type data if needed |
+| `registry.rs` | `Outlets: Component`; typed `tick`/`cook` taking `&mut Inlets`/`&mut Outlets`; drop `prefill` / arena seed; drop product outlet limit |
+| `compile.rs` | no arena layout; copies are field addresses; Entity TypeId policies; cook_sources from cook-source registry; seed Entity outlets |
+| `tick.rs` | clear Events on components; gather field→field; take typed ports; tick; cook gate via `cook_sources`; no `PortArena` |
+| `view.rs` | **deleted** — `PortView` / arena window gone; `TickCtx` moves to `tick.rs` (or `lib.rs`) |
+| `test_nodes.rs` | Entity hierarchy fixtures; typed inlet/outlet access in fixtures |
 
 **Other crates:** `sway-geo` (`Geometry` as `Asset`, `grid`, `displace`), `sway-nodes` (`scene`, `mesh`, `material`, signals), `sway-app` (`demo_graph`), `sway-editor` (`snapshot`, `canvas`, `test_graph`).
 
@@ -393,32 +393,32 @@ EOF
 
 ---
 
-### Task 3: Engine flip — schema, ports, view, compile, tick, registry
+### Task 3: Engine flip — schema, ports, compile, tick, registry
 
 Replaces the arena model inside `sway-graph`. Downstream crates break until Tasks 4–7 migrate.
 
 **Files:**
 - Modify: `crates/sway-graph/src/ports.rs` — delete `PortArena`, `Product`, `Spatial`; keep `Events`/`Occurrence`/`clear_events_of`
 - Modify: `crates/sway-graph/src/schema.rs` — `FieldSpec` without `kind`; delete `FieldKind`/`ReflectProduct`/`ProductAccess`/`register_product`; `derive_fields` only walks types + Events diagnostic
-- Modify: `crates/sway-graph/src/view.rs` — `PortView` over inlets/outlets structs
+- Delete: `crates/sway-graph/src/view.rs` — move `TickCtx` to `tick.rs`
 - Modify: `crates/sway-graph/src/compile.rs` — Entity policies; field-address copies; no arena bases
-- Modify: `crates/sway-graph/src/tick.rs` — component gather/clear; take/insert ports; no `PortArena` resource
-- Modify: `crates/sway-graph/src/registry.rs` — `Outlets: Component`; drop prefill; seed Entity outlets on the component
+- Modify: `crates/sway-graph/src/tick.rs` — component gather/clear; take typed ports; no `PortArena`
+- Modify: `crates/sway-graph/src/registry.rs` — `Outlets: Component`; typed `tick`/`cook`; drop prefill
 - Modify: `crates/sway-graph/src/edges.rs` — rename `last_product_ticks` → `last_source_ticks`
-- Modify: `crates/sway-graph/src/lib.rs` — exports
+- Modify: `crates/sway-graph/src/lib.rs` — exports; drop `PortView`
 - Modify: `crates/sway-graph/src/test_nodes.rs` — rewrite fixtures
 
 **Interfaces:**
-- Consumes: `field_ops`, `CookSourceRegistry` / `ReflectCookSource` from Task 2.
+- Consumes: `field_ops`, `CookSourceRegistry` from Task 2.
 - Produces:
   - `FieldSpec { name, field_index, slot_type, slot_type_path, variadic }`
-  - `NodePlan { entity, node_type, fields, inlet_field_count, field_lens, connected: Vec<bool> /* per inlet slot flat */, copies: Vec<CopyEdge>, cook_sources: Vec<CookSourceRef>, entity_outlet: Option<usize /* field_index in Outlets */> }`
+  - `NodePlan { entity, node_type, fields, inlet_field_count, field_lens, connected, copies, cook_sources, … }`
   - `CopyEdge { source: Entity, from_field: u16, from_index: u16, to_field: u16, to_index: u16 }`
-  - `ClearRef { entity: Entity, outlets: bool, field_index: usize, index: usize, variadic: bool, clear: fn(&mut dyn PartialReflect) }`
-  - `NodeType::Outlets: Component + Default + Reflect + …`
+  - `ClearRef { … }`
+  - `NodeType::tick(world, node, inlets: &mut Inlets, outlets: &mut Outlets, t)`
+  - `NodeType::cook(world, node, inlets: &Inlets, outlets: &mut Outlets)`
   - `CompileError::ParentFanOut` (renamed)
-  - No `PortArena`, `Product`, `Spatial`, `FieldKind`, `register_product`, `PortView::source`
-
+  - No `PortArena`, `PortView`, `Product`, `Spatial`, `FieldKind`, `register_product`
 - [ ] **Step 1: Rewrite schema tests first (TDD)**
 
 Replace `schema.rs` tests with:
@@ -521,63 +521,45 @@ Delete `FieldKind`, `ReflectProduct`, `ProductAccess`, `register_product`, `Unre
 
 Delete `PortArena`, `Product`, `Spatial`, and their tests. Keep `Events`, `Occurrence`, `clear_events_of`, and the Events reflect_clone / clear-in-place tests (adjust clear test to use a concrete `Events<u8>` mut ref, not only a box — both are fine).
 
-- [ ] **Step 4: Rewrite `PortView`**
+- [ ] **Step 4: Delete `PortView`; move `TickCtx`; type the node API**
+
+Delete `view.rs`. Put `TickCtx` in `tick.rs` and re-export it.
 
 ```rust
-pub struct PortView<'a> {
-    inlets: &'a mut dyn Struct,
-    outlets: &'a mut dyn Struct,
-    fields: &'a [FieldSpec],
-    inlet_field_count: usize,
-    field_lens: &'a [usize],
-    connected: &'a [bool], // length = sum of inlet field_lens
+// registry.rs — NodeType
+fn tick(
+    world: &mut World,
+    node: Entity,
+    inlets: &mut Self::Inlets,
+    outlets: &mut Self::Outlets,
+    t: &TickCtx,
+);
+
+fn cook(
+    _world: &mut World,
+    _node: Entity,
+    _inlets: &Self::Inlets,
+    _outlets: &mut Self::Outlets,
+) {
 }
 
-impl<'a> PortView<'a> {
-    fn root_and_local(&mut self, field: u16) -> (&mut dyn Struct, usize, bool /*is_inlet*/) {
-        let f = field as usize;
-        if f < self.inlet_field_count {
-            (self.inlets, f, true)
-        } else {
-            (self.outlets, f - self.inlet_field_count, false)
-        }
+// One erased entry per node type — take ports once for tick+cook:
+pub type RunNodeFn = fn(&mut World, Entity, &TickCtx, bool /*cook*/);
+
+fn run_node_of<N: NodeType>(world: &mut World, node: Entity, t: &TickCtx, do_cook: bool) {
+    let mut inlets = world.entity_mut(node).take::<N::Inlets>().unwrap_or_default();
+    let mut outlets = world.entity_mut(node).take::<N::Outlets>().unwrap_or_default();
+    N::tick(world, node, &mut inlets, &mut outlets, t);
+    if do_cook {
+        N::cook(world, node, &inlets, &mut outlets);
     }
-
-    pub fn read<T: Reflect + Clone>(&self, field: u16) -> T { self.read_at(field, 0) }
-
-    pub fn read_at<T: Reflect + Clone>(&self, field: u16, index: u16) -> T {
-        let f = field as usize;
-        let (root, spec_index, _) = if f < self.inlet_field_count {
-            (&*self.inlets as &dyn Struct, f, true)
-        } else {
-            (&*self.outlets as &dyn Struct, f - self.inlet_field_count, false)
-        };
-        let spec = &self.fields[f];
-        let value = crate::field_ops::read_slot(root, spec.field_index, index as usize, spec.variadic);
-        value.try_downcast_ref::<T>().expect("compiled type").clone()
-    }
-
-    pub fn write<T: Reflect>(&mut self, field: u16, value: T) { self.write_at(field, 0, value); }
-
-    pub fn write_at<T: Reflect>(&mut self, field: u16, index: u16, value: T) {
-        let f = field as usize;
-        let spec = &self.fields[f].clone();
-        let variadic = spec.variadic;
-        let field_index = spec.field_index;
-        let root: &mut dyn Struct = if f < self.inlet_field_count {
-            self.inlets
-        } else {
-            self.outlets
-        };
-        crate::field_ops::write_slot(root, field_index, index as usize, variadic, Box::new(value));
-    }
-
-    // events / emit: downcast Events<T> via read_slot / write path on the outlet field
-    // is_connected: map (field,index) to flat inlet slot index
+    world.entity_mut(node).insert((inlets, outlets));
 }
 ```
 
-Delete `source`. Update boundary panic tests to construct a `PortView` over local structs instead of an arena.
+Store `run_node_of::<N>` on `NodeTypeEntry` (plus `COOKS` so the runner knows whether `do_cook` can ever be true). Delete every `PortView` test (boundary panics were arena-isolation tests — drop or replace with a `field_ops` gather isolation test if useful).
+
+Node call sites become ordinary field access, e.g. `let g = inlets.gain; outlets.value = g * 2.0; outlets.pulse.occurrences.push(...)`.
 
 - [ ] **Step 5: Rewrite compile policies**
 
@@ -595,13 +577,13 @@ Key changes in `compile`:
 
 Rename `SpatialFanOut` → `ParentFanOut` and update Display strings to say parenting / `ChildOf`.
 
-- [ ] **Step 6: Rewrite registry**
+- [ ] **Step 6: Finish registry (defaults, outlet checks)**
 
 ```rust
 type Outlets: Reflect + Typed + GetTypeRegistration + Component + Default;
 
-// Remove PrefillFn, Prefill from NodeTypeEntry
-// SeedOutletsFn becomes optional / only Entity seeding done in compile
+// Remove PrefillFn, SeedOutletsFn, PortView, separate TickFn/CookFn.
+// Entry holds run_node: RunNodeFn and cooks: bool (from N::COOKS).
 
 fn insert_defaults_of<N: NodeType>(world: &mut World, node: Entity) {
     if world.get::<N::Inlets>(node).is_none() {
@@ -621,50 +603,7 @@ fn check_outlets<N: NodeType>(outlets: &[FieldSpec]) {
         panic!(...);
     }
 }
-
-pub fn with_ports_of<N: NodeType>(
-    world: &mut World,
-    entity: Entity,
-    plan: &NodePlan,
-    f: impl FnOnce(&mut World, &mut PortView),
-) {
-    let mut inlets = world
-        .entity_mut(entity)
-        .take::<N::Inlets>()
-        .unwrap_or_default();
-    let mut outlets = world
-        .entity_mut(entity)
-        .take::<N::Outlets>()
-        .unwrap_or_default();
-    {
-        let inlets_s = inlets.reflect_mut().as_struct_mut().expect("struct");
-        let outlets_s = outlets.reflect_mut().as_struct_mut().expect("struct");
-        let mut view = PortView::new(inlets_s, outlets_s, &plan.fields, plan.inlet_field_count, &plan.field_lens, &plan.connected);
-        f(world, &mut view);
-    }
-    world.entity_mut(entity).insert((inlets, outlets));
-}
 ```
-
-Store `with_ports: fn(&mut World, Entity, &NodePlan, &mut dyn FnMut(&mut World, &mut PortView))` on the entry — use a concrete fn pointer wrapping `with_ports_of::<N>` that takes a `TickFn` style. Practical pattern:
-
-```rust
-pub type WithPortsFn = fn(&mut World, Entity, &NodePlan, TickFn, &TickCtx);
-// and a second for cook
-```
-
-Or keep tick/cook as today but change them to receive ports only after the runner does:
-
-```rust
-// entry still has tick: TickFn
-// runner:
-(entry.take_ports)(world, plan.entity, plan, &mut |world, view| {
-    (entry.tick)(world, plan.entity, view, &ctx);
-    // cook...
-});
-```
-
-Implement `TakePortsFn` accordingly.
 
 - [ ] **Step 7: Rewrite `graph_tick`**
 
@@ -675,16 +614,18 @@ for each ClearRef: get mut Inlets or Outlets, clear Events field in place via fi
 for each plan in order:
   dirty = false
   for copy in plan.copies:
-    read source Outlets slot (world)
+    read source Outlets slot (world) via field_ops
     compare/write target Inlets slot (world)
     dirty |= changed
   if inlets_changed_tick moved: dirty = true; record tick  // no prefill
   sticky cook_dirty
-  take_ports → tick → cook gate (cook_sources change ticks vs last_source_ticks) → insert ports
+  do_cook = entry.cooks && gate(cook_sources vs last_source_ticks, sticky dirty)
+  // cook_sources: sample inlet slot values with field_ops while components still in world
+  (entry.run_node)(world, plan.entity, &ctx, do_cook)
 reinsert CompiledGraph
 ```
 
-Delete `PortArena` from `GraphPlugin`.
+Delete `PortArena` from `GraphPlugin`. Delete `PortView` exports.
 
 - [ ] **Step 8: Rewrite `test_nodes.rs` and compile/tick tests**
 
@@ -725,7 +666,7 @@ EOF
 
 **Interfaces:**
 - Consumes: `Handle<Geometry>`, `Assets<Geometry>`, `register_geo_cook_source`, component `Outlets`, kindless graph.
-- Produces: cooks that `Assets::add` / `get_mut` and `ports.write` the `Handle<Geometry>`. **No** `world.entity_mut(node).insert(geo)`. `produced_change_tick` returns `None` — consumers watch the handle via cook-source registry. Keep the handle on node state to reuse the same asset across cooks (`get_mut` in place).
+- Produces: cooks that `Assets::add` / `get_mut` and write `outlets.geo = handle`. **No** `world.entity_mut(node).insert(geo)`. `produced_change_tick` returns `None`. Keep the handle on node state to reuse the same asset across cooks.
 
 - [ ] **Step 1: Update Grid**
 
@@ -744,9 +685,7 @@ fn register(app: &mut App) {
     register_geo_cook_source(app);
 }
 
-pub type CookFn = fn(&mut World, Entity, &mut PortView);
-
-fn cook(world: &mut World, node: Entity, ports: &mut PortView) {
+fn cook(world: &mut World, node: Entity, _inlets: &GridInlets, outlets: &mut GridOutlets) {
     // ... build `geo: Geometry` as today ...
     let prior = world.get::<GridState>(node).map(|s| s.handle.clone()).unwrap_or_default();
     let handle = {
@@ -761,7 +700,7 @@ fn cook(world: &mut World, node: Entity, ports: &mut PortView) {
     if let Some(mut state) = world.get_mut::<GridState>(node) {
         state.handle = handle.clone();
     }
-    ports.write(Self::OUT_GEO, handle);
+    outlets.geo = handle;
 }
 
 fn produced_change_tick(_world: &World, _node: Entity) -> Option<Tick> {
@@ -772,9 +711,8 @@ fn produced_change_tick(_world: &World, _node: Entity) -> Option<Tick> {
 Displace:
 
 ```rust
-fn cook(world: &mut World, node: Entity, ports: &mut PortView) {
-    let input_handle: Handle<Geometry> = ports.read(Self::IN_GEO);
-    let input = world.resource::<Assets<Geometry>>().get(&input_handle)?.clone();
+fn cook(world: &mut World, node: Entity, inlets: &DisplaceInlets, outlets: &mut DisplaceOutlets) {
+    let input = world.resource::<Assets<Geometry>>().get(&inlets.geo)?.clone();
     // ... displace into `out: Geometry` ...
     let prior = world.get::<DisplaceState>(node).map(|s| s.handle.clone()).unwrap_or_default();
     let handle = {
@@ -789,11 +727,11 @@ fn cook(world: &mut World, node: Entity, ports: &mut PortView) {
     if let Some(mut state) = world.get_mut::<DisplaceState>(node) {
         state.handle = handle.clone();
     }
-    ports.write(Self::OUT_GEO, handle);
+    outlets.geo = handle;
 }
 ```
 
-- [ ] **Step 2: Fix geo unit tests** that used `Product` / `PortArena` / `world.get::<Geometry>(entity)` — use `Assets` + mutable `PortView`.
+- [ ] **Step 2: Fix geo unit tests** that used `Product` / `PortArena` / `PortView` / `world.get::<Geometry>(entity)` — use `Assets` + typed inlets/outlets.
 
 - [ ] **Step 3: Run tests**
 
@@ -807,7 +745,7 @@ git add crates/sway-geo
 git commit -m "$(cat <<'EOF'
 feat(geo): Grid and Displace publish Handle<Geometry> via Assets
 
-Drop Geometry as a component; cooks write Bevy's asset table and emit the handle.
+Drop Geometry as a component; cooks write Bevy's asset table and typed outlets.
 EOF
 )"
 ```
@@ -818,9 +756,9 @@ EOF
 
 **Files:**
 - Modify: `crates/sway-nodes/src/scene.rs` — `children: Vec<Entity>`, `GroupOutlets { entity: Entity }` as Component; drop `register_product`
-- Modify: `crates/sway-nodes/src/mesh.rs` — `geo: Handle<Geometry>`, `material: Handle<StandardMaterial>` (or `Option<Handle<…>>`), `MeshNodeOutlets { entity: Entity }`; cook reads `Assets<Geometry>` + uses the material handle; `CookFn` mut ports
-- Modify: `crates/sway-nodes/src/material.rs` — `StandardMaterialOutlets { material: Handle<StandardMaterial> }`; tick writes the same handle it already keeps in `MaterialState` onto outlets. Drop `MaterialOf` / `register_product`.
-- Modify: signal nodes only as needed for `Outlets: Component` + `Default` derives
+- Modify: `crates/sway-nodes/src/mesh.rs` — `geo: Handle<Geometry>`, `material: Handle<StandardMaterial>`; typed tick/cook; no `PortView`
+- Modify: `crates/sway-nodes/src/material.rs` — `StandardMaterialOutlets { material: Handle<StandardMaterial> }`; tick writes `outlets.material = handle`. Drop `MaterialOf` / `register_product`.
+- Modify: signal nodes — replace `ports.read`/`write`/`emit` with field access; `Outlets: Component`
 - Modify: `crates/sway-nodes/tests/traces.rs` and per-node tests
 
 **Interfaces:**
@@ -865,8 +803,7 @@ pub struct MaterialState {
 }
 
 // in tick, after Assets<StandardMaterial> add/update — same as today —
-// also publish onto the outlet:
-ports.write(Self::OUT_MATERIAL, handle.clone());
+outlets.material = handle.clone();
 ```
 
 Register `Handle<StandardMaterial>` for reflect if needed. Drop `MaterialOf` and every `register_product` call.
@@ -887,12 +824,9 @@ pub struct MeshNodeOutlets {
     pub entity: Entity,
 }
 
-fn cook(world: &mut World, node: Entity, ports: &mut PortView) {
-    let material: Handle<StandardMaterial> = ports.read(Self::IN_MATERIAL);
-    // MeshMaterial3d as today — compare/insert the asset handle directly
-
-    let geo_handle: Handle<Geometry> = ports.read(Self::IN_GEO);
-    let Some(geo) = world.resource::<Assets<Geometry>>().get(&geo_handle).cloned() else {
+fn cook(world: &mut World, node: Entity, inlets: &MeshNodeInlets, _outlets: &mut MeshNodeOutlets) {
+    // MeshMaterial3d from inlets.material as today
+    let Some(geo) = world.resource::<Assets<Geometry>>().get(&inlets.geo).cloned() else {
         return;
     };
     // fingerprint / upload as today
@@ -1031,7 +965,7 @@ EOF
 Run:
 
 ```bash
-rg -n 'FieldKind|EdgeKind|PortArena|register_product|ReflectProduct|ProductAccess|Product<|struct Spatial|PortView::source|last_product_ticks' \
+rg -n 'FieldKind|EdgeKind|PortArena|PortView|register_product|ReflectProduct|ProductAccess|Product<|struct Spatial|last_product_ticks' \
   crates docs/superpowers/specs/2026-08-04-ports-as-component-values-design.md
 ```
 
@@ -1081,14 +1015,14 @@ EOF
 | §3 TypeId policies (Events, Entity, else gather) | 3 |
 | §4 FieldSpec without kind; derive_fields | 3 |
 | §5 Compile expand/validate/parent/order/emit | 3 (passes renamed to match code) |
-| §6 Tick clear/gather/tick/cook; PortView over components | 3 |
+| §6 Tick clear/gather/tick/cook; typed Inlets/Outlets (no PortView) | 3 |
 | §7 Handles | 1, 4, 5 — Bevy `Assets` / `Handle` for geometry and materials |
 | §9 Out of scope (GPU, RON, MIDI, Events clear still required) | not scheduled |
 | §10 Success criteria | 8 |
 
 **Placeholder scan:** none intentional — `CookFn` mutability and cook-source registry vs type-data are decided in Task 2/4 notes.
 
-**Type consistency:** ports use `Handle<Geometry>` and `Handle<StandardMaterial>` (or `Option<Handle<_>>`); `ParentFanOut`; `last_source_ticks`; `CopyEdge`; `Outlets: Component`; `CookFn(... &mut PortView)`.
+**Type consistency:** ports use `Handle<Geometry>` and `Handle<StandardMaterial>` (or `Option<Handle<_>>`); `NodeType::tick/cook` take typed `&mut Inlets` / `&Outlets`; `ParentFanOut`; `last_source_ticks`; `CopyEdge`; `Outlets: Component`; no `PortView`.
 
 ---
 
