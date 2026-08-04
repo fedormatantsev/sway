@@ -133,9 +133,26 @@ compile step that emits `ChildOf`.
 
 ### 2.4 Behaviours
 
-A producer — an LFO advancing its phase — has no inbound wire and therefore no
-`propagate` to run. Behaviour is registered against a plain component type and
-runs at its entity's position in the order:
+Most computation is not a connection, and most of it does not belong to the
+graph at all:
+
+| What the output depends on | Where it runs |
+|---|---|
+| Only external state — `Time`, MIDI, input | An ordinary Bevy system, before `graph_tick` |
+| Nothing; it only consumes — mesh upload, material rebuild | An ordinary Bevy system on `Changed<T>` |
+| **A wired inlet, in the same tick** | A **behaviour**, in the order |
+
+Only the third case needs the graph, and it needs it for a reason an ordinary
+system cannot satisfy: it must run *after* its inlets are propagated and
+*before* its output is read downstream — a position determined by data flow,
+not by a fixed slot in the schedule.
+
+An LFO is this third case, not the first. `LfoInlets` is
+`{ hz, shape, phase, amplitude }`, so an LFO whose amplitude is driven by
+another LFO — the canonical modulate-the-modulator patch — must compute
+between the two propagations. An LFO with nothing wired could indeed be a
+plain system; registration is per component type, so a type that *can* be
+driven is a behaviour even for instances that happen not to be.
 
 ```rust
 pub type BehaviourFn = fn(&mut World, Entity, &TickCtx);
@@ -293,11 +310,18 @@ Kept unchanged: `transport.rs`, `Time<Transport>`, `MusicalTime`, `TickCtx`,
 The core model above, plus a vertical slice chosen to exercise every mechanism
 exactly once:
 
-- a `SyncLfo` **behaviour** writing `FloatOut` / `Vec3Out`
-- a `TranslationFrom` **value wire** into `Transform`
+- an `Lfo` **behaviour**, whose amplitude is itself driven by a second LFO —
+  so the slice contains a genuine transformer and the order is load-bearing
+- an `AmplitudeFrom` and a `TranslationFrom` **value wire**
 - **fan-out** from one LFO to two consumers
 - the `ChildOf` **structural wire** parenting meshes to a group
 - a mesh built once at spawn by a plain Bevy system
+
+The modulated LFO is the point of the slice. A graph of pure sources wired to
+pure sinks is depth-one: every test would pass under any evaluation order, and
+the design's central claim — that a chain resolves within a single tick —
+would go unproven. The chain `Lfo A → Lfo B.amplitude → Transform.translation`
+fails visibly if the order is wrong.
 
 The demo graph is rebuilt on this slice and remains beat-locked through the
 untouched transport layer.
@@ -353,8 +377,10 @@ project's existing shape.
 4. The Kahn sort's order, and cycle members appended deterministically.
 5. A despawned producer leaves the consumer untouched rather than panicking.
 6. Watch systems mark the order dirty on insert and on remove.
-7. End-to-end: build the slice, tick, assert the child's world transform, and
-   assert that a behaviour ran before the wire that consumes its output.
+7. End-to-end: build the slice, tick **once**, and assert the child's world
+   transform already reflects the full `Lfo A → Lfo B.amplitude →
+   Transform.translation` chain. A one-tick assertion is what distinguishes a
+   correct order from a schedule that merely converges over several frames.
 
 ## 7. Risks
 
