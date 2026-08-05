@@ -11,15 +11,7 @@ use bevy_reflect::Reflect;
 use crate::ports::{Events, Occurrence, PortArena};
 use crate::schema::{FieldKind, FieldSpec};
 
-/// Context shared by every node ticked this frame.
-pub struct TickCtx {
-    /// The fixed timestep, in seconds.
-    pub dt: f32,
-    /// Absolute start of this tick's window, in seconds.
-    pub tick_start: f64,
-    /// Monotonically increasing tick counter, starting at 0.
-    pub tick_index: u64,
-}
+pub use crate::ctx::TickCtx;
 
 /// Scoped to one node: field ordinals are resolved against its base here.
 pub struct PortView<'a> {
