@@ -95,6 +95,100 @@ pub fn topological_order(vertices: &[Entity], links: &[Link]) -> Sorted {
     Sorted { order, cycles }
 }
 
+use bevy_ecs::resource::Resource;
+
+use crate::registry_wires::{BehaviourFn, BehaviourRegistry, WireRegistry};
+
+/// One unit of work. A step carries its own fn pointer: the list is
+/// heterogeneous and `Wire::propagate` is not object-safe (spec §3.1).
+///
+/// Data, not a closure — the editor shows the order and the tests assert on
+/// it.
+#[derive(Clone, Copy)]
+pub enum Step {
+    Propagate { run: PropagateFn, src: Entity, dst: Entity },
+    Run { run: BehaviourFn, entity: Entity },
+}
+
+#[derive(Resource, Default)]
+pub struct GraphOrder {
+    pub steps: Vec<Step>,
+}
+
+/// Set whenever the wiring changes. Starts `true`, so the first tick builds.
+#[derive(Resource)]
+pub struct TopologyDirty(pub bool);
+
+impl Default for TopologyDirty {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+/// Rebuilds `GraphOrder` when the topology has changed. Authoring-time only
+/// (spec §3.2): during a show nothing sets the flag and this is one bool read.
+pub fn rebuild_order(world: &mut World) {
+    if !world.resource::<TopologyDirty>().0 {
+        return;
+    }
+
+    let wires = world.remove_resource::<WireRegistry>().unwrap_or_default();
+    let behaviours = world.remove_resource::<BehaviourRegistry>().unwrap_or_default();
+
+    let mut links: Vec<Link> = Vec::new();
+    for entry in &wires.entries {
+        (entry.collect)(world, &mut links);
+    }
+
+    let mut behaviour_steps: Vec<(Entity, BehaviourFn)> = Vec::new();
+    for entry in &behaviours.entries {
+        let mut found = Vec::new();
+        (entry.collect)(world, &mut found);
+        behaviour_steps.extend(found.into_iter().map(|entity| (entity, entry.run)));
+    }
+
+    // Vertices are entities (spec §2.5): everything a wire touches, plus
+    // everything carrying a behaviour.
+    let mut vertices: Vec<Entity> = Vec::new();
+    for link in &links {
+        vertices.push(link.src);
+        vertices.push(link.dst);
+    }
+    vertices.extend(behaviour_steps.iter().map(|(entity, _)| *entity));
+    vertices.sort();
+    vertices.dedup();
+
+    let sorted = topological_order(&vertices, &links);
+
+    // Per entity, in evaluation order: propagate everything inbound, THEN run
+    // its behaviours. That ordering is what lets a driven behaviour see this
+    // tick's inputs.
+    let mut inbound: HashMap<Entity, Vec<usize>> = HashMap::new();
+    for (index, link) in links.iter().enumerate() {
+        inbound.entry(link.dst).or_default().push(index);
+    }
+    let mut behaviours_of: HashMap<Entity, Vec<BehaviourFn>> = HashMap::new();
+    for (entity, run) in behaviour_steps {
+        behaviours_of.entry(entity).or_default().push(run);
+    }
+
+    let mut steps: Vec<Step> = Vec::new();
+    for entity in sorted.order {
+        for &index in inbound.get(&entity).map_or(&[][..], |v| v.as_slice()) {
+            let link = links[index];
+            steps.push(Step::Propagate { run: link.run, src: link.src, dst: link.dst });
+        }
+        for &run in behaviours_of.get(&entity).map_or(&[][..], |v| v.as_slice()) {
+            steps.push(Step::Run { run, entity });
+        }
+    }
+
+    world.insert_resource(wires);
+    world.insert_resource(behaviours);
+    world.insert_resource(GraphOrder { steps });
+    world.resource_mut::<TopologyDirty>().0 = false;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +270,91 @@ mod tests {
         // loudly instead of silently flipping topological_order's determinism.
         assert!(e(1) > e(2), "if this fails, Entity::Ord's encoding changed -- \
             re-verify AscendingEntity and the cycles.sort_by direction");
+    }
+
+    // --- rebuild_order ------------------------------------------------
+
+    use crate::registry_wires::{register_behaviour, register_wire};
+    use crate::test_wires::{spawn_float, spawn_gain, FloatOut, Gain, GainFrom};
+    use bevy_app::App;
+
+    fn rebuild_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<TopologyDirty>();
+        app.init_resource::<GraphOrder>();
+        register_wire::<GainFrom>(&mut app);
+        app
+    }
+
+    /// Reads the order back as inspectable pairs. Deliberately does not
+    /// compare fn pointers: equal `fn` items are not guaranteed to have equal
+    /// addresses across codegen units.
+    fn step_shapes(app: &App) -> Vec<(&'static str, Entity, Entity)> {
+        app.world()
+            .resource::<GraphOrder>()
+            .steps
+            .iter()
+            .map(|step| match *step {
+                Step::Propagate { src, dst, .. } => ("propagate", src, dst),
+                Step::Run { entity, .. } => ("run", entity, entity),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_rebuild_emits_propagate_before_the_behaviour_that_consumes_it() {
+        // The ordering rule the whole design turns on.
+        let mut app = rebuild_app();
+        register_behaviour::<Gain>(&mut app, |_, _, _| {});
+        let src = spawn_float(app.world_mut(), 2.0);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+        app.world_mut().entity_mut(dst).insert(GainFrom(src));
+
+        rebuild_order(app.world_mut());
+
+        assert_eq!(
+            step_shapes(&app),
+            vec![("propagate", src, dst), ("run", dst, dst)]
+        );
+    }
+
+    #[test]
+    fn a_rebuild_clears_the_dirty_flag() {
+        let mut app = rebuild_app();
+        rebuild_order(app.world_mut());
+        assert!(!app.world().resource::<TopologyDirty>().0);
+    }
+
+    #[test]
+    fn a_clean_topology_is_not_rebuilt() {
+        let mut app = rebuild_app();
+        rebuild_order(app.world_mut());
+
+        // Wire something up but do NOT mark dirty: the order must not notice.
+        let src = spawn_float(app.world_mut(), 2.0);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+        app.world_mut().entity_mut(dst).insert(GainFrom(src));
+        rebuild_order(app.world_mut());
+
+        assert!(step_shapes(&app).is_empty(), "a clean flag means no work");
+    }
+
+    #[test]
+    fn a_two_hop_chain_is_ordered_end_to_end() {
+        let mut app = rebuild_app();
+        let a = spawn_float(app.world_mut(), 1.0);
+        // `b` is both a consumer and a producer.
+        let b = spawn_gain(app.world_mut(), 0.0);
+        app.world_mut().entity_mut(b).insert(FloatOut(0.0));
+        let c = spawn_gain(app.world_mut(), 0.0);
+        app.world_mut().entity_mut(b).insert(GainFrom(a));
+        app.world_mut().entity_mut(c).insert(GainFrom(b));
+
+        rebuild_order(app.world_mut());
+
+        assert_eq!(
+            step_shapes(&app),
+            vec![("propagate", a, b), ("propagate", b, c)]
+        );
     }
 }
