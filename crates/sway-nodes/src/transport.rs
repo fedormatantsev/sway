@@ -112,9 +112,9 @@ pub fn advance_transport(
 mod tests {
     use bevy_app::App;
     use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
-    use sway_graph::{GraphPlugin, Transport, TransportState, TransportTime};
+    use sway_graph::{Transport, TransportState, TransportTime, WiresPlugin};
 
-    use crate::{MidiInbox, RawMidi, SignalNodesPlugin};
+    use crate::{MidiInbox, MidiPlugin, RawMidi};
 
     const TICK_HZ: f64 = 120.0;
 
@@ -123,13 +123,17 @@ mod tests {
         app.add_plugins(TimePlugin)
             .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
             .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
-            .add_plugins((GraphPlugin, SignalNodesPlugin));
+            .add_plugins((WiresPlugin, MidiPlugin));
         app.update();
         app
     }
 
     fn raw(status: u8) -> RawMidi {
-        RawMidi { status, data1: 0, data2: 0 }
+        RawMidi {
+            status,
+            data1: 0,
+            data2: 0,
+        }
     }
 
     /// Queues `beats` worth of 24 ppqn pulses from `start`, at `bpm`.
@@ -161,24 +165,36 @@ mod tests {
     #[test]
     fn a_steady_clock_train_locks_to_its_tempo() {
         let mut app = transport_app();
-        app.world_mut().resource_mut::<MidiInbox>().push(0.0, raw(sway_midi::START));
+        app.world_mut()
+            .resource_mut::<MidiInbox>()
+            .push(0.0, raw(sway_midi::START));
         queue_clock(&mut app, 0.0, 120.0, 4.0);
         run_until(&mut app, 2.0);
 
-        assert!((bpm(&app) - 120.0).abs() < 0.5, "locked to {} BPM", bpm(&app));
+        assert!(
+            (bpm(&app) - 120.0).abs() < 0.5,
+            "locked to {} BPM",
+            bpm(&app)
+        );
         assert!(app.world().resource::<Time<Transport>>().transport().locked);
     }
 
     #[test]
     fn beats_advance_one_per_half_second_at_120_bpm() {
         let mut app = transport_app();
-        app.world_mut().resource_mut::<MidiInbox>().push(0.0, raw(sway_midi::START));
+        app.world_mut()
+            .resource_mut::<MidiInbox>()
+            .push(0.0, raw(sway_midi::START));
         queue_clock(&mut app, 0.0, 120.0, 8.0);
         run_until(&mut app, 2.0);
 
         // Two seconds of transport at 120 BPM is four beats, within the one
         // tick of quantization a mid-tick Start costs.
-        assert!((beats(&app) - 4.0).abs() < 0.1, "advanced {} beats", beats(&app));
+        assert!(
+            (beats(&app) - 4.0).abs() < 0.1,
+            "advanced {} beats",
+            beats(&app)
+        );
     }
 
     #[test]
@@ -188,9 +204,15 @@ mod tests {
         queue_clock(&mut app, 0.0, 120.0, 4.0);
         run_until(&mut app, 2.0);
 
-        assert_eq!(app.world().resource::<Time<Transport>>().state(), TransportState::Stopped);
+        assert_eq!(
+            app.world().resource::<Time<Transport>>().state(),
+            TransportState::Stopped
+        );
         assert_eq!(beats(&app), 0.0);
-        assert!((bpm(&app) - 120.0).abs() < 0.5, "tempo is still tracked while stopped");
+        assert!(
+            (bpm(&app) - 120.0).abs() < 0.5,
+            "tempo is still tracked while stopped"
+        );
     }
 
     #[test]
@@ -200,33 +222,50 @@ mod tests {
         // apart, which collapses the fit's slope. The first train therefore
         // stops at t=1.0, exactly where the transport does.
         let mut app = transport_app();
-        app.world_mut().resource_mut::<MidiInbox>().push(0.0, raw(sway_midi::START));
+        app.world_mut()
+            .resource_mut::<MidiInbox>()
+            .push(0.0, raw(sway_midi::START));
         queue_clock(&mut app, 0.0, 120.0, 2.0); // pulses over [0.0, 1.0)
-        app.world_mut().resource_mut::<MidiInbox>().push(1.0, raw(sway_midi::STOP));
+        app.world_mut()
+            .resource_mut::<MidiInbox>()
+            .push(1.0, raw(sway_midi::STOP));
         run_until(&mut app, 1.5);
         let frozen = beats(&app);
 
         run_until(&mut app, 0.5);
         assert_eq!(beats(&app), frozen, "a stopped transport must not advance");
 
-        app.world_mut().resource_mut::<MidiInbox>().push(2.0, raw(sway_midi::CONTINUE));
+        app.world_mut()
+            .resource_mut::<MidiInbox>()
+            .push(2.0, raw(sway_midi::CONTINUE));
         queue_clock(&mut app, 2.0, 120.0, 4.0); // pulses over [2.0, 4.0)
         run_until(&mut app, 1.0);
         assert!(beats(&app) > frozen, "continue resumes");
-        assert!(beats(&app) < frozen + 2.5, "continue resumes, it does not restart");
+        assert!(
+            beats(&app) < frozen + 2.5,
+            "continue resumes, it does not restart"
+        );
     }
 
     #[test]
     fn start_puts_the_playhead_back_at_the_top() {
         let mut app = transport_app();
-        app.world_mut().resource_mut::<MidiInbox>().push(0.0, raw(sway_midi::START));
+        app.world_mut()
+            .resource_mut::<MidiInbox>()
+            .push(0.0, raw(sway_midi::START));
         queue_clock(&mut app, 0.0, 120.0, 8.0);
         run_until(&mut app, 2.0);
         assert!(beats(&app) > 3.0);
 
-        app.world_mut().resource_mut::<MidiInbox>().push(2.0, raw(sway_midi::START));
+        app.world_mut()
+            .resource_mut::<MidiInbox>()
+            .push(2.0, raw(sway_midi::START));
         app.update();
-        assert!(beats(&app) < 0.1, "Start is position zero, got {}", beats(&app));
+        assert!(
+            beats(&app) < 0.1,
+            "Start is position zero, got {}",
+            beats(&app)
+        );
     }
 
     #[test]
@@ -235,7 +274,11 @@ mod tests {
         // SPP counts sixteenths: 8 sixteenths is two beats.
         app.world_mut().resource_mut::<MidiInbox>().push(
             0.0,
-            RawMidi { status: sway_midi::SONG_POSITION, data1: 8, data2: 0 },
+            RawMidi {
+                status: sway_midi::SONG_POSITION,
+                data1: 8,
+                data2: 0,
+            },
         );
         app.update();
         assert!((beats(&app) - 2.0).abs() < 0.05, "got {}", beats(&app));
@@ -246,7 +289,9 @@ mod tests {
         // The chosen dropout policy: never freeze the screen. A cable glitch
         // costs drift, not a stopped visual.
         let mut app = transport_app();
-        app.world_mut().resource_mut::<MidiInbox>().push(0.0, raw(sway_midi::START));
+        app.world_mut()
+            .resource_mut::<MidiInbox>()
+            .push(0.0, raw(sway_midi::START));
         queue_clock(&mut app, 0.0, 120.0, 4.0);
         run_until(&mut app, 2.0);
         let before = beats(&app);
@@ -264,7 +309,9 @@ mod tests {
     #[test]
     fn the_clock_re_locks_after_a_dropout_without_jumping() {
         let mut app = transport_app();
-        app.world_mut().resource_mut::<MidiInbox>().push(0.0, raw(sway_midi::START));
+        app.world_mut()
+            .resource_mut::<MidiInbox>()
+            .push(0.0, raw(sway_midi::START));
         queue_clock(&mut app, 0.0, 120.0, 4.0);
         run_until(&mut app, 2.0);
         run_until(&mut app, 1.0); // dropout
@@ -275,18 +322,27 @@ mod tests {
 
         let advanced = beats(&app) - before;
         assert!(advanced >= 0.0, "beats never run backwards");
-        assert!(advanced < 1.0, "re-locking must not jump a fit's origin into position: {advanced}");
+        assert!(
+            advanced < 1.0,
+            "re-locking must not jump a fit's origin into position: {advanced}"
+        );
     }
 
     #[test]
     fn a_tempo_change_is_followed() {
         let mut app = transport_app();
-        app.world_mut().resource_mut::<MidiInbox>().push(0.0, raw(sway_midi::START));
+        app.world_mut()
+            .resource_mut::<MidiInbox>()
+            .push(0.0, raw(sway_midi::START));
         let end = queue_clock(&mut app, 0.0, 120.0, 4.0);
         queue_clock(&mut app, end, 90.0, 6.0);
         run_until(&mut app, 6.0);
 
-        assert!((bpm(&app) - 90.0).abs() < 1.0, "followed to {} BPM", bpm(&app));
+        assert!(
+            (bpm(&app) - 90.0).abs() < 1.0,
+            "followed to {} BPM",
+            bpm(&app)
+        );
     }
 
     #[test]
@@ -294,7 +350,9 @@ mod tests {
         // Ordering, asserted rather than assumed: a node reading beat time in
         // its tick must see this tick's advance, not the previous one's.
         let mut app = transport_app();
-        app.world_mut().resource_mut::<MidiInbox>().push(0.0, raw(sway_midi::START));
+        app.world_mut()
+            .resource_mut::<MidiInbox>()
+            .push(0.0, raw(sway_midi::START));
         queue_clock(&mut app, 0.0, 120.0, 2.0);
         app.update();
         assert_eq!(

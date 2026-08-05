@@ -2,19 +2,13 @@ use std::fs;
 use std::path::PathBuf;
 
 use bevy_app::App;
-use bevy_ecs::entity::Entity;
 use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
 use serde::{Deserialize, Serialize};
-use sway_graph::{
-    compile, CompiledGraph, Edge, EdgeFrom, EdgeTo, Endpoint, Events, GraphNode, GraphPlugin,
-    NodeId, NodeType, NodeTypeRegistry, PortArena,
-};
+use sway_graph::{Transport, TransportTime, WiresPlugin};
 use sway_nodes::{
-    Beat, BeatTrigger, BeatTriggerInlets, BeatTriggerState, Division, Envelope, EnvelopeInlets,
-    EnvelopeState, LFO, LfoInlets, LfoState, Math, MathInlets, MathOp, MathState, MidiCC,
-    MidiCCInlets, MidiCCState, MidiInbox, MidiNote, MidiNoteInlets, MidiNoteState, NoteMsg,
-    RawMidi, Remap, RemapInlets, RemapState, SignalNodesPlugin, TransportTimeInlets,
-    TransportTimeNode, TransportTimeState, Waveform,
+    BeatTriggerState, Division, EnvelopeParams, EnvelopeState, MathOp, MidiInbox, MidiPlugin,
+    RawMidi, TickMidi, Waveform, beat_pulses, envelope_tick, lfo_value, math_value, note_message,
+    remap_value,
 };
 
 #[derive(Debug, Deserialize)]
@@ -23,63 +17,56 @@ struct TraceInput {
     ticks: u32,
     #[serde(default)]
     events: Vec<(f64, MidiEvent)>,
-    /// A synthesised 24 ppqn clock train. Generated rather than written out:
-    /// ten seconds at 120 BPM is 480 pulses, and a generator can carry
-    /// deterministic jitter where a hand-written list cannot.
     #[serde(default)]
     clock: Option<ClockSpec>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ClockSpec {
-    /// When the first pulse arrives.
     start: f64,
-    /// `(bpm, beats)` segments, played back to back.
     segments: Vec<(f64, f64)>,
-    /// Peak arrival jitter, in seconds. Deterministic — see `Lcg`.
     #[serde(default)]
     jitter: f64,
-    /// `(from, to)` in seconds: pulses inside this window are dropped.
     #[serde(default)]
     dropout: Option<(f64, f64)>,
 }
 
-/// A deterministic jitter source. `rand` is not an option: a golden trace
-/// that is not reproducible is not a golden trace.
 struct Lcg(u64);
 
 impl Lcg {
     fn next_signed(&mut self, magnitude: f64) -> f64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let unit = (self.0 >> 11) as f64 / (1u64 << 53) as f64;
         (unit * 2.0 - 1.0) * magnitude
     }
 }
 
-/// Expands a `ClockSpec` into timestamped clock messages.
 fn clock_events(spec: &ClockSpec) -> Vec<(f64, RawMidi)> {
-    let mut lcg = Lcg(0xC10C_C10C);
-    let mut out = Vec::new();
-    let mut t = spec.start;
+    let mut random = Lcg(0xC10C_C10C);
+    let mut events = Vec::new();
+    let mut at = spec.start;
     for &(bpm, beats) in &spec.segments {
-        let secs_per_pulse = (60.0 / bpm) / 24.0;
+        let seconds_per_pulse = (60.0 / bpm) / 24.0;
         for _ in 0..((beats * 24.0).round() as usize) {
-            let dropped = spec
-                .dropout
-                .is_some_and(|(from, to)| t >= from && t < to);
+            let dropped = spec.dropout.is_some_and(|(from, to)| at >= from && at < to);
             if !dropped {
-                out.push((
-                    t + lcg.next_signed(spec.jitter),
-                    RawMidi { status: sway_midi::CLOCK, data1: 0, data2: 0 },
+                events.push((
+                    at + random.next_signed(spec.jitter),
+                    RawMidi {
+                        status: sway_midi::CLOCK,
+                        data1: 0,
+                        data2: 0,
+                    },
                 ));
             }
-            t += secs_per_pulse;
+            at += seconds_per_pulse;
         }
     }
-    // Jitter can reorder two adjacent pulses; the inbox is drained in
-    // arrival order, so sort here rather than relying on the generator.
-    out.sort_by(|a, b| a.0.total_cmp(&b.0));
-    out
+    events.sort_by(|a, b| a.0.total_cmp(&b.0));
+    events
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,20 +88,6 @@ enum Snapshot {
     Events(Vec<(f32, String)>),
 }
 
-#[derive(Clone, Copy)]
-enum PortKindSpec {
-    Continuous(u16),
-    NoteEvents(u16, &'static str),
-    /// A `BeatTrigger`'s pulse outlet.
-    BeatEvents(u16),
-}
-
-struct TracedPort {
-    label: &'static str,
-    node: Entity,
-    kind: PortKindSpec,
-}
-
 fn trace_path(name: &str, suffix: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -129,420 +102,192 @@ fn load_input(name: &str) -> TraceInput {
     ron::from_str(&source).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()))
 }
 
-fn node_type_id<N: NodeType>(app: &App) -> sway_graph::NodeTypeId {
-    app.world()
-        .resource::<NodeTypeRegistry>()
-        .id_of(core::any::type_name::<N>())
-        .expect("node type registered by SignalNodesPlugin")
+enum Runner {
+    Envelope {
+        state: EnvelopeState,
+        fan_in: bool,
+        trace_notes: bool,
+    },
+    Lfo,
+    Cc {
+        held: f32,
+    },
+    Chain,
+    Transport,
+    Beat {
+        state: BeatTriggerState,
+    },
 }
 
-fn connect(
-    app: &mut App,
-    source: Entity,
-    source_field: u16,
-    target: Entity,
-    target_field: u16,
-) {
-    connect_at(app, source, source_field, target, target_field, 0);
-}
-
-fn connect_at(
-    app: &mut App,
-    source: Entity,
-    source_field: u16,
-    target: Entity,
-    target_field: u16,
-    target_index: u16,
-) {
-    app.world_mut().spawn((
-        Edge {
-            from: Endpoint::field(source_field),
-            to: Endpoint { field: target_field, index: target_index },
-        },
-        EdgeFrom(source),
-        EdgeTo(target),
-    ));
-}
-
-fn compile_graph(app: &mut App) {
-    let graph = compile(app.world_mut()).expect("trace graph compiles");
-    let slots_len = graph.slots_len;
-    app.world_mut().resource_mut::<PortArena>().resize(slots_len);
-    app.world_mut().insert_resource(graph);
-}
-
-fn spawn_midi_note(app: &mut App, id: u32, channel: u8, note_lo: u8, note_hi: u8) -> Entity {
-    let midi_type = node_type_id::<MidiNote>(app);
-    app.world_mut()
-        .spawn((
-            GraphNode {
-                id: NodeId(id),
-                node_type: midi_type,
-            },
-            MidiNoteInlets {
-                channel,
-                note_lo,
-                note_hi,
-            },
-            MidiNoteState,
-        ))
-        .id()
-}
-
-/// `trigger_slots` sizes the variadic `triggers` field, because — like
-/// `Group::children` — a variadic field's slot count comes from the instance,
-/// not the type: one slot per `MidiNote` this envelope will fan events in
-/// from.
-fn spawn_envelope(app: &mut App, id: u32, trigger_slots: usize) -> Entity {
-    let envelope_type = node_type_id::<Envelope>(app);
-    app.world_mut()
-        .spawn((
-            GraphNode {
-                id: NodeId(id),
-                node_type: envelope_type,
-            },
-            EnvelopeInlets {
-                triggers: vec![Events::default(); trigger_slots],
-                release_triggers: vec![Events::default()],
-                attack: 0.05,
-                decay: 0.08,
-                sustain: 0.4,
-                release: 0.1,
-            },
-            EnvelopeState::default(),
-        ))
-        .id()
-}
-
-fn build_midi_envelope(app: &mut App, trace_note_events: bool) -> Vec<TracedPort> {
-    let midi = spawn_midi_note(app, 0, 0, 0, 127);
-    let envelope = spawn_envelope(app, 1, 1);
-    connect_at(
-        app,
-        midi,
-        MidiNote::OUT_NOTE_ON,
-        envelope,
-        Envelope::TRIGGERS,
-        0,
-    );
-    connect_at(
-        app,
-        midi,
-        MidiNote::OUT_NOTE_OFF,
-        envelope,
-        Envelope::RELEASE_TRIGGERS,
-        0,
-    );
-    compile_graph(app);
-    let mut ports = vec![TracedPort {
-        label: "envelope.value",
-        node: envelope,
-        kind: PortKindSpec::Continuous(Envelope::OUT_VALUE),
-    }];
-    if trace_note_events {
-        ports.push(TracedPort {
-            label: "midinote.note_on",
-            node: midi,
-            kind: PortKindSpec::NoteEvents(MidiNote::OUT_NOTE_ON, "note_on"),
-        });
-    }
-    ports
-}
-
-fn build_envelope_retrigger(app: &mut App) -> Vec<TracedPort> {
-    build_midi_envelope(app, true)
-}
-
-fn build_lfo_one_cycle(app: &mut App) -> Vec<TracedPort> {
-    let lfo_type = node_type_id::<LFO>(app);
-    let lfo = app
-        .world_mut()
-        .spawn((
-            GraphNode {
-                id: NodeId(0),
-                node_type: lfo_type,
-            },
-            LfoInlets {
-                hz: 2.0,
-                shape: Waveform::Sine,
-                phase: 0.0,
-                amplitude: 1.0,
-            },
-            LfoState,
-        ))
-        .id();
-    compile_graph(app);
-    vec![TracedPort {
-        label: "lfo.value",
-        node: lfo,
-        kind: PortKindSpec::Continuous(LFO::OUT_VALUE),
-    }]
-}
-
-fn build_cc_hold(app: &mut App) -> Vec<TracedPort> {
-    let cc_type = node_type_id::<MidiCC>(app);
-    let cc = app
-        .world_mut()
-        .spawn((
-            GraphNode {
-                id: NodeId(0),
-                node_type: cc_type,
-            },
-            MidiCCInlets { channel: 0, cc: 74 },
-            MidiCCState,
-        ))
-        .id();
-    compile_graph(app);
-    vec![TracedPort {
-        label: "midicc.value",
-        node: cc,
-        kind: PortKindSpec::Continuous(MidiCC::OUT_VALUE),
-    }]
-}
-
-fn build_chain_math_remap(app: &mut App) -> Vec<TracedPort> {
-    let lfo_type = node_type_id::<LFO>(app);
-    let math_type = node_type_id::<Math>(app);
-    let remap_type = node_type_id::<Remap>(app);
-    let lfo = app
-        .world_mut()
-        .spawn((
-            GraphNode {
-                id: NodeId(0),
-                node_type: lfo_type,
-            },
-            LfoInlets {
-                hz: 1.0,
-                shape: Waveform::Sine,
-                phase: 0.0,
-                amplitude: 1.0,
-            },
-            LfoState,
-        ))
-        .id();
-    let math = app
-        .world_mut()
-        .spawn((
-            GraphNode {
-                id: NodeId(1),
-                node_type: math_type,
-            },
-            MathInlets {
-                op: MathOp::Add,
-                a: 0.0,
-                b: 1.0,
-            },
-            MathState,
-        ))
-        .id();
-    let remap = app
-        .world_mut()
-        .spawn((
-            GraphNode {
-                id: NodeId(2),
-                node_type: remap_type,
-            },
-            RemapInlets {
-                value: 0.0,
-                in_min: 0.0,
-                in_max: 2.0,
-                out_min: -1.0,
-                out_max: 1.0,
-                clamp: true,
-            },
-            RemapState,
-        ))
-        .id();
-    connect(app, lfo, LFO::OUT_VALUE, math, Math::A);
-    connect(app, math, Math::OUT_VALUE, remap, Remap::VALUE);
-    compile_graph(app);
-    vec![
-        TracedPort {
-            label: "lfo.value",
-            node: lfo,
-            kind: PortKindSpec::Continuous(LFO::OUT_VALUE),
-        },
-        TracedPort {
-            label: "math.value",
-            node: math,
-            kind: PortKindSpec::Continuous(Math::OUT_VALUE),
-        },
-        TracedPort {
-            label: "remap.value",
-            node: remap,
-            kind: PortKindSpec::Continuous(Remap::OUT_VALUE),
-        },
-    ]
-}
-
-fn build_two_notes_one_tick(app: &mut App) -> Vec<TracedPort> {
-    build_midi_envelope(app, true)
-}
-
-fn build_event_fan_in(app: &mut App) -> Vec<TracedPort> {
-    let midi_a = spawn_midi_note(app, 0, 0, 0, 127);
-    let midi_b = spawn_midi_note(app, 1, 1, 0, 127);
-    let envelope = spawn_envelope(app, 2, 2);
-    // `Envelope::TRIGGERS` is variadic; each `MidiNote` feeds its own
-    // element. `midi_a` takes element 0 and `midi_b` element 1 — the same
-    // order the old engine's compiled rank gave them — because `Envelope`'s
-    // own `merged()` now plays the part the engine's fan-in used to, and
-    // getting this order right is what makes the trace comparison below
-    // meaningful rather than merely green.
-    for (index, midi) in [midi_a, midi_b].into_iter().enumerate() {
-        connect_at(
-            app,
-            midi,
-            MidiNote::OUT_NOTE_ON,
-            envelope,
-            Envelope::TRIGGERS,
-            index as u16,
-        );
-    }
-    compile_graph(app);
-    vec![
-        TracedPort {
-            label: "envelope.value",
-            node: envelope,
-            kind: PortKindSpec::Continuous(Envelope::OUT_VALUE),
-        },
-        TracedPort {
-            label: "envelope.trigger",
-            node: envelope,
-            kind: PortKindSpec::NoteEvents(Envelope::TRIGGERS, "note_on"),
-        },
-    ]
-}
-
-fn spawn_transport_time(app: &mut App, id: u32) -> Entity {
-    let node_type = node_type_id::<TransportTimeNode>(app);
-    app.world_mut()
-        .spawn((
-            GraphNode { id: NodeId(id), node_type },
-            TransportTimeInlets::default(),
-            TransportTimeState,
-        ))
-        .id()
-}
-
-/// Every transport trace watches the same three ports: what the estimator
-/// thinks the tempo is, where the playhead is, and whether it is running.
-fn transport_ports(node: Entity) -> Vec<TracedPort> {
-    vec![
-        TracedPort {
-            label: "transport.bpm",
-            node,
-            kind: PortKindSpec::Continuous(TransportTimeNode::OUT_BPM),
-        },
-        TracedPort {
-            label: "transport.beats",
-            node,
-            kind: PortKindSpec::Continuous(TransportTimeNode::OUT_BEATS),
-        },
-        TracedPort {
-            label: "transport.playing",
-            node,
-            kind: PortKindSpec::Continuous(TransportTimeNode::OUT_PLAYING),
-        },
-    ]
-}
-
-fn build_transport_readout(app: &mut App) -> Vec<TracedPort> {
-    let node = spawn_transport_time(app, 0);
-    compile_graph(app);
-    transport_ports(node)
-}
-
-fn build_beat_trigger(app: &mut App) -> Vec<TracedPort> {
-    let time = spawn_transport_time(app, 0);
-    let trigger_type = node_type_id::<BeatTrigger>(app);
-    let trigger = app
-        .world_mut()
-        .spawn((
-            GraphNode { id: NodeId(1), node_type: trigger_type },
-            BeatTriggerInlets { division: Division::Beat },
-            BeatTriggerState::default(),
-        ))
-        .id();
-    compile_graph(app);
-    let mut ports = transport_ports(time);
-    ports.push(TracedPort {
-        label: "beat.pulse",
-        node: trigger,
-        kind: PortKindSpec::BeatEvents(BeatTrigger::OUT_PULSE),
-    });
-    ports
-}
-
-fn snapshot_port(app: &App, port: &TracedPort) -> Snapshot {
-    let compiled = app.world().resource::<CompiledGraph>();
-    let plan = compiled
-        .plans
-        .iter()
-        .find(|p| p.entity == port.node)
-        .expect("traced node is compiled");
-    let arena = app.world().resource::<PortArena>();
-    match port.kind {
-        PortKindSpec::Continuous(ordinal) => {
-            let slot = plan.base + plan.field_offsets[ordinal as usize];
-            let value = arena.values[slot]
-                .try_downcast_ref::<f32>()
-                .copied()
-                .expect("traced continuous port is f32");
-            Snapshot::Continuous(value)
+impl Runner {
+    fn for_case(name: &str) -> (Self, Vec<String>) {
+        match name {
+            "envelope-retrigger" | "two-notes-one-tick" => (
+                Self::Envelope {
+                    state: EnvelopeState::default(),
+                    fan_in: false,
+                    trace_notes: true,
+                },
+                vec!["envelope.value".into(), "midinote.note_on".into()],
+            ),
+            "event-fan-in" => (
+                Self::Envelope {
+                    state: EnvelopeState::default(),
+                    fan_in: true,
+                    trace_notes: true,
+                },
+                vec!["envelope.value".into(), "envelope.trigger".into()],
+            ),
+            "lfo-one-cycle" => (Self::Lfo, vec!["lfo.value".into()]),
+            "cc-hold" => (Self::Cc { held: 0.0 }, vec!["midicc.value".into()]),
+            "chain-math-remap" => (
+                Self::Chain,
+                vec![
+                    "lfo.value".into(),
+                    "math.value".into(),
+                    "remap.value".into(),
+                ],
+            ),
+            "transport-lock" | "transport-tempo-change" | "transport-dropout" => (
+                Self::Transport,
+                vec![
+                    "transport.bpm".into(),
+                    "transport.beats".into(),
+                    "transport.playing".into(),
+                ],
+            ),
+            "beat-trigger" => (
+                Self::Beat {
+                    state: BeatTriggerState::default(),
+                },
+                vec![
+                    "transport.bpm".into(),
+                    "transport.beats".into(),
+                    "transport.playing".into(),
+                    "beat.pulse".into(),
+                ],
+            ),
+            _ => panic!("unknown trace case `{name}`"),
         }
-        PortKindSpec::NoteEvents(ordinal, event_name) => {
-            // The field may be variadic (`Envelope::TRIGGERS` fans in one
-            // `MidiNote` per element), so every element's occurrences are
-            // gathered here, then sorted by offset (element index only
-            // breaks ties) — mirroring `Envelope::merged`'s own gathering
-            // rule, which keeps this trace meaningful for a fan-in of more
-            // than one source.
-            let offset = plan.field_offsets[ordinal as usize];
-            let len = plan.field_lens[ordinal as usize];
-            let mut events: Vec<(f32, String)> = (0..len)
-                .flat_map(|index| {
-                    let slot = plan.base + offset + index;
-                    arena.values[slot]
-                        .try_downcast_ref::<Events<NoteMsg>>()
-                        .expect("traced event port is Events<NoteMsg>")
-                        .occurrences
-                        .iter()
-                        .map(|occurrence| {
+    }
+
+    fn snapshot(&mut self, app: &App) -> Vec<Snapshot> {
+        let fixed = app.world().resource::<Time<Fixed>>();
+        let dt = fixed.delta_secs();
+        let tick_start = fixed.elapsed_secs_f64() - dt as f64;
+        match self {
+            Self::Envelope {
+                state,
+                fan_in,
+                trace_notes,
+            } => {
+                let messages = &app.world().resource::<TickMidi>().events;
+                let channels: &[u8] = if *fan_in { &[0, 1] } else { &[0] };
+                let mut envelope_events = Vec::new();
+                let mut note_events = Vec::new();
+                for &channel in channels {
+                    for &(offset, raw) in messages {
+                        if let Some((gate_on, note)) = note_message(raw, channel, 0, 127) {
+                            if gate_on {
+                                note_events.push((offset, note.clone()));
+                            }
+                            envelope_events.push((offset, gate_on, note));
+                        }
+                    }
+                }
+                envelope_events.sort_by(|a, b| a.0.total_cmp(&b.0));
+                note_events.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let value = envelope_tick(
+                    state,
+                    &envelope_events,
+                    tick_start,
+                    dt,
+                    EnvelopeParams {
+                        attack: 0.05,
+                        decay: 0.08,
+                        sustain: 0.4,
+                        release: 0.1,
+                    },
+                );
+                let mut snapshots = vec![Snapshot::Continuous(value)];
+                if *trace_notes {
+                    snapshots.push(Snapshot::Events(
+                        note_events
+                            .into_iter()
+                            .map(|(offset, note)| {
+                                (offset, format!("note_on({},{})", note.note, note.velocity))
+                            })
+                            .collect(),
+                    ));
+                }
+                snapshots
+            }
+            Self::Lfo => vec![Snapshot::Continuous(lfo_value(
+                2.0,
+                Waveform::Sine,
+                0.0,
+                1.0,
+                tick_start,
+            ))],
+            Self::Cc { held } => {
+                for &(_, message) in &app.world().resource::<TickMidi>().events {
+                    if let Some(value) = sway_nodes::cc_value(message, 0, 74) {
+                        *held = value;
+                    }
+                }
+                vec![Snapshot::Continuous(*held)]
+            }
+            Self::Chain => {
+                let lfo = lfo_value(1.0, Waveform::Sine, 0.0, 1.0, tick_start);
+                let math = math_value(MathOp::Add, lfo, 1.0);
+                let remap = remap_value(math, 0.0, 2.0, -1.0, 1.0, true);
+                vec![
+                    Snapshot::Continuous(lfo),
+                    Snapshot::Continuous(math),
+                    Snapshot::Continuous(remap),
+                ]
+            }
+            Self::Transport => transport_snapshots(app),
+            Self::Beat { state } => {
+                let time = app.world().resource::<Time<Transport>>();
+                let pulses = beat_pulses(
+                    state,
+                    Division::Beat,
+                    time.is_playing(),
+                    time.transport().beats_per_bar,
+                    time.beats(),
+                    time.delta_secs_f64(),
+                    time.transport().origin_beats,
+                    dt,
+                );
+                let mut snapshots = transport_snapshots(app);
+                snapshots.push(Snapshot::Events(
+                    pulses
+                        .into_iter()
+                        .map(|pulse| {
                             (
-                                occurrence.offset,
+                                pulse.offset,
                                 format!(
-                                    "{event_name}({},{})",
-                                    occurrence.value.note, occurrence.value.velocity
+                                    "beat({},{},{})",
+                                    pulse.value.bar, pulse.value.beat, pulse.value.sixteenth
                                 ),
                             )
                         })
-                })
-                .collect();
-            events.sort_by(|a, b| a.0.total_cmp(&b.0));
-            Snapshot::Events(events)
-        }
-        PortKindSpec::BeatEvents(ordinal) => {
-            let slot = plan.base + plan.field_offsets[ordinal as usize];
-            let mut events: Vec<(f32, String)> = arena.values[slot]
-                .try_downcast_ref::<Events<Beat>>()
-                .expect("traced beat port is Events<Beat>")
-                .occurrences
-                .iter()
-                .map(|occurrence| {
-                    (
-                        occurrence.offset,
-                        format!(
-                            "beat({},{},{})",
-                            occurrence.value.bar, occurrence.value.beat, occurrence.value.sixteenth
-                        ),
-                    )
-                })
-                .collect();
-            events.sort_by(|a, b| a.0.total_cmp(&b.0));
-            Snapshot::Events(events)
+                        .collect(),
+                ));
+                snapshots
+            }
         }
     }
+}
+
+fn transport_snapshots(app: &App) -> Vec<Snapshot> {
+    let time = app.world().resource::<Time<Transport>>();
+    vec![
+        Snapshot::Continuous(time.bpm() as f32),
+        Snapshot::Continuous(time.beats() as f32),
+        Snapshot::Continuous(if time.is_playing() { 1.0 } else { 0.0 }),
+    ]
 }
 
 fn run_trace(name: &str) -> TraceOutput {
@@ -551,22 +296,9 @@ fn run_trace(name: &str) -> TraceOutput {
     app.add_plugins(TimePlugin)
         .insert_resource(Time::<Fixed>::from_hz(input.tick_hz))
         .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
-        .add_plugins((GraphPlugin, SignalNodesPlugin));
+        .add_plugins((WiresPlugin, MidiPlugin));
     app.update();
 
-    let ports = match name {
-        "envelope-retrigger" => build_envelope_retrigger(&mut app),
-        "lfo-one-cycle" => build_lfo_one_cycle(&mut app),
-        "cc-hold" => build_cc_hold(&mut app),
-        "chain-math-remap" => build_chain_math_remap(&mut app),
-        "two-notes-one-tick" => build_two_notes_one_tick(&mut app),
-        "event-fan-in" => build_event_fan_in(&mut app),
-        "transport-lock" | "transport-tempo-change" | "transport-dropout" => {
-            build_transport_readout(&mut app)
-        }
-        "beat-trigger" => build_beat_trigger(&mut app),
-        _ => panic!("unknown trace case `{name}`"),
-    };
     for (time, message) in input.events {
         app.world_mut().resource_mut::<MidiInbox>().push(
             time,
@@ -577,23 +309,22 @@ fn run_trace(name: &str) -> TraceOutput {
             },
         );
     }
-    if let Some(spec) = &input.clock {
-        for (time, message) in clock_events(spec) {
-            app.world_mut().resource_mut::<MidiInbox>().push(time, message);
+    if let Some(clock) = &input.clock {
+        for (time, message) in clock_events(clock) {
+            app.world_mut()
+                .resource_mut::<MidiInbox>()
+                .push(time, message);
         }
     }
 
+    let (mut runner, ports) = Runner::for_case(name);
     let ticks = (0..input.ticks)
         .map(|tick| {
             app.update();
-            let values = ports.iter().map(|port| snapshot_port(&app, port)).collect();
-            (tick, values)
+            (tick, runner.snapshot(&app))
         })
         .collect();
-    TraceOutput {
-        ports: ports.iter().map(|port| port.label.to_owned()).collect(),
-        ticks,
-    }
+    TraceOutput { ports, ticks }
 }
 
 fn assert_or_bless(name: &str, actual: &TraceOutput) {
@@ -603,10 +334,8 @@ fn assert_or_bless(name: &str, actual: &TraceOutput) {
             .expect("serialize golden trace");
         fs::write(&path, format!("{serialized}\n"))
             .unwrap_or_else(|error| panic!("write {}: {error}", path.display()));
-        println!("~ rewrote {}", path.display());
         return;
     }
-
     let source = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let expected: TraceOutput =
@@ -614,111 +343,57 @@ fn assert_or_bless(name: &str, actual: &TraceOutput) {
     if expected == *actual {
         return;
     }
-
-    let tick_count = expected.ticks.len().max(actual.ticks.len());
-    for tick_position in 0..tick_count {
-        let expected_tick = expected.ticks.get(tick_position);
-        let actual_tick = actual.ticks.get(tick_position);
-        let tick = actual_tick
-            .map(|(tick, _)| *tick)
-            .or_else(|| expected_tick.map(|(tick, _)| *tick))
-            .unwrap_or(tick_position as u32);
-        let port_count = expected_tick
-            .map_or(0, |(_, values)| values.len())
-            .max(actual_tick.map_or(0, |(_, values)| values.len()));
-        for port_index in 0..port_count {
-            let expected_value = expected_tick.and_then(|(_, values)| values.get(port_index));
-            let actual_value = actual_tick.and_then(|(_, values)| values.get(port_index));
+    for (expected_tick, actual_tick) in expected.ticks.iter().zip(&actual.ticks) {
+        for (port_index, (expected_value, actual_value)) in
+            expected_tick.1.iter().zip(&actual_tick.1).enumerate()
+        {
             if expected_value != actual_value {
-                let port = actual
-                    .ports
-                    .get(port_index)
-                    .or_else(|| expected.ports.get(port_index))
-                    .map(String::as_str)
-                    .unwrap_or("<missing>");
                 panic!(
-                    "golden trace mismatch at tick {tick}, port `{port}`: expected \
-                     {expected_value:?}, actual {actual_value:?}"
+                    "golden trace mismatch at tick {}, port `{}`: expected {:?}, actual {:?}",
+                    actual_tick.0,
+                    actual
+                        .ports
+                        .get(port_index)
+                        .map(String::as_str)
+                        .unwrap_or("<missing>"),
+                    expected_value,
+                    actual_value
                 );
             }
         }
     }
-    panic!("golden trace mismatch at tick 0, port `<metadata>` for `{name}`");
+    panic!("golden trace metadata mismatch for `{name}`");
 }
 
-#[test]
-fn envelope_retrigger() {
-    let actual = run_trace("envelope-retrigger");
-    assert_or_bless("envelope-retrigger", &actual);
+macro_rules! trace_test {
+    ($name:ident, $case:literal) => {
+        #[test]
+        fn $name() {
+            let actual = run_trace($case);
+            assert_or_bless($case, &actual);
+        }
+    };
 }
 
-#[test]
-fn lfo_one_cycle() {
-    let actual = run_trace("lfo-one-cycle");
-    assert_or_bless("lfo-one-cycle", &actual);
-}
+trace_test!(envelope_retrigger, "envelope-retrigger");
+trace_test!(lfo_one_cycle, "lfo-one-cycle");
+trace_test!(cc_hold, "cc-hold");
+trace_test!(chain_math_remap, "chain-math-remap");
+trace_test!(two_notes_one_tick, "two-notes-one-tick");
+trace_test!(event_fan_in, "event-fan-in");
+trace_test!(transport_lock, "transport-lock");
+trace_test!(transport_tempo_change, "transport-tempo-change");
+trace_test!(transport_dropout, "transport-dropout");
+trace_test!(beat_trigger, "beat-trigger");
 
 #[test]
-fn cc_hold() {
-    let actual = run_trace("cc-hold");
-    assert_or_bless("cc-hold", &actual);
-}
-
-#[test]
-fn chain_math_remap() {
-    let actual = run_trace("chain-math-remap");
-    assert_or_bless("chain-math-remap", &actual);
-}
-
-#[test]
-fn two_notes_one_tick() {
-    let actual = run_trace("two-notes-one-tick");
-    assert_or_bless("two-notes-one-tick", &actual);
-}
-
-#[test]
-fn event_fan_in() {
-    let actual = run_trace("event-fan-in");
-    assert_or_bless("event-fan-in", &actual);
-}
-
-#[test]
-fn the_same_trace_twice_is_bit_identical() {
-    let a = run_trace("envelope-retrigger");
-    let b = run_trace("envelope-retrigger");
-    assert_eq!(a, b);
-}
-
-#[test]
-fn transport_lock() {
-    let actual = run_trace("transport-lock");
-    assert_or_bless("transport-lock", &actual);
-}
-
-#[test]
-fn transport_tempo_change() {
-    let actual = run_trace("transport-tempo-change");
-    assert_or_bless("transport-tempo-change", &actual);
-}
-
-#[test]
-fn transport_dropout() {
-    let actual = run_trace("transport-dropout");
-    assert_or_bless("transport-dropout", &actual);
-}
-
-#[test]
-fn beat_trigger() {
-    let actual = run_trace("beat-trigger");
-    assert_or_bless("beat-trigger", &actual);
-}
-
-#[test]
-fn a_transport_trace_replays_bit_identically() {
-    // The exactness claim of parent §2.6, now covering the clock path: the
-    // estimator, the offset tracker and the boundary search are all pure
-    // functions of the tick sequence.
-    let a = run_trace("transport-dropout");
-    let b = run_trace("transport-dropout");
-    assert_eq!(a, b);
+fn traces_replay_bit_identically() {
+    assert_eq!(
+        run_trace("transport-dropout"),
+        run_trace("transport-dropout")
+    );
+    assert_eq!(
+        run_trace("envelope-retrigger"),
+        run_trace("envelope-retrigger")
+    );
 }

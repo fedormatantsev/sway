@@ -61,10 +61,8 @@ impl Attribute {
     }
 }
 
-/// Derives `TypePath` and not `Reflect`: this type is used as a *capability
-/// marker* on `Slot<Geometry>` and `NodeType::Produces`, which need only a
-/// name and a `TypeId`. Reflecting `Arc<Vec<Vec3>>` would be work with no
-/// consumer (plan Global Constraints).
+/// Derives `TypePath` and not `Reflect`: reflecting `Arc<Vec<Vec3>>` would be
+/// work with no consumer.
 #[derive(Component, Clone, Debug, Default, TypePath)]
 pub struct Geometry {
     attrs: BTreeMap<String, Attribute>,
@@ -171,6 +169,9 @@ mod tests {
         let mut g = Geometry::new(3);
         assert!(g.indices().is_none());
         g.set_indices(Some(Arc::new(vec![0, 1, 2])));
-        assert_eq!(g.indices().map(|i| i.as_slice()), Some([0u32, 1, 2].as_slice()));
+        assert_eq!(
+            g.indices().map(|i| i.as_slice()),
+            Some([0u32, 1, 2].as_slice())
+        );
     }
 }

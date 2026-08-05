@@ -174,7 +174,10 @@ mod tests {
         assert!((time.beats() - 0.0).abs() < 1e-9);
         time.advance_by(Duration::from_secs_f64(2.5));
         assert!((time.beats() - 2.5).abs() < 1e-9);
-        assert!((time.beats_total() - 11.5).abs() < 1e-9, "the clock itself never rewinds");
+        assert!(
+            (time.beats_total() - 11.5).abs() < 1e-9,
+            "the clock itself never rewinds"
+        );
     }
 
     #[test]
@@ -193,7 +196,12 @@ mod tests {
         // the readout has to match what the sequencer shows.
         assert_eq!(
             MusicalTime::from_beats(0.0, 4),
-            MusicalTime { bar: 1, beat: 1, sixteenth: 1, bar_phase: 0.0 }
+            MusicalTime {
+                bar: 1,
+                beat: 1,
+                sixteenth: 1,
+                bar_phase: 0.0
+            }
         );
         let at = MusicalTime::from_beats(17.5, 4);
         assert_eq!((at.bar, at.beat, at.sixteenth), (5, 2, 3));
@@ -226,9 +234,9 @@ mod tests {
     }
 
     #[test]
-    fn the_graph_plugin_inserts_the_transport_clock() {
+    fn the_wires_plugin_inserts_the_transport_clock() {
         let mut app = bevy_app::App::new();
-        app.add_plugins(crate::tick::GraphPlugin);
+        app.add_plugins(crate::run::WiresPlugin);
         assert!(app.world().get_resource::<Time<Transport>>().is_some());
     }
 

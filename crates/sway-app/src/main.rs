@@ -205,6 +205,7 @@ fn main() {
             FrameTimeDiagnosticsPlugin::default(),
             sway_graph::WiresPlugin,
             sway_nodes::WireNodesPlugin,
+            sway_nodes::MidiPlugin,
         ))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
         .insert_resource(MidiRx(rx))

@@ -53,6 +53,7 @@ impl Plugin for WiresPlugin {
             .init_resource::<Time<crate::transport::Transport>>()
             .register_type::<crate::transport::Transport>()
             .register_type::<crate::transport::TransportState>()
+            .register_type::<crate::ctx::EditorPos>()
             .add_systems(FixedUpdate, (rebuild_order, graph_tick).chain());
 
         app.configure_sets(
