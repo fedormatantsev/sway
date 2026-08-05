@@ -29,10 +29,9 @@ use masonry::imaging::Painter;
 use masonry_core::kurbo::{Affine, Axis, BezPath, Point, Size, Stroke, Vec2};
 use masonry::layout::{LenReq, Length};
 use peniko::Color;
-use sway_graph::NodeId;
 
 use crate::node_box::{self, NodeBox, NodeBoxAction};
-use crate::snapshot::{EdgeKind, WorldSnapshot};
+use crate::snapshot::{NodeId, WorldSnapshot};
 
 /// Converts a [`PointerState`]'s position to a window-space (logical pixels)
 /// [`Point`]. Same helper as `node_box::window_point`, duplicated rather than
@@ -83,7 +82,7 @@ struct EdgeSlot {
     to: NodeId,
     to_field: u16,
     to_index: u16,
-    kind: EdgeKind,
+    wire: &'static str,
     /// The source port's current value, or `None` when this edge carries no
     /// readable activity (design §4).
     value: Option<f32>,
@@ -379,12 +378,12 @@ impl GraphCanvas {
     /// from `EditorPos`, or the fallback grid); nodes only in the canvas are
     /// removed. Edge geometry is rebuilt outright -- an edge has no identity
     /// worth preserving -- but each edge's observed value range is carried
-    /// across by `(from, to, kind)` so auto-ranging does not restart.
+    /// across by `(from, to, wire)` so auto-ranging does not restart.
     pub fn apply_snapshot(this: &mut WidgetMut<'_, Self>, snap: &WorldSnapshot) {
-        let mut ranges: HashMap<(NodeId, NodeId, EdgeKind), (f32, f32)> = HashMap::new();
+        let mut ranges: HashMap<(NodeId, NodeId, &'static str), (f32, f32)> = HashMap::new();
         for edge in &this.widget.edges {
             if let Some(range) = edge.range {
-                ranges.insert((edge.from, edge.to, edge.kind), range);
+                ranges.insert((edge.from, edge.to, edge.wire), range);
             }
         }
 
@@ -480,7 +479,7 @@ impl GraphCanvas {
             .iter()
             .filter(|edge| live_nodes.contains(&edge.from) && live_nodes.contains(&edge.to))
             .map(|edge| {
-                let mut range = ranges.get(&(edge.from, edge.to, edge.kind)).copied();
+                let mut range = ranges.get(&(edge.from, edge.to, edge.wire)).copied();
                 if let Some(value) = edge.activity {
                     range = Some(match range {
                         Some((lo, hi)) => (lo.min(value), hi.max(value)),
@@ -493,7 +492,7 @@ impl GraphCanvas {
                     to: edge.to,
                     to_field: edge.to_field,
                     to_index: edge.to_index,
-                    kind: edge.kind,
+                    wire: edge.wire,
                     value: edge.activity,
                     range,
                 }
@@ -678,14 +677,9 @@ impl GraphCanvas {
     }
 }
 
-/// Base colour per edge kind, brightened and thickened by activity.
-///
-/// An edge with no readable activity (every `Events` edge, every `Product`
-/// edge including `Spatial`, and a `Value` edge carrying something other than
-/// an `f32`) draws at the base weight. Design §4 -- that is a decision, not
-/// an omission.
+/// Base colour per wire name, brightened and thickened by activity.
 fn edge_style(edge: &EdgeSlot) -> (Color, f64) {
-    let base = edge_color(edge.kind);
+    let base = edge_color(edge.wire);
     let Some(t) = normalised(edge) else {
         return (base, 2.0);
     };
@@ -694,12 +688,12 @@ fn edge_style(edge: &EdgeSlot) -> (Color, f64) {
     (Color::from_rgb8(lift(r), lift(g), lift(b)), 2.0 + 3.0 * t as f64)
 }
 
-fn edge_color(kind: EdgeKind) -> Color {
-    match kind {
-        EdgeKind::Value => Color::from_rgb8(140, 140, 155),
-        EdgeKind::Events => Color::from_rgb8(150, 130, 170),
-        EdgeKind::Product => Color::from_rgb8(120, 165, 140),
-        EdgeKind::Spatial => Color::from_rgb8(170, 150, 110),
+/// Colour by wire name. Local editor policy.
+fn edge_color(wire: &str) -> Color {
+    match wire {
+        "parent" => Color::from_rgb8(170, 150, 110),
+        "amplitude" => Color::from_rgb8(150, 130, 170),
+        _ => Color::from_rgb8(140, 140, 155),
     }
 }
 
@@ -719,12 +713,11 @@ fn normalised(edge: &EdgeSlot) -> Option<f32> {
 mod tests {
     use super::GraphCanvas;
     use crate::node_box::NodeBox;
-    use crate::snapshot::{EdgeKind, EdgeView, NodeView, WorldSnapshot};
+    use crate::snapshot::{EdgeView, NodeId, NodeView, WorldSnapshot};
     use bevy_ecs::entity::Entity;
     use masonry::core::{DefaultProperties, PointerButton, Widget};
     use masonry_core::kurbo::{Point, Vec2};
     use masonry_testing::TestHarness;
-    use sway_graph::NodeId;
 
     fn node(id: u32, name: &str, pos: Option<Point>) -> NodeView {
         NodeView {
@@ -748,10 +741,10 @@ mod tests {
         to: NodeId,
         to_field: u16,
         to_index: u16,
-        kind: EdgeKind,
+        wire: &'static str,
         activity: Option<f32>,
     ) -> EdgeView {
-        EdgeView { from, from_field, from_index, to, to_field, to_index, kind, activity }
+        EdgeView { from, from_field, from_index, to, to_field, to_index, wire, activity }
     }
 
     fn snapshot(nodes: Vec<NodeView>, edges: Vec<EdgeView>) -> WorldSnapshot {
@@ -972,7 +965,7 @@ mod tests {
     fn edges_are_kept_only_when_both_endpoints_exist() {
         let harness = harness_with(snapshot(
             vec![node(0, "a", None), node(1, "b", None)],
-            vec![edge(NodeId(0), 0, 0, NodeId(1), 0, 0, EdgeKind::Value, Some(0.5))],
+            vec![edge(NodeId(0), 0, 0, NodeId(1), 0, 0, "translation.y", Some(0.5))],
         ));
         assert_eq!(harness.root_widget().edge_count(), 1);
 
@@ -982,7 +975,7 @@ mod tests {
                 &mut canvas,
                 &snapshot(
                     vec![node(0, "a", None)],
-                    vec![edge(NodeId(0), 0, 0, NodeId(9), 0, 0, EdgeKind::Value, None)],
+                    vec![edge(NodeId(0), 0, 0, NodeId(9), 0, 0, "translation.y", None)],
                 ),
             );
         });

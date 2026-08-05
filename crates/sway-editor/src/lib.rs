@@ -34,14 +34,13 @@ use masonry::kurbo::{Affine, Rect};
 use masonry::layout::AsUnit;
 use masonry::widgets::{Portal, Split};
 use masonry_core::kurbo::Axis;
-use sway_graph::NodeId;
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use winit::dpi::PhysicalSize;
 
 use crate::canvas::GraphCanvas;
 use crate::external::ViewportPlaceholder;
 use crate::scene_tree::SceneTree;
-use crate::snapshot::WorldSnapshot;
+use crate::snapshot::{NodeId, WorldSnapshot};
 use crate::transport_bar::{TRANSPORT_BAR_HEIGHT, TransportBar};
 
 /// Reaches the hierarchy pane from `EditorUi::apply_snapshot`.
@@ -367,7 +366,7 @@ mod tests {
     use super::EditorUi;
     use crate::canvas::GraphCanvas;
     use crate::scene_tree::SceneTree;
-    use crate::snapshot::{NodeView, TreeGroup, TreeRow, WorldSnapshot};
+    use crate::snapshot::{NodeId, NodeView, TreeGroup, TreeRow, WorldSnapshot};
     use bevy_ecs::entity::Entity;
     use imaging::Painter;
     use kurbo::{Affine, Point as KurboPoint, Rect};
@@ -375,7 +374,6 @@ mod tests {
     use masonry_core::core::{NewWidget, WidgetId};
     use masonry::widgets::Label;
     use peniko::Color;
-    use sway_graph::NodeId;
     use winit::dpi::PhysicalSize;
 
     fn dummy_widget_id() -> WidgetId {

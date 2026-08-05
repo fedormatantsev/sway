@@ -24,9 +24,8 @@ use masonry::layout::{LenReq, Length};
 use masonry::widgets::Label;
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
-use sway_graph::NodeId;
 
-use crate::snapshot::{TreeGroup, WorldSnapshot};
+use crate::snapshot::{NodeId, TreeGroup, WorldSnapshot};
 
 /// Height of one row, in logical pixels.
 pub const ROW_HEIGHT: f64 = 20.0;

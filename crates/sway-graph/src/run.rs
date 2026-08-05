@@ -32,7 +32,7 @@ pub fn graph_tick(world: &mut World) {
     let order = world.remove_resource::<GraphOrder>().unwrap_or_default();
     for step in &order.steps {
         match *step {
-            Step::Propagate { run, src, dst } => run(world, src, dst),
+            Step::Propagate { run, src, dst, .. } => run(world, src, dst),
             Step::Run { run, entity } => run(world, entity, &ctx),
         }
     }

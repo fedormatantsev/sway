@@ -37,6 +37,7 @@ pub struct Link {
     pub src: Entity,
     pub dst: Entity,
     pub run: PropagateFn,
+    pub wire: &'static str,
 }
 
 pub struct Sorted {
@@ -107,7 +108,12 @@ use crate::registry_wires::{BehaviourFn, BehaviourRegistry, WireRegistry};
 /// it.
 #[derive(Clone, Copy)]
 pub enum Step {
-    Propagate { run: PropagateFn, src: Entity, dst: Entity },
+    Propagate {
+        run: PropagateFn,
+        src: Entity,
+        dst: Entity,
+        wire: &'static str,
+    },
     Run { run: BehaviourFn, entity: Entity },
 }
 
@@ -191,7 +197,12 @@ pub fn rebuild_order(world: &mut World) {
     for entity in sorted.order {
         for &index in inbound.get(&entity).map_or(&[][..], |v| v.as_slice()) {
             let link = links[index];
-            steps.push(Step::Propagate { run: link.run, src: link.src, dst: link.dst });
+            steps.push(Step::Propagate {
+                run: link.run,
+                src: link.src,
+                dst: link.dst,
+                wire: link.wire,
+            });
         }
         for &run in behaviours_of.get(&entity).map_or(&[][..], |v| v.as_slice()) {
             steps.push(Step::Run { run, entity });
@@ -216,7 +227,7 @@ mod tests {
     fn noop(_: &mut World, _: Entity, _: Entity) {}
 
     fn link(src: Entity, dst: Entity) -> Link {
-        Link { src, dst, run: noop }
+        Link { src, dst, run: noop, wire: "test" }
     }
 
     #[test]
@@ -332,6 +343,21 @@ mod tests {
             step_shapes(&app),
             vec![("propagate", src, dst), ("run", dst, dst)]
         );
+    }
+
+    #[test]
+    fn a_propagate_step_carries_the_wire_name() {
+        let mut app = rebuild_app();
+        let src = spawn_float(app.world_mut(), 2.0);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+        app.world_mut().entity_mut(dst).insert(GainFrom(src));
+
+        rebuild_order(app.world_mut());
+
+        let Step::Propagate { wire, .. } = app.world().resource::<GraphOrder>().steps[0] else {
+            panic!("expected a propagation step");
+        };
+        assert_eq!(wire, "factor");
     }
 
     #[test]

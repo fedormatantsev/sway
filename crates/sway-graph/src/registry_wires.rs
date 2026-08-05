@@ -50,7 +50,12 @@ pub struct BehaviourRegistry {
 fn collect_wire_of<W: Wire>(world: &mut World, out: &mut Vec<Link>) {
     let mut query = world.query::<(Entity, &W)>();
     for (dst, wire) in query.iter(world) {
-        out.push(Link { src: wire.get(), dst, run: propagate_of::<W> });
+        out.push(Link {
+            src: wire.get(),
+            dst,
+            run: propagate_of::<W>,
+            wire: W::NAME,
+        });
     }
 }
 
