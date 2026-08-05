@@ -70,10 +70,14 @@ mod tests {
     fn double(world: &mut World, entity: Entity, _ctx: &TickCtx) {
         let Some(gain) = world.get::<Gain>(entity) else { return };
         let doubled = gain.factor * 2.0;
-        if let Some(mut gain) = world.get_mut::<Gain>(entity) {
+        if let Some(mut gain) = world.get_mut::<Gain>(entity)
+            && gain.value != doubled
+        {
             gain.value = doubled;
         }
-        if let Some(mut out) = world.get_mut::<FloatOut>(entity) {
+        if let Some(mut out) = world.get_mut::<FloatOut>(entity)
+            && out.0 != doubled
+        {
             out.0 = doubled;
         }
     }
@@ -128,5 +132,62 @@ mod tests {
         app.update();
 
         assert_eq!(app.world().get::<Gain>(solo).map(|g| g.factor), Some(7.5));
+    }
+
+    use bevy_ecs::query::Changed;
+    use bevy_ecs::system::{Query, ResMut};
+
+    #[derive(Resource, Default)]
+    struct ChangedCount(usize);
+
+    fn count_changed(query: Query<(), Changed<Gain>>, mut count: ResMut<ChangedCount>) {
+        count.0 = query.iter().count();
+    }
+
+    #[test]
+    fn a_wire_carrying_an_unchanged_value_leaves_the_target_unchanged() {
+        // Spec §3.4. `get_mut` marks Changed unconditionally, so a wire that
+        // writes every tick destroys change detection for everything
+        // downstream -- which is the whole dirty story now that the cook gate
+        // is gone.
+        let mut app = engine_app();
+        app.init_resource::<ChangedCount>();
+        app.add_systems(bevy_app::Last, count_changed);
+
+        let src = spawn_float(app.world_mut(), 3.0);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+        app.world_mut().entity_mut(dst).insert(GainFrom(src));
+
+        app.update();
+        assert_eq!(
+            app.world().resource::<ChangedCount>().0,
+            1,
+            "the first tick really does change it"
+        );
+
+        app.update();
+        assert_eq!(
+            app.world().resource::<ChangedCount>().0,
+            0,
+            "a second tick carrying the SAME value must not re-mark it"
+        );
+    }
+
+    #[test]
+    fn a_wire_carrying_a_new_value_does_mark_the_target_changed() {
+        let mut app = engine_app();
+        app.init_resource::<ChangedCount>();
+        app.add_systems(bevy_app::Last, count_changed);
+
+        let src = spawn_float(app.world_mut(), 3.0);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+        app.world_mut().entity_mut(dst).insert(GainFrom(src));
+        app.update();
+        app.update();
+
+        app.world_mut().entity_mut(src).insert(FloatOut(4.0));
+        app.update();
+
+        assert_eq!(app.world().resource::<ChangedCount>().0, 1);
     }
 }
