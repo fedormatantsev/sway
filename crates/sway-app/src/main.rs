@@ -11,9 +11,6 @@ use bevy::window::Monitor;
 use demo_graph::setup_demo_graph;
 use midi_feed::{MidiClockOffset, MidiRx, feed_midi};
 use scene::setup_scene;
-use sway_geo::GeoNodesPlugin;
-use sway_graph::GraphPlugin;
-use sway_nodes::{SceneNodesPlugin, SignalNodesPlugin};
 
 /// Provisional graph tick rate pending the measurements specified in spec §11.
 const TICK_HZ: f64 = 120.0;
@@ -190,6 +187,7 @@ fn main() {
     // this) -- `args.monitor`/`args.windowed` are still parsed (so existing
     // invocations don't fail argument parsing) but no longer read here.
     let demo = args.demo;
+    let editor = args.editor;
 
     // Everything demo-specific is built into the closure the shell calls
     // once the window, shared device, and viewport texture exist --
@@ -199,12 +197,14 @@ fn main() {
     let build_app: shell::AppBuilder = Box::new(move |gpu, viewport, size: UVec2| {
         let mut app = sway_runtime::headless::build_app(gpu, viewport, size);
 
+        if editor {
+            app.insert_resource(sway_graph::Authoring);
+        }
+
         app.add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
-            GraphPlugin,
-            SignalNodesPlugin,
-            GeoNodesPlugin,
-            SceneNodesPlugin,
+            sway_graph::WiresPlugin,
+            sway_nodes::WireNodesPlugin,
         ))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
         .insert_resource(MidiRx(rx))
@@ -272,7 +272,7 @@ fn main() {
     });
 
     shell::run(shell::ShellConfig {
-        editor: args.editor,
+        editor,
         build_app,
     });
 }

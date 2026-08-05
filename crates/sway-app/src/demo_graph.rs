@@ -1,313 +1,103 @@
-//! The M2b demo graph, built in Rust. Design §8.
+//! The wire-model demo. Spec §5.1.
 //!
 //! ```text
-//! Grid.geo ──→ Displace.geo ──→ Mesh.geo,  StandardMaterial.material ──→ Mesh.material
-//! Mesh.spatial ──→ Group("root").children[0]
-//! MidiCC 74.value ──→ Displace.amount
-//! MidiNote.note_on ──→ Envelope.triggers[0].value ──→ Rgb.r
-//! SyncLfo.value ──→ Group("root").rotation_y
-//! TransportTimeNode.bar_phase ──→ Rgb.g
+//! Lfo A ──amplitude──▶ Lfo B ──translation.y──▶ cube B
+//!       └─translation.y──▶ cube A            (fan-out)
+//! group ──ChildOf──▶ cube A, cube B
 //! ```
+//!
+//! Geometry does not flow through the graph in this slice: each cube's mesh
+//! is built once here. Asset flow is the follow-up spec's problem.
 
 use bevy::prelude::*;
-use sway_geo::{Displace, DisplaceInlets, DisplaceState, Grid, GridInlets, GridState};
-use sway_graph::{
-    Edge, EdgeFrom, EdgeTo, Endpoint, EditorPos, GraphNode, NodeId, NodeType, NodeTypeRegistry,
-    PortArena, compile,
-};
-use sway_nodes::{
-    Envelope, EnvelopeInlets, EnvelopeState, Group, GroupInlets, GroupState, MaterialState,
-    MeshNode, MeshNodeInlets, MeshNodeState, MidiCC, MidiCCInlets, MidiCCState, MidiNote,
-    MidiNoteInlets, MidiNoteState, Rgb, RgbInlets, RgbState, StandardMaterialNode,
-    StandardMaterialInlets, SyncLfo, SyncLfoInlets, SyncLfoState, TransportTimeNode,
-    TransportTimeInlets, TransportTimeState,
-};
-
-fn node_type_id<N: NodeType>(world: &World) -> sway_graph::NodeTypeId {
-    world
-        .resource::<NodeTypeRegistry>()
-        .id_of(core::any::type_name::<N>())
-        .expect("node type registered")
-}
-
-fn edge(world: &mut World, from: Entity, from_field: u16, to: Entity, to_field: u16, to_index: u16) {
-    world.spawn((
-        Edge {
-            from: Endpoint::field(from_field),
-            to: Endpoint { field: to_field, index: to_index },
-        },
-        EdgeFrom(from),
-        EdgeTo(to),
-    ));
-}
+use sway_nodes::{AmplitudeFrom, FloatOut, Lfo, TranslationYFrom, Waveform};
 
 pub fn setup_demo_graph(world: &mut World) {
-    let mut next = 0u32;
-    let mut id = || {
-        next += 1;
-        NodeId(next - 1)
-    };
-
-    let grid = world
-        .spawn((
-            GraphNode { id: id(), node_type: node_type_id::<Grid>(world) },
-            GridInlets { rows: 48, cols: 48, width: 4.0, height: 4.0 },
-            GridState,
-            EditorPos(Vec2::new(20.0, 380.0)),
-        ))
-        .id();
-    let displace = world
-        .spawn((
-            GraphNode { id: id(), node_type: node_type_id::<Displace>(world) },
-            DisplaceInlets { amount: 0.2, frequency: 3.0, ..Default::default() },
-            DisplaceState,
-            EditorPos(Vec2::new(240.0, 380.0)),
-        ))
-        .id();
     let mesh = world
-        .spawn((
-            GraphNode { id: id(), node_type: node_type_id::<MeshNode>(world) },
-            MeshNodeInlets::default(),
-            MeshNodeState::default(),
-            EditorPos(Vec2::new(900.0, 200.0)),
-        ))
-        .id();
+        .resource_mut::<Assets<Mesh>>()
+        .add(Cuboid::new(0.6, 0.6, 0.6));
     let material = world
+        .resource_mut::<Assets<StandardMaterial>>()
+        .add(StandardMaterial {
+            base_color: Color::srgb(0.6, 0.7, 0.9),
+            ..default()
+        });
+
+    // The modulator: a slow, half-amplitude sine.
+    let modulator = world
         .spawn((
-            GraphNode { id: id(), node_type: node_type_id::<StandardMaterialNode>(world) },
-            StandardMaterialInlets::default(),
-            MaterialState::default(),
-            EditorPos(Vec2::new(680.0, 20.0)),
-        ))
-        .id();
-    let rgb = world
-        .spawn((
-            GraphNode { id: id(), node_type: node_type_id::<Rgb>(world) },
-            RgbInlets { r: 0.1, g: 0.2, b: 0.8 },
-            RgbState,
-            EditorPos(Vec2::new(460.0, 20.0)),
-        ))
-        .id();
-    let root = world
-        .spawn((
-            GraphNode { id: id(), node_type: node_type_id::<Group>(world) },
-            GroupInlets { children: vec![Default::default(); 1], ..Default::default() },
-            GroupState,
-            EditorPos(Vec2::new(680.0, 260.0)),
-        ))
-        .id();
-    let cc = world
-        .spawn((
-            GraphNode { id: id(), node_type: node_type_id::<MidiCC>(world) },
-            MidiCCInlets { channel: 0, cc: 74 },
-            MidiCCState,
-            EditorPos(Vec2::new(20.0, 140.0)),
-        ))
-        .id();
-    let note = world
-        .spawn((
-            GraphNode { id: id(), node_type: node_type_id::<MidiNote>(world) },
-            MidiNoteInlets { channel: 0, note_lo: 0, note_hi: 127 },
-            MidiNoteState,
-            EditorPos(Vec2::new(20.0, 20.0)),
-        ))
-        .id();
-    let envelope = world
-        .spawn((
-            GraphNode { id: id(), node_type: node_type_id::<Envelope>(world) },
-            EnvelopeInlets {
-                triggers: vec![Default::default(); 1],
-                release_triggers: vec![Default::default(); 1],
-                attack: 0.01,
-                decay: 0.1,
-                sustain: 0.7,
-                release: 0.3,
-            },
-            EnvelopeState::default(),
-            EditorPos(Vec2::new(240.0, 20.0)),
-        ))
-        .id();
-    let sync = world
-        .spawn((
-            GraphNode { id: id(), node_type: node_type_id::<SyncLfo>(world) },
-            SyncLfoInlets {
-                // One full turn per four-bar phrase — slow enough to read as
-                // locked rather than as a spin.
-                beats: 16.0,
-                shape: sway_nodes::Waveform::Saw,
-                phase: 0.0,
-                amplitude: core::f32::consts::PI,
-            },
-            SyncLfoState,
-            EditorPos(Vec2::new(20.0, 260.0)),
-        ))
-        .id();
-    let transport = world
-        .spawn((
-            GraphNode { id: id(), node_type: node_type_id::<TransportTimeNode>(world) },
-            TransportTimeInlets::default(),
-            TransportTimeState,
-            EditorPos(Vec2::new(240.0, 260.0)),
+            Name::new("Lfo A (modulator)"),
+            Lfo { beats: 8.0, shape: Waveform::Sine, phase: 0.0, amplitude: 0.5 },
+            FloatOut::default(),
         ))
         .id();
 
-    // Structure: the Feeds chain, and where it enters the ChildOf tree.
-    edge(world, grid, Grid::OUT_GEO, displace, Displace::IN_GEO, 0);
-    edge(world, displace, Displace::OUT_GEO, mesh, MeshNode::IN_GEO, 0);
-    edge(world, material, StandardMaterialNode::OUT_MATERIAL, mesh, MeshNode::IN_MATERIAL, 0);
-    edge(world, mesh, MeshNode::OUT_SPATIAL, root, Group::CHILDREN, 0);
-    edge(world, rgb, Rgb::OUT_COLOR, material, StandardMaterialNode::BASE_COLOR, 0);
+    // The modulated LFO: its amplitude is driven by A, so it must compute
+    // between two propagations. This is what makes the order load-bearing.
+    let carrier = world
+        .spawn((
+            Name::new("Lfo B (carrier)"),
+            Lfo { beats: 2.0, shape: Waveform::Sine, phase: 0.0, amplitude: 0.0 },
+            FloatOut::default(),
+            AmplitudeFrom(modulator),
+        ))
+        .id();
 
-    // Signals. CC drives displacement, so the cook gate is visible on stage
-    // rather than only in tests (design §8).
-    edge(world, cc, MidiCC::OUT_VALUE, displace, Displace::AMOUNT, 0);
-    edge(world, note, MidiNote::OUT_NOTE_ON, envelope, Envelope::TRIGGERS, 0);
-    edge(world, note, MidiNote::OUT_NOTE_OFF, envelope, Envelope::RELEASE_TRIGGERS, 0);
-    edge(world, envelope, Envelope::OUT_VALUE, rgb, Rgb::R, 0);
-    edge(world, sync, SyncLfo::OUT_VALUE, root, Group::ROTATION_Y, 0);
-    edge(world, transport, TransportTimeNode::OUT_BAR_PHASE, rgb, Rgb::G, 0);
+    let group = world
+        .spawn((Name::new("group"), Transform::default(), Visibility::default()))
+        .id();
 
-    let compiled = compile(world).expect("the demo graph must compile");
-    world
-        .resource_mut::<PortArena>()
-        .resize(compiled.slots_len);
-    world.insert_resource(compiled);
+    world.spawn((
+        Name::new("cube A"),
+        Mesh3d(mesh.clone()),
+        MeshMaterial3d(material.clone()),
+        Transform::from_xyz(-0.8, 0.0, 0.0),
+        Visibility::default(),
+        ChildOf(group),
+        TranslationYFrom(modulator),
+    ));
+
+    world.spawn((
+        Name::new("cube B"),
+        Mesh3d(mesh),
+        MeshMaterial3d(material),
+        Transform::from_xyz(0.8, 0.0, 0.0),
+        Visibility::default(),
+        ChildOf(group),
+        TranslationYFrom(carrier),
+    ));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::time::TimeUpdateStrategy;
-    use sway_geo::{GeoNodesPlugin, Geometry};
-    use sway_graph::{CompiledGraph, GraphPlugin};
-    use sway_nodes::{GroupState, SceneNodesPlugin, SignalNodesPlugin};
 
-    /// A headless `App` with every plugin the demo graph needs.
-    ///
-    /// DEVIATION from the brief's literal fixture: sets `Time::<Fixed>` and
-    /// `TimeUpdateStrategy::FixedTimesteps(1)` here (the brief's version set
-    /// neither), and burns one warm-up `app.update()` before returning.
-    /// Without both, `the_demo_graph_compiles_and_cooks_a_mesh`'s single
-    /// `app.update()` call can never run `FixedUpdate`/`graph_tick`, for any
-    /// implementation of `setup_demo_graph`: Bevy's very first `Time::<Real>`
-    /// update on a freshly-built `App` always reports a zero delta by design —
-    /// `last_update` starts `None`, and both the `Automatic` and
-    /// `FixedTimesteps(n)` branches of `time_system` route through
-    /// `update_with_instant`, which on that first call only records
-    /// `first_update`/`last_update` and returns *before* computing a delta
-    /// (verified against vendored `bevy_time-0.19.0/src/real.rs:99-108`).  So
-    /// the fixed-timestep accumulator can never reach its threshold on frame
-    /// 0, no matter how much wall-clock time actually elapsed beforehand or
-    /// what the implementation does. Confirmed empirically too: with the
-    /// brief's literal fixture, `GraphTickCount` stayed `0` and
-    /// `Time::<Real>::delta()` was `0ns` after the sole `app.update()`, and
-    /// the test failed identically over five repeated runs (not flaky).
-    /// `sway-graph/src/test_nodes.rs`'s `headless_app`/`structure_app` hit the
-    /// identical hazard (see their doc comments) and use exactly this
-    /// warm-up-tick recipe; Task 7's report documents applying the same fix
-    /// to `structure_app` for the same reason. This changes test harness
-    /// setup only — the property each test below asserts is unchanged.
     fn app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .add_plugins(AssetPlugin::default())
             .init_asset::<Mesh>()
             .init_asset::<StandardMaterial>()
-            .insert_resource(Time::<Fixed>::from_hz(120.0))
-            .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
-            .add_plugins((GraphPlugin, SignalNodesPlugin, GeoNodesPlugin, SceneNodesPlugin));
-        app.update();
+            .add_plugins((sway_graph::WiresPlugin, sway_nodes::WireNodesPlugin));
         app
     }
 
     #[test]
-    fn the_demo_graph_compiles_and_cooks_a_mesh() {
-        let mut app = app();
-        setup_demo_graph(app.world_mut());
-        assert!(app.world().get_resource::<CompiledGraph>().is_some());
-
-        app.update();
-
-        let mut geometries = app.world_mut().query::<&Geometry>();
-        assert!(
-            geometries.iter(app.world()).count() >= 2,
-            "Grid and Displace must both have cooked"
-        );
-        let mut meshes = app.world_mut().query::<&Mesh3d>();
-        assert_eq!(meshes.iter(app.world()).count(), 1, "the Mesh node draws");
-    }
-
-    #[test]
-    fn the_mesh_is_parented_under_the_root_group() {
-        use bevy::ecs::hierarchy::ChildOf;
-        use sway_nodes::MeshNodeState;
-
+    fn the_demo_is_built_from_wire_components() {
         let mut app = app();
         setup_demo_graph(app.world_mut());
 
-        // Exactly one ChildOf in the demo graph, and it must run from the
-        // Mesh node to the root Group — the one place a Feeds chain enters
-        // the ChildOf tree (design §8).
-        let mut children = app
-            .world_mut()
-            .query_filtered::<(Entity, &ChildOf), With<MeshNodeState>>();
-        let found: Vec<(Entity, Entity)> = children
-            .iter(app.world())
-            .map(|(entity, parent)| (entity, parent.0))
-            .collect();
-        assert_eq!(found.len(), 1, "exactly one Mesh node, and it is parented");
-
-        let (mesh_entity, parent_entity) = found[0];
-        assert!(
-            app.world().get::<GroupState>(parent_entity).is_some(),
-            "the Mesh node's parent must be the root Group"
-        );
-        assert_ne!(mesh_entity, parent_entity);
-    }
-
-    #[test]
-    fn the_demo_graph_is_beat_locked() {
-        use bevy::time::Time;
-        use sway_graph::{Transport, TransportState, TransportTime};
-        use sway_nodes::SyncLfoState;
-
-        let mut app = app();
-        setup_demo_graph(app.world_mut());
-
-        // A stopped transport leaves the rotation where it is; a playing one
-        // moves it. That is the property "beat-locked" actually means.
-        app.update();
-        let stopped = app
-            .world_mut()
-            .query_filtered::<&Transform, With<GroupState>>()
-            .iter(app.world())
-            .next()
-            .copied()
-            .expect("the root group has a Transform");
-
-        {
-            let mut time = app.world_mut().resource_mut::<Time<Transport>>();
-            time.transport_mut().state = TransportState::Playing;
-            time.advance_by(core::time::Duration::from_secs_f64(1.0));
-        }
-        app.update();
-
-        let playing = app
-            .world_mut()
-            .query_filtered::<&Transform, With<GroupState>>()
-            .iter(app.world())
-            .next()
-            .copied()
-            .expect("the root group has a Transform");
-
-        assert_ne!(
-            stopped.rotation, playing.rotation,
-            "a beat of transport must turn the group"
+        assert_eq!(
+            app.world_mut().query::<&Lfo>().iter(app.world()).count(),
+            2
         );
         assert_eq!(
-            app.world_mut().query::<&SyncLfoState>().iter(app.world()).count(),
-            1,
-            "the demo drives rotation from the tempo-synced LFO"
+            app.world_mut().query::<&TranslationYFrom>().iter(app.world()).count(),
+            2
+        );
+        assert_eq!(
+            app.world_mut().query::<&ChildOf>().iter(app.world()).count(),
+            2
         );
     }
 }
