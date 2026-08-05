@@ -2,6 +2,7 @@
 
 pub mod compile;
 pub mod ctx;
+pub mod diagnostics;
 pub mod edges;
 pub mod order;
 pub mod ports;
@@ -20,6 +21,7 @@ pub mod wire;
 pub(crate) mod test_wires;
 
 pub use compile::{ClearFn, CompileError, CompiledGraph, NodePlan, compile};
+pub use diagnostics::GraphDiagnostics;
 pub use edges::{Edge, EdgeFrom, EdgeTo, Endpoint, EditorPos, GraphNode, InEdges, NodeId, NodeRuntime, OutEdges};
 pub use order::{topological_order, Link, Sorted};
 pub use ports::{clear_events_of, Events, Occurrence, PortArena, Product, Spatial};

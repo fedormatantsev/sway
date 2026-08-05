@@ -6,6 +6,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
 
+use crate::diagnostics::GraphDiagnostics;
 use crate::wire::PropagateFn;
 
 /// `Entity::Ord` is DESCENDING in raw spawn index for bevy_ecs 0.19.0: its
@@ -160,6 +161,20 @@ pub fn rebuild_order(world: &mut World) {
 
     let sorted = topological_order(&vertices, &links);
 
+    let mut diagnostics = GraphDiagnostics { cycles: sorted.cycles.clone(), ..Default::default() };
+    for entry in &wires.entries {
+        let mut instances: Vec<Link> = Vec::new();
+        (entry.collect)(world, &mut instances);
+        for link in instances {
+            if !(entry.has_source)(world, link.src) {
+                diagnostics.missing_source.push((link.src, entry.name));
+            }
+            if !(entry.has_target)(world, link.dst) {
+                diagnostics.missing_target.push((link.dst, entry.name));
+            }
+        }
+    }
+
     // Per entity, in evaluation order: propagate everything inbound, THEN run
     // its behaviours. That ordering is what lets a driven behaviour see this
     // tick's inputs.
@@ -185,6 +200,7 @@ pub fn rebuild_order(world: &mut World) {
 
     world.insert_resource(wires);
     world.insert_resource(behaviours);
+    world.insert_resource(diagnostics);
     world.insert_resource(GraphOrder { steps });
     world.resource_mut::<TopologyDirty>().0 = false;
 }
@@ -356,5 +372,57 @@ mod tests {
             step_shapes(&app),
             vec![("propagate", a, b), ("propagate", b, c)]
         );
+    }
+
+    // --- diagnostics ---------------------------------------------------
+
+    #[test]
+    fn a_cycle_is_reported_in_the_diagnostics() {
+        let mut app = rebuild_app();
+        app.init_resource::<crate::diagnostics::GraphDiagnostics>();
+        // Two Gains driving each other: each is both source and target.
+        let a = spawn_gain(app.world_mut(), 0.0);
+        let b = spawn_gain(app.world_mut(), 0.0);
+        app.world_mut().entity_mut(a).insert(FloatOut(0.0));
+        app.world_mut().entity_mut(b).insert(FloatOut(0.0));
+        app.world_mut().entity_mut(a).insert(GainFrom(b));
+        app.world_mut().entity_mut(b).insert(GainFrom(a));
+
+        rebuild_order(app.world_mut());
+
+        let diagnostics = app.world().resource::<crate::diagnostics::GraphDiagnostics>();
+        let mut cycles = diagnostics.cycles.clone();
+        cycles.sort();
+        let mut want = vec![a, b];
+        want.sort();
+        assert_eq!(cycles, want);
+        assert!(!diagnostics.is_clean());
+    }
+
+    #[test]
+    fn a_producer_without_the_source_component_is_reported() {
+        let mut app = rebuild_app();
+        app.init_resource::<crate::diagnostics::GraphDiagnostics>();
+        let bare = app.world_mut().spawn_empty().id();
+        let dst = spawn_gain(app.world_mut(), 0.0);
+        app.world_mut().entity_mut(dst).insert(GainFrom(bare));
+
+        rebuild_order(app.world_mut());
+
+        let diagnostics = app.world().resource::<crate::diagnostics::GraphDiagnostics>();
+        assert_eq!(diagnostics.missing_source, vec![(bare, "factor")]);
+    }
+
+    #[test]
+    fn a_well_formed_graph_reports_nothing() {
+        let mut app = rebuild_app();
+        app.init_resource::<crate::diagnostics::GraphDiagnostics>();
+        let src = spawn_float(app.world_mut(), 1.0);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+        app.world_mut().entity_mut(dst).insert(GainFrom(src));
+
+        rebuild_order(app.world_mut());
+
+        assert!(app.world().resource::<crate::diagnostics::GraphDiagnostics>().is_clean());
     }
 }

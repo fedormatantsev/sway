@@ -49,6 +49,7 @@ impl Plugin for WiresPlugin {
             .init_resource::<GraphOrder>()
             .init_resource::<TopologyDirty>()
             .init_resource::<WireTickCount>()
+            .init_resource::<crate::diagnostics::GraphDiagnostics>()
             .init_resource::<Time<crate::transport::Transport>>()
             .register_type::<crate::transport::Transport>()
             .register_type::<crate::transport::TransportState>()
