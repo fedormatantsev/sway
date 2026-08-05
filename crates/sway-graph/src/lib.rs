@@ -7,6 +7,7 @@ pub mod order;
 pub mod ports;
 pub mod registry;
 pub mod registry_wires;
+pub mod run;
 pub mod schema;
 #[cfg(test)]
 pub(crate) mod test_nodes;
@@ -29,6 +30,7 @@ pub use registry_wires::{
     register_behaviour, register_wire, BehaviourEntry, BehaviourFn, BehaviourRegistry, WireEntry,
     WireRegistry,
 };
+pub use run::{graph_tick as wire_tick, WireTickCount, WiresPlugin};
 pub use schema::{
     derive_fields, register_events, register_product, FieldKind, FieldSpec, ProductAccess,
     ReflectEventList, ReflectProduct, SchemaError,
