@@ -10,6 +10,9 @@ pub(crate) mod test_nodes;
 pub mod tick;
 pub mod transport;
 pub mod view;
+pub mod wire;
+#[cfg(test)]
+pub(crate) mod test_wires;
 
 pub use compile::{ClearFn, CompileError, CompiledGraph, NodePlan, compile};
 pub use edges::{Edge, EdgeFrom, EdgeTo, Endpoint, EditorPos, GraphNode, InEdges, NodeId, NodeRuntime, OutEdges};
@@ -25,3 +28,4 @@ pub use schema::{
 pub use tick::{GraphPlugin, GraphTickCount, graph_tick};
 pub use transport::{MusicalTime, Transport, TransportState, TransportTime};
 pub use view::{PortView, TickCtx};
+pub use wire::{propagate_of, PropagateFn, Wire};
