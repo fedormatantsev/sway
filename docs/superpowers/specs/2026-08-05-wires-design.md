@@ -178,23 +178,32 @@ entity in two resolves it.
 pub struct GraphOrder { steps: Vec<Step> }
 
 enum Step {
-    Propagate { wire: WireId, src: Entity, dst: Entity },
-    Run       { behaviour: BehaviourId, entity: Entity },
+    Propagate { run: fn(&mut World, Entity, Entity), src: Entity, dst: Entity },
+    Run       { run: BehaviourFn, entity: Entity },
 }
 ```
 
-The tick is a flat walk with no component-type lookups:
+**The step carries its own function pointer.** A step list is heterogeneous —
+one `Vec` holding steps for many wire types — and `Wire::propagate` is generic
+over `W` and takes `&W::Source` / `Mut<W::Target>`, so it is not object-safe.
+Monomorphising it once at registration is what makes the list possible. Nothing
+beyond that is needed: there is no `WireId`, no registry index, and no
+indirection on the tick path.
 
 ```rust
 for step in &order.steps {
     match *step {
-        Step::Propagate { wire, src, dst } => (wires[wire].propagate)(world, src, dst),
-        Step::Run { behaviour, entity }    => (behaviours[behaviour].run)(world, entity, &ctx),
+        Step::Propagate { run, src, dst } => run(world, src, dst),
+        Step::Run { run, entity }         => run(world, entity, &ctx),
     }
 }
 ```
 
-One erased propagate per wire type, monomorphised at registration:
+The wire registry still exists, but only for the editor — enumerating what may
+be connected to what — and for rebuild-time diagnostics. The tick never reads
+it.
+
+The monomorphised propagate:
 
 ```rust
 fn propagate_of<W: Wire>(world: &mut World, src: Entity, dst: Entity) {
