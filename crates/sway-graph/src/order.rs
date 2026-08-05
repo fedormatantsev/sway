@@ -8,13 +8,18 @@ use bevy_ecs::world::World;
 
 use crate::wire::PropagateFn;
 
-/// Wrapper to ensure Entity ordering is ascending in BinaryHeap (max-heap becomes min-heap).
+/// `Entity::Ord` is DESCENDING in raw spawn index for bevy_ecs 0.19.0: its
+/// NonMaxU32 niche encoding stores the bitwise complement of the index.
+/// A plain BinaryHeap (max-heap) over Entity's native Ord therefore pops
+/// in ascending raw-index order -- do NOT wrap this in `Reverse`, and do
+/// NOT "simplify" this to Reverse<Entity> without re-verifying against
+/// whatever Bevy version is pinned at the time.
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct AscendingEntity(Entity);
 
 impl Ord for AscendingEntity {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.0.cmp(&other.0)  // Normal entity ordering
+        self.0.cmp(&other.0)  // Uses Entity's descending-index Ord; max-heap pops ascending
     }
 }
 
@@ -82,7 +87,9 @@ pub fn topological_order(vertices: &[Entity], links: &[Link]) -> Sorted {
 
     let placed: HashSet<Entity> = order.iter().copied().collect();
     let mut cycles: Vec<Entity> = vertices.iter().copied().filter(|e| !placed.contains(e)).collect();
-    cycles.sort_by(|a, b| b.cmp(a));  // Sort in descending order to match expected test behavior
+    // Compensate for Entity::Ord being descending-in-index: reverse the sort to get
+    // ascending raw-index order, consistent with the main order's tie-breaking.
+    cycles.sort_by(|a, b| b.cmp(a));
     order.extend(cycles.iter().copied());
 
     Sorted { order, cycles }
@@ -160,5 +167,14 @@ mod tests {
 
         assert_eq!(sorted.order, vec![a, b]);
         assert!(sorted.cycles.is_empty());
+    }
+
+    #[test]
+    fn entity_ord_is_descending_in_raw_index_for_same_generation() {
+        // Pins the bevy_ecs quirk AscendingEntity and the cycle sort both
+        // compensate for. If a Bevy upgrade changes this, this test fails
+        // loudly instead of silently flipping topological_order's determinism.
+        assert!(e(1) > e(2), "if this fails, Entity::Ord's encoding changed -- \
+            re-verify AscendingEntity and the cycles.sort_by direction");
     }
 }
