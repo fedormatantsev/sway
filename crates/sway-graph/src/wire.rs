@@ -3,8 +3,10 @@
 use bevy_ecs::change_detection::Mut;
 use bevy_ecs::component::{Component, Mutable};
 use bevy_ecs::entity::Entity;
+use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::relationship::Relationship;
 use bevy_ecs::world::World;
+use bevy_transform::components::Transform;
 
 /// A connection. The `Relationship` component lives on the CONSUMER and names
 /// the producer; the `RelationshipTarget` on the producer collects consumers.
@@ -33,6 +35,19 @@ pub trait Wire: Relationship {
 /// step list can hold it. `Wire::propagate` takes associated types and so is
 /// not object-safe; this is the only erasure the design needs.
 pub type PropagateFn = fn(&mut World, Entity, Entity);
+
+/// Hierarchy costs one impl, because `ChildOf` is already a `Relationship`.
+///
+/// `propagate` is empty because a structural connection carries no per-tick
+/// value: its existence IS the state, and Bevy's own hooks maintain
+/// `Children`. `Source`/`Target` still define wiring legality for tooling.
+impl Wire for ChildOf {
+    type Source = Transform;
+    type Target = Transform;
+    const NAME: &'static str = "parent";
+
+    fn propagate(_: &Transform, _: Mut<Transform>) {}
+}
 
 pub fn propagate_of<W: Wire>(world: &mut World, src: Entity, dst: Entity) {
     // `src == dst` cannot happen: Bevy removes self-referential

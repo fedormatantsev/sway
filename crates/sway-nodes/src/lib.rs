@@ -5,7 +5,10 @@ mod material;
 mod math;
 mod mesh;
 mod midi;
+mod osc;
+mod outputs;
 mod scene;
+mod spatial;
 mod transport;
 
 pub use beat::*;
@@ -15,7 +18,10 @@ pub use material::*;
 pub use math::*;
 pub use mesh::*;
 pub use midi::*;
+pub use osc::*;
+pub use outputs::*;
 pub use scene::*;
+pub use spatial::*;
 pub use transport::*;
 
 /// Registers the M2b scene node set.
@@ -27,6 +33,18 @@ impl bevy_app::Plugin for SceneNodesPlugin {
         sway_graph::register_node_type::<Rgb>(app);
         sway_graph::register_node_type::<StandardMaterialNode>(app);
         sway_graph::register_node_type::<MeshNode>(app);
+    }
+}
+
+/// The wire-model slice. Spec §5.1.
+pub struct WireNodesPlugin;
+
+impl bevy_app::Plugin for WireNodesPlugin {
+    fn build(&self, app: &mut bevy_app::App) {
+        sway_graph::register_behaviour::<Lfo>(app, lfo_behaviour);
+        sway_graph::register_wire::<AmplitudeFrom>(app);
+        sway_graph::register_wire::<TranslationYFrom>(app);
+        sway_graph::register_wire::<bevy::prelude::ChildOf>(app);
     }
 }
 
