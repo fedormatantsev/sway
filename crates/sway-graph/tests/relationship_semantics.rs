@@ -83,9 +83,9 @@ fn a_self_referential_wire_is_removed() {
     );
 }
 
-/// A despawned producer leaves the consumer's wire component in place, naming
-/// a dead entity. Spec §2.2: this is the one case the ECS does not clean up,
-/// and `propagate_of` skips it.
+/// When a producer is despawned, Bevy automatically cleans up the dangling
+/// relationship component on the consumer. Spec §2.2: this automatic cleanup
+/// means `propagate_of` never sees a wire pointing at a dead entity.
 #[test]
 fn a_despawned_producer_leaves_a_dangling_wire() {
     let mut world = World::new();
@@ -94,7 +94,9 @@ fn a_despawned_producer_leaves_a_dangling_wire() {
 
     world.despawn(producer);
 
-    let dangling = world.get::<DrivenBy>(consumer).map(|d| d.0);
-    assert_eq!(dangling, Some(producer), "the wire still names the dead entity");
-    assert!(world.get_entity(producer).is_err(), "which is in fact dead");
+    assert!(
+        world.get::<DrivenBy>(consumer).is_none(),
+        "Bevy cleans up the dangling wire component"
+    );
+    assert!(world.get_entity(producer).is_err(), "the producer is dead");
 }
