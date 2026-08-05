@@ -203,6 +203,13 @@ The wire registry still exists, but only for the editor — enumerating what may
 be connected to what — and for rebuild-time diagnostics. The tick never reads
 it.
 
+**A step is data, not a closure.** `Vec<Box<dyn Fn(&mut World, &TickCtx)>>`
+would work and would drop the enum, but it makes the order opaque: §6's sort
+test asserts on `steps` directly, and an opaque list could only be checked by
+observing side effects. Keeping steps `Copy` also lets the editor show
+evaluation order. The enum is not doing dispatch — the fn pointer is — so its
+only job is keeping the order inspectable.
+
 The monomorphised propagate:
 
 ```rust
