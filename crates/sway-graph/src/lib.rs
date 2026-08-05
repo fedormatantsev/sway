@@ -2,6 +2,7 @@
 
 pub mod compile;
 pub mod edges;
+pub mod order;
 pub mod ports;
 pub mod registry;
 pub mod schema;
@@ -16,6 +17,7 @@ pub(crate) mod test_wires;
 
 pub use compile::{ClearFn, CompileError, CompiledGraph, NodePlan, compile};
 pub use edges::{Edge, EdgeFrom, EdgeTo, Endpoint, EditorPos, GraphNode, InEdges, NodeId, NodeRuntime, OutEdges};
+pub use order::{topological_order, Link, Sorted};
 pub use ports::{clear_events_of, Events, Occurrence, PortArena, Product, Spatial};
 pub use registry::{
     CookFn, InletLensFn, InsertDefaultsFn, NodeType, NodeTypeEntry, NodeTypeId, NodeTypeRegistry,
