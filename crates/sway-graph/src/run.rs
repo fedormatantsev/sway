@@ -53,6 +53,13 @@ impl Plugin for WiresPlugin {
             .register_type::<crate::transport::Transport>()
             .register_type::<crate::transport::TransportState>()
             .add_systems(FixedUpdate, (rebuild_order, graph_tick).chain());
+
+        app.configure_sets(
+            bevy_app::PreUpdate,
+            crate::watch::WatchSet.run_if(bevy_ecs::schedule::common_conditions::resource_exists::<
+                crate::watch::Authoring,
+            >),
+        );
     }
 }
 

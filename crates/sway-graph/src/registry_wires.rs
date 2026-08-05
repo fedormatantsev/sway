@@ -8,6 +8,7 @@ use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
+use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::world::World;
 
 use crate::ctx::TickCtx;
@@ -59,6 +60,7 @@ fn collect_behaviour_of<C: Component>(world: &mut World, out: &mut Vec<Entity>) 
 }
 
 pub fn register_wire<W: Wire>(app: &mut App) {
+    app.add_systems(bevy_app::PreUpdate, crate::watch::watch::<W>.in_set(crate::watch::WatchSet));
     app.init_resource::<WireRegistry>();
     app.world_mut()
         .resource_mut::<WireRegistry>()
