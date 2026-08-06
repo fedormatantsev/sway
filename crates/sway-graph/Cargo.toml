@@ -6,6 +6,7 @@ edition.workspace = true
 # Spec §2: bevy_app/ecs/math/reflect/time/transform only. NOT the `bevy`
 # facade, NOT bevy_render. bevy_asset remains the only deferred dependency; it
 # joins at M4. This manifest is the only place that constraint is enforced.
+# ron and serde for the project format only (Task 1).
 [dependencies]
 bevy_app.workspace = true
 bevy_ecs.workspace = true
@@ -13,3 +14,5 @@ bevy_math.workspace = true
 bevy_reflect.workspace = true
 bevy_time.workspace = true
 bevy_transform.workspace = true
+ron.workspace = true
+serde.workspace = true
