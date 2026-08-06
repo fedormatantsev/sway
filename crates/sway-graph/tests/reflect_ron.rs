@@ -9,6 +9,7 @@ use std::any::TypeId;
 use bevy_ecs::component::Component;
 use bevy_ecs::reflect::{AppTypeRegistry, ReflectComponent};
 use bevy_ecs::world::World;
+use bevy_reflect::prelude::ReflectDefault;
 use bevy_reflect::serde::{TypedReflectDeserializer, TypedReflectSerializer};
 use bevy_reflect::{PartialReflect, Reflect, TypeRegistry};
 use serde::de::DeserializeSeed;
@@ -22,7 +23,7 @@ enum Shape {
 }
 
 #[derive(Component, Reflect, Clone, Copy, Debug, PartialEq)]
-#[reflect(Component, PartialEq)]
+#[reflect(Component, Default, PartialEq)]
 struct Osc {
     hz: f32,
     shape: Shape,
