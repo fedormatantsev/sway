@@ -5328,6 +5328,8 @@ dependencies = [
  "bevy_reflect",
  "bevy_time",
  "bevy_transform",
+ "ron",
+ "serde",
 ]
 
 [[package]]
