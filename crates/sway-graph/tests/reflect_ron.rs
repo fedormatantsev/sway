@@ -69,7 +69,7 @@ fn reflect_component(registry: &TypeRegistry) -> ReflectComponent {
 fn a_full_payload_becomes_the_component() {
     let registry = registry();
     let reflect = reflect_component(&registry);
-    let value = payload("Osc(hz: 2.0, shape: Saw, amplitude: 0.25)", &registry);
+    let value = payload("(hz: 2.0, shape: Saw, amplitude: 0.25)", &registry);
 
     let mut world = World::new();
     let entity = world.spawn_empty().id();
@@ -88,7 +88,7 @@ fn a_full_payload_becomes_the_component() {
 fn a_partial_payload_fills_the_rest_from_default() {
     let registry = registry();
     let reflect = reflect_component(&registry);
-    let value = payload("Osc(hz: 2.0)", &registry);
+    let value = payload("(hz: 2.0)", &registry);
 
     let mut world = World::new();
     let entity = world.spawn_empty().id();
@@ -107,7 +107,7 @@ fn a_partial_payload_fills_the_rest_from_default() {
 fn apply_leaves_unnamed_fields_alone() {
     let registry = registry();
     let reflect = reflect_component(&registry);
-    let value = payload("Osc(hz: 3.0)", &registry);
+    let value = payload("(hz: 3.0)", &registry);
 
     let mut world = World::new();
     let entity = world
@@ -129,8 +129,8 @@ fn a_partial_value_compares_against_the_live_component() {
     let registry = registry();
     let current = Osc { hz: 3.0, shape: Shape::Saw, amplitude: 0.9 };
 
-    let same = payload("Osc(hz: 3.0)", &registry);
-    let different = payload("Osc(hz: 4.0)", &registry);
+    let same = payload("(hz: 3.0)", &registry);
+    let different = payload("(hz: 4.0)", &registry);
 
     assert_eq!(same.reflect_partial_eq(current.as_partial_reflect()), Some(true));
     assert_eq!(different.reflect_partial_eq(current.as_partial_reflect()), Some(false));
