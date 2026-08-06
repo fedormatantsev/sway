@@ -3,6 +3,7 @@
 pub mod ctx;
 pub mod diagnostics;
 pub mod order;
+pub mod project;
 pub mod registry_wires;
 pub mod run;
 #[cfg(test)]
