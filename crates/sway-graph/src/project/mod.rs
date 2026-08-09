@@ -5,10 +5,12 @@ pub mod apply;
 pub mod asset;
 pub mod diagnostics;
 pub mod doc;
+pub mod emit;
 pub mod registry;
 
 pub use apply::apply;
 pub use asset::{ProjectAsset, ProjectHandle, ProjectLoader, ProjectPlugin};
 pub use diagnostics::{DocId, ItemError, ProjectDiagnostics};
 pub use doc::{EntityDoc, FORMAT_VERSION, ParseError, ProjectDoc, parse};
+pub use emit::{to_document, to_ron};
 pub use registry::{ComponentDocRegistry, ComponentEntry, register_authorable};

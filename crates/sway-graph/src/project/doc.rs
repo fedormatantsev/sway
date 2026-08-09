@@ -69,7 +69,7 @@ impl core::fmt::Display for ParseError {
 impl core::error::Error for ParseError {}
 
 pub fn parse(text: &str) -> Result<ProjectDoc, ParseError> {
-    let doc: ProjectDoc = ron::from_str(text).map_err(|e| ParseError::Ron(e.to_string()))?;
+    let mut doc: ProjectDoc = ron::from_str(text).map_err(|e| ParseError::Ron(e.to_string()))?;
     if doc.version != FORMAT_VERSION {
         return Err(ParseError::UnsupportedVersion(doc.version));
     }
@@ -78,6 +78,18 @@ pub fn parse(text: &str) -> Result<ProjectDoc, ParseError> {
         if !seen.insert(entity.id.as_str()) {
             return Err(ParseError::DuplicateId(entity.id.clone()));
         }
+    }
+    for entity in &mut doc.entities {
+        // `ron` 0.12.2's `RawValue` capture merges the pretty-printer's
+        // `"key": value` separator into the captured text on reparse (its
+        // pre-whitespace cursor coalesces adjacent skip_ws calls), so a
+        // payload read back from text carries a leading space a
+        // freshly-built one never had. Trim it here so `Box<RawValue>`
+        // equality reflects content, not incidental whitespace.
+        entity.components = std::mem::take(&mut entity.components)
+            .into_iter()
+            .map(|(k, v)| (k, v.trim_boxed()))
+            .collect();
     }
     Ok(doc)
 }
