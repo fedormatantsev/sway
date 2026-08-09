@@ -190,8 +190,9 @@ fn a_sprite_with_a_depth_channel_interpenetrates_a_cube() {
     assert!(
         converged.is_some(),
         "the sprite's near half never rendered red after {MAX_UPDATES} updates \
-         (last read {near:?}); either nothing drew at all or the pipeline never \
-         finished compiling"
+         (last read {near:?}); either nothing drew at all, the pipeline never \
+         finished compiling, or per-pixel depth is not reaching the depth \
+         buffer (see the far-half assertion below for the direct check)"
     );
 
     // The near half is 2 units in front of the cube: red must win.

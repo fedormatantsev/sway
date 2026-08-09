@@ -32,7 +32,13 @@ midline and cut cleanly by the cube's silhouette.
 ## Measured
 
 - Integration test: PASS
-- Converged after 5 `app.update()` calls (cold cache: 5)
+- Converged after 5 `app.update()` calls in both the reported run and a
+  second, explicitly warm-cache run. Both landing on the same number is not
+  strong evidence that 5 is a true cold-cache figure — it more likely means
+  this machine's driver-level pipeline cache persisted across the "cold"
+  run too. The plan's documented worst case for this codebase is 60
+  updates; that is the number a future reader should size a timeout
+  against, not the 5 measured here.
 - Near-half pixel: [238, 79, 13, 255] (sprite-red wins). Far-half pixel:
   [62, 193, 45, 255] (cube-green wins).
 - By-eye check: ran `cargo run -p sway-app -- --demo sprite-depth --windowed`
@@ -89,6 +95,16 @@ midline and cut cleanly by the cube's silhouette.
   hold midtones, where getting this wrong would visibly warp the depth
   mapping; this spike verifies the reasoning, not the pixels, for that
   point.
+- The shader clamps re-projected depth to `[0.0, 1.0]` to avoid undefined
+  behaviour when a fragment is displaced behind the camera, but that clamp
+  is not a correct fallback: under reverse-Z, a behind-camera fragment
+  clamps to 1.0 (the near plane) and incorrectly wins the depth test
+  against everything else in the scene, rather than failing obviously. This
+  spike's own parameters never reach that case (max displacement toward
+  the camera is 2.0 world units against a camera distance of 6.0), so it
+  went unexercised here. M8 needs an explicit decision on out-of-range
+  depth — discard the fragment, or constrain the depth range so it cannot
+  cross the camera — rather than inheriting the clamp as-is.
 
 ## Surprises
 

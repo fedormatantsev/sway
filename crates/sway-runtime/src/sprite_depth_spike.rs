@@ -113,7 +113,8 @@ impl Plugin for SpriteDepthPlugin {
 }
 
 /// A single-channel-in-R depth atlas: left half near (0.0), right half far
-/// (1.0). Stored `Rgba8UnormSrgb` for one reason — see `depth_step_image`.
+/// (1.0). Raw bytes consumed by `depth_step_image`, which deliberately does
+/// *not* interpret them as sRGB — see that function's doc comment for why.
 pub fn depth_step_rgba(size: u32) -> Vec<u8> {
     let mut data = Vec::with_capacity((size as usize) * (size as usize) * 4);
     for _y in 0..size {
@@ -146,7 +147,7 @@ pub fn solid_white_image(size: u32) -> Image {
     Image::new(
         Extent3d { width: size, height: size, depth_or_array_layers: 1 },
         TextureDimension::D2,
-        vec![255u8; (size * size * 4) as usize],
+        vec![255u8; (size as usize) * (size as usize) * 4],
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD,
     )

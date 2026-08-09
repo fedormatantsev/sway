@@ -96,10 +96,15 @@ fn fragment(in: VertexOut) -> FragmentOut {
 
     var out: FragmentOut;
     out.color = c;
-    // Clamped because a fragment pushed behind the camera would divide by a
-    // non-positive w and hand wgpu an out-of-range depth, which is
-    // undefined. Clamping degrades to "pinned at the near or far plane",
-    // which is the sane reading of an over-large depth range.
+    // Clamp is a guard against undefined behaviour, not a correct fallback.
+    // A fragment pushed behind the camera has w <= 0, so clip.z / clip.w
+    // is typically positive-large and clamps to 1.0 -- which under this
+    // reverse-Z convention is the near plane, so that fragment would
+    // incorrectly WIN the depth test against everything else in the scene
+    // (w == 0 exactly yields NaN, whose behaviour through clamp is also
+    // unspecified). Production code should discard such a fragment, or
+    // constrain depth_params so the displaced position cannot cross the
+    // camera, rather than rely on this clamp to do something sane.
     out.depth = clamp(clip.z / clip.w, 0.0, 1.0);
     return out;
 }
