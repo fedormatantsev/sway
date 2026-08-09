@@ -26,7 +26,8 @@
 /// Only referenced by the validation test below (naga is a dev-dependency),
 /// so it is `cfg(test)` to avoid a dead-code warning in normal builds.
 #[cfg(test)]
-const PREPROCESSOR_SHADERS: &[&str] = &["point_cloud.wgsl", "sprite_layer.wgsl"];
+const PREPROCESSOR_SHADERS: &[&str] =
+    &["point_cloud.wgsl", "sprite_layer.wgsl", "sprite_depth_spike.wgsl"];
 
 #[cfg(test)]
 mod tests {
