@@ -15,9 +15,11 @@ use bevy_reflect::TypeRegistry;
 use bevy_reflect::serde::TypedReflectDeserializer;
 use serde::de::DeserializeSeed;
 
+use crate::order::TopologyDirty;
 use crate::project::diagnostics::{DocId, ItemError, ProjectDiagnostics};
 use crate::project::doc::{EntityDoc, ProjectDoc};
 use crate::project::registry::ComponentDocRegistry;
+use crate::registry_wires::WireRegistry;
 
 /// Applies `doc` to `world` and returns what it could not do.
 ///
@@ -49,6 +51,19 @@ pub fn apply(world: &mut World, doc: &ProjectDoc) -> ProjectDiagnostics {
                 &mut diagnostics,
             );
         }
+    }
+
+    let wires = world.remove_resource::<WireRegistry>().unwrap_or_default();
+    for entity_doc in &doc.entities {
+        let Some(&entity) = ids.get(&entity_doc.id) else {
+            continue;
+        };
+        apply_wires(world, entity, entity_doc, &ids, &wires, &mut diagnostics);
+    }
+    world.insert_resource(wires);
+
+    if let Some(mut dirty) = world.get_resource_mut::<TopologyDirty>() {
+        dirty.0 = true;
     }
 
     world.insert_resource(components);
@@ -168,6 +183,49 @@ fn apply_components(
         }
         if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
             reflect_component.remove(&mut entity_mut);
+        }
+    }
+}
+
+/// Pass 4: resolves each entity's declared wires against `WireRegistry`,
+/// inserting, removing, or leaving each one alone, and reports an unknown
+/// wire name or an unresolved target rather than panicking on either.
+fn apply_wires(
+    world: &mut World,
+    entity: Entity,
+    entity_doc: &EntityDoc,
+    ids: &HashMap<String, Entity>,
+    wires: &WireRegistry,
+    diagnostics: &mut ProjectDiagnostics,
+) {
+    for (name, target_id) in &entity_doc.wires {
+        if wires.entries.iter().all(|entry| entry.name != name) {
+            diagnostics.items.push(ItemError::UnknownWire {
+                entity: entity_doc.id.clone(),
+                wire: name.clone(),
+            });
+        } else if !ids.contains_key(target_id) {
+            diagnostics.items.push(ItemError::UnresolvedTarget {
+                entity: entity_doc.id.clone(),
+                wire: name.clone(),
+                target: target_id.clone(),
+            });
+        }
+    }
+
+    for entry in &wires.entries {
+        let wanted = entity_doc
+            .wires
+            .get(entry.name)
+            .and_then(|target_id| ids.get(target_id))
+            .copied();
+        let current = (entry.read)(world, entity);
+        if wanted == current {
+            continue; // never churn a RelationshipTarget for nothing
+        }
+        match wanted {
+            Some(src) => (entry.insert)(world, entity, src),
+            None => (entry.remove)(world, entity),
         }
     }
 }
@@ -486,5 +544,144 @@ mod tests {
             "got {:?}",
             diagnostics.items
         );
+    }
+
+    use crate::order::TopologyDirty;
+    use crate::registry_wires::register_wire;
+    use crate::test_wires::{FloatOut, Gain, GainFrom};
+
+    /// `Gain` is the wire fixture's target and `FloatOut` its source; both
+    /// become authorable so a document can build the whole graph.
+    fn wired_app() -> App {
+        let mut app = doc_app();
+        app.init_resource::<TopologyDirty>();
+        register_wire::<GainFrom>(&mut app);
+        register_authorable::<Gain>(&mut app, "Gain");
+        register_authorable::<FloatOut>(&mut app, "FloatOut");
+        app
+    }
+
+    const WIRED: &str = r#"Project(version: 1, entities: [
+        Entity(id: "src", components: { "FloatOut": (2.0) }),
+        Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) },
+               wires: { "factor": "src" }),
+    ])"#;
+
+    #[test]
+    fn a_document_wire_becomes_a_relationship_component() {
+        let mut app = wired_app();
+        apply(app.world_mut(), &doc(WIRED));
+
+        let src = entity_of(app.world_mut(), "src").expect("spawned");
+        let dst = entity_of(app.world_mut(), "dst").expect("spawned");
+        assert_eq!(app.world().get::<GainFrom>(dst).map(|w| w.0), Some(src));
+    }
+
+    #[test]
+    fn a_wire_may_name_an_entity_declared_later_in_the_file() {
+        let mut app = wired_app();
+        apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) },
+                       wires: { "factor": "src" }),
+                Entity(id: "src", components: { "FloatOut": (2.0) }),
+            ])"#),
+        );
+
+        let src = entity_of(app.world_mut(), "src").expect("spawned");
+        let dst = entity_of(app.world_mut(), "dst").expect("spawned");
+        assert_eq!(app.world().get::<GainFrom>(dst).map(|w| w.0), Some(src));
+    }
+
+    #[test]
+    fn a_wire_dropped_from_the_document_is_removed() {
+        let mut app = wired_app();
+        apply(app.world_mut(), &doc(WIRED));
+        let dst = entity_of(app.world_mut(), "dst").expect("spawned");
+
+        apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "src", components: { "FloatOut": (2.0) }),
+                Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) }),
+            ])"#),
+        );
+
+        assert!(app.world().get::<GainFrom>(dst).is_none());
+    }
+
+    #[test]
+    fn an_unchanged_wire_is_not_churned() {
+        // Removing and re-inserting would rewrite the producer's
+        // RelationshipTarget collection for nothing.
+        let mut app = wired_app();
+        apply(app.world_mut(), &doc(WIRED));
+        app.world_mut().clear_trackers();
+
+        apply(app.world_mut(), &doc(WIRED));
+
+        let changed = app
+            .world_mut()
+            .query_filtered::<(), Changed<GainFrom>>()
+            .iter(app.world())
+            .count();
+        assert_eq!(changed, 0);
+    }
+
+    #[test]
+    fn a_wire_naming_a_missing_entity_is_reported() {
+        let mut app = wired_app();
+        let diagnostics = apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) },
+                       wires: { "factor": "ghost" }),
+            ])"#),
+        );
+
+        assert_eq!(
+            diagnostics.items,
+            vec![ItemError::UnresolvedTarget {
+                entity: "dst".to_string(),
+                wire: "factor".to_string(),
+                target: "ghost".to_string(),
+            }]
+        );
+        let dst = entity_of(app.world_mut(), "dst").expect("spawned anyway");
+        assert!(app.world().get::<GainFrom>(dst).is_none());
+    }
+
+    #[test]
+    fn an_unknown_wire_name_is_reported() {
+        let mut app = wired_app();
+        let diagnostics = apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "src", components: { "FloatOut": (2.0) }),
+                Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) },
+                       wires: { "nope": "src" }),
+            ])"#),
+        );
+
+        assert_eq!(
+            diagnostics.items,
+            vec![ItemError::UnknownWire {
+                entity: "dst".to_string(),
+                wire: "nope".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn applying_marks_the_topology_dirty() {
+        // Spec §4.1: the applier never touches GraphOrder; it sets the flag
+        // and the existing rebuild does the rest on the next FixedUpdate.
+        let mut app = wired_app();
+        app.world_mut().resource_mut::<TopologyDirty>().0 = false;
+
+        apply(app.world_mut(), &doc(WIRED));
+
+        assert!(app.world().resource::<TopologyDirty>().0);
     }
 }

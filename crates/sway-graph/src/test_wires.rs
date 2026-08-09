@@ -4,16 +4,28 @@
 use bevy_ecs::change_detection::{DetectChangesMut, Mut};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
+use bevy_ecs::reflect::ReflectComponent;
 use bevy_ecs::world::World;
+use bevy_reflect::Reflect;
+use bevy_reflect::std_traits::ReflectDefault;
 
 use crate::wire::Wire;
 
 /// A producer's output. An outlet is a component (spec §2.1).
-#[derive(Component, Default, Debug, Clone, Copy, PartialEq)]
+///
+/// `Reflect`/`#[reflect(Component, Default, PartialEq)]` so Task 7's project
+/// tests can register it via `register_authorable` — that's the only
+/// consumer of this trait on this type, the tick path never reflects it.
+#[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
+#[reflect(Component, Default, PartialEq)]
 pub struct FloatOut(pub f32);
 
 /// A consumer with one driveable field and one derived one.
-#[derive(Component, Default, Debug, Clone, Copy, PartialEq)]
+///
+/// `Reflect`/`#[reflect(Component, Default, PartialEq)]` for the same reason
+/// as `FloatOut`.
+#[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
+#[reflect(Component, Default, PartialEq)]
 pub struct Gain {
     pub factor: f32,
     pub value: f32,
