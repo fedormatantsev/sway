@@ -101,10 +101,20 @@ fn a_partial_payload_fills_the_rest_from_default() {
     );
 }
 
-/// CLAIM 3: `apply` on an EXISTING component touches only the named fields.
-/// This is what stops a reload from clobbering a field a wire is driving.
+/// CLAIM 3 (REVISED — the original claim was disproven): `apply` on an
+/// EXISTING component was expected to touch only the named fields,
+/// preserving whatever a wire is driving in the rest. It does not: CLAIM 2
+/// above is true *because* `TypedReflectDeserializer` fills every unnamed
+/// field from `ReflectDefault` at deserialize time, so the "partial" reflect
+/// value `apply` receives is already a full, default-filled `Osc` — and
+/// `apply` overwrites every field with it, exactly like `insert` would.
+/// Task 6 (the applier's component pass) accounts for this: it uses
+/// `insert()` unconditionally rather than branching on `apply`/`insert`, and
+/// documents the resulting accepted loss (a reload resets any field the
+/// document doesn't name back to its `Default`, even one a wire is
+/// currently driving).
 #[test]
-fn apply_leaves_unnamed_fields_alone() {
+fn apply_overwrites_unnamed_fields_via_eager_default_fill() {
     let registry = registry();
     let reflect = reflect_component(&registry);
     let value = payload("(hz: 3.0)", &registry);
@@ -117,23 +127,50 @@ fn apply_leaves_unnamed_fields_alone() {
 
     assert_eq!(
         world.get::<Osc>(entity),
-        Some(&Osc { hz: 3.0, shape: Shape::Saw, amplitude: 0.9 })
+        Some(&Osc { hz: 3.0, shape: Shape::Sine, amplitude: 0.5 }),
+        "apply does not preserve unnamed fields here: they come back as \
+         Default, not as whatever was there before"
     );
 }
 
-/// CLAIM 4: a partial value compares equal to a component whose named fields
-/// match. This is the skip-if-unchanged gate; without it every reload marks
-/// every component Changed.
+/// CLAIM 4 (REVISED — the original claim was disproven): since a "partial"
+/// value is actually a full, default-filled reconstruction (see CLAIM 3's
+/// note), `reflect_partial_eq` performs whole-struct comparison, not a
+/// named-fields-only comparison against whatever the live component's other
+/// fields happen to be. The skip-if-unchanged gate this backs (the
+/// applier's component pass) only skips a reload when the live component is
+/// exactly what the document's text deserializes to.
 #[test]
 fn a_partial_value_compares_against_the_live_component() {
     let registry = registry();
-    let current = Osc { hz: 3.0, shape: Shape::Saw, amplitude: 0.9 };
+    // Unnamed fields already sit at their Default — the only case under
+    // which two reloads of the same partial text compare equal (see CLAIM 3
+    // above).
+    let current = Osc { hz: 3.0, shape: Shape::Sine, amplitude: 0.5 };
 
     let same = payload("(hz: 3.0)", &registry);
     let different = payload("(hz: 4.0)", &registry);
 
     assert_eq!(same.reflect_partial_eq(current.as_partial_reflect()), Some(true));
     assert_eq!(different.reflect_partial_eq(current.as_partial_reflect()), Some(false));
+}
+
+/// A partial payload does NOT ignore a live component's unnamed fields when
+/// they have drifted from Default (e.g. a wire moved `amplitude`) — which is
+/// exactly the case the original CLAIM 4 assumed would compare equal. This
+/// is the concrete shape of the applier's accepted loss: on the next
+/// reload, this compares as "changed" and `amplitude` is reset to Default.
+#[test]
+fn a_partial_value_does_not_ignore_a_live_components_drifted_unnamed_fields() {
+    let registry = registry();
+    let current = Osc { hz: 3.0, shape: Shape::Saw, amplitude: 0.9 };
+    let same_hz = payload("(hz: 3.0)", &registry);
+
+    assert_eq!(
+        same_hz.reflect_partial_eq(current.as_partial_reflect()),
+        Some(false),
+        "unnamed fields are compared too, since the payload is fully default-filled"
+    );
 }
 
 /// CLAIM 5: a live component serializes back to text the loader can read.
