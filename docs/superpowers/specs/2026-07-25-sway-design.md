@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-25
 **Status:** In implementation — M0, M1, M1b, M2a, M2b, M2c, M3 complete; the
-wire model has replaced the graph engine; M4 next
+wire model has replaced the graph engine; M4 complete, M5 next
 **Revision:** graph engine builds on Bevy's non-rendering subcrates (§2.2–§2.7, §3)
 **Revision:** scene composition is expressed in the graph, Houdini/USD-shaped (§2.10)
 **Revision (2026-08-02):** §5 and §7 reconciled against what was actually built.
@@ -864,9 +864,9 @@ in tests, so the abstraction would buy nothing real.
 Sizes are relative, not calendar. Ordering follows two rules: get one end-to-end
 path working before deepening any layer, and pull genuinely unknown work early.
 
-**Status at 2026-08-06.** M0, M1, M1b, M2a, M2b, M2c and M3 are complete, and
-the **wire model** has since replaced the engine those milestones built; M4 is
-next. A completed milestone's plan is superseded by its findings report, which
+**Status at 2026-08-09.** M0, M1, M1b, M2a, M2b, M2c, M3 and M4 are complete,
+and the **wire model** has since replaced the engine those milestones built;
+M5 is next. A completed milestone's plan is superseded by its findings report, which
 is linked below and is the authority on what was actually built. Where one left
 debt it carries a *Carried forward* line saying so, and the milestone that
 inherits it says so too — the point is that debt is visible in the roadmap
@@ -1097,7 +1097,7 @@ than (entity, component) pairs, so two unrelated components on one entity can
 read as a false cycle (§2.5). All four are in §7. The node set and geometry flow
 are M5's; the rest are open questions rather than scheduled work.
 
-### M4 — Project format and hot reload (M)
+### M4 — Project format and hot reload (M) — **complete**
 
 Design: `specs/2026-08-06-project-format-design.md`, which is the authority on
 everything summarised here.
@@ -1160,7 +1160,62 @@ M4 previously inherited is moot: `Events<T>` has no representation under wires
 (§2.4), so it returns to §7 as part of that question rather than as a reload
 semantic.
 
-*Exit:* a set can be authored by editing text with the app running.
+*Outcome:* the format's three load-bearing assumptions (design §10) were
+pinned by characterization test before any format code existed, and two of
+the three came back false. `ron::Value` cannot drive
+`TypedReflectDeserializer` through an enum field, so a document's component
+payloads are stored as raw text (`Box<ron::value::RawValue>`) and driven
+through `ron::de::Deserializer::from_str` at the point of use, rather than
+via a pre-parsed `ron::Value`. And `ReflectComponent::apply` does not leave
+a component's unnamed fields alone: `TypedReflectDeserializer` fills every
+unnamed field from `ReflectDefault` *at deserialize time*, so the "partial"
+value `apply` receives is already a full, default-filled struct — `apply`
+and `insert` behave identically. The applier uses `insert` unconditionally
+and accepts the resulting loss: a reload resets any field the document does
+not name back to its `Default`, even one a wire is currently driving. A
+`ron` 0.12.2 quirk was also found and worked around — `RawValue` capture
+absorbs an adjacent pretty-printer separator on reparse, breaking
+byte-equal round-tripping, fixed by trimming each payload immediately after
+parse.
+
+The inspector (§6) is the reflect walk it was designed to be, and it found
+one gap directly: `Transform`'s `rotation` (a `Quat`) has no dedicated
+formatter and falls back to `{value:?}` debug output — the signal, per the
+inspector's own doc comment, that the type wants editor `TypeData`. Every
+other field the demo's five authorable components actually use (`f32`,
+`Vec2`, `Vec3`, and the `Waveform` enum) renders cleanly. Carried forward to
+M7, which is where an editable, non-read-only `TypeData` widget for `Quat`
+would land anyway.
+
+The whole-document round-trip (world → document → world, spec §5) holds:
+`document_to_world_to_document_is_stable` and `the_emitted_text_reparses`
+both pass against the demo's real component/wire set. The one thing the
+format still cannot express is an asset handle — `Handle<Mesh>` is asset
+flow, which is M5's — so the demo's cubes are authored as a `DemoCube`
+marker component and a plain Bevy `Added<T>` system attaches the mesh and
+material outside the document, exactly as designed as the milestone's one
+deliberate seam.
+
+One environment-specific surprise, unrelated to the format itself: Bevy's
+default `AssetPlugin` resolves `assets/` relative to `CARGO_MANIFEST_DIR`
+(the crate's own directory), not the workspace root or the process's
+working directory. `assets/demo.sway.ron` was first placed at the
+workspace root on the assumption that `cargo run`'s working directory
+governed asset resolution; it does not, and file watching silently found
+nothing there. Moved to `crates/sway-app/assets/demo.sway.ron`, where Bevy
+actually looks. Worth remembering for M5 and M7, which will add more
+asset-backed content.
+
+Manually verified with the app running: an edited beat interval changes bob
+speed within a frame or two of saving; rewiring a cube's `translation.y` to
+the other LFO takes effect live; adding and then deleting an entity in the
+document reconciles by id rather than restarting the scene — the other two
+entities keep bobbing, unaffected, across both edits; a syntax error (a
+missing closing paren) leaves the running scene untouched and reports the
+failure rather than crashing or clearing it; fixing the syntax resumes
+updates from the file.
+
+*Exit:* a set can be authored by editing text with the app running — met.
 
 ### M5 — Visual runtime (L, larger than it was)
 
