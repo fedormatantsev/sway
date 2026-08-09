@@ -105,7 +105,10 @@ impl EditorPresenter {
     /// load-bearing. A one-frame lag in a diagnostic view is invisible;
     /// reordering `present` for it would not be.
     fn apply_snapshot(&mut self, app: &App) {
-        let snapshot = sway_editor::snapshot::capture(app.world());
+        let mut snapshot = sway_editor::snapshot::capture(app.world());
+        if let Some(entity) = self.editor.selected_entity() {
+            snapshot.inspector = sway_editor::snapshot::inspect(app.world(), entity);
+        }
         self.editor.apply_snapshot(&snapshot);
     }
 

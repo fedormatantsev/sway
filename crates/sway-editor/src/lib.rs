@@ -11,6 +11,7 @@
 
 pub mod canvas;
 pub mod external;
+pub mod inspector;
 pub mod node_box;
 pub mod scene_tree;
 pub mod snapshot;
@@ -39,12 +40,15 @@ use winit::dpi::PhysicalSize;
 
 use crate::canvas::GraphCanvas;
 use crate::external::ViewportPlaceholder;
+use crate::inspector::Inspector;
 use crate::scene_tree::SceneTree;
 use crate::snapshot::{NodeId, WorldSnapshot};
 use crate::transport_bar::{TRANSPORT_BAR_HEIGHT, TransportBar};
 
 /// Reaches the hierarchy pane from `EditorUi::apply_snapshot`.
 pub const SCENE_TREE_TAG: WidgetTag<SceneTree> = WidgetTag::named("sway-scene-tree");
+/// Reaches the inspector pane from `EditorUi::apply_snapshot`.
+pub const INSPECTOR_TAG: WidgetTag<Inspector> = WidgetTag::named("sway-inspector");
 /// Reaches the graph pane from `EditorUi::apply_snapshot`.
 pub const GRAPH_CANVAS_TAG: WidgetTag<GraphCanvas> = WidgetTag::named("sway-graph-canvas");
 /// Reaches the viewport placeholder from `EditorUi::viewport_rect`.
@@ -58,7 +62,7 @@ pub const VIEWPORT_TAG: WidgetTag<ViewportPlaceholder> = WidgetTag::named("sway-
 /// Reaches the transport readout from `EditorUi::apply_snapshot`.
 pub const TRANSPORT_BAR_TAG: WidgetTag<TransportBar> = WidgetTag::named("sway-transport-bar");
 
-/// Builds the root widget: a transport strip above three panes, split three
+/// Builds the root widget: a transport strip above three panes, split four
 /// times.
 ///
 /// ```text
@@ -66,9 +70,10 @@ pub const TRANSPORT_BAR_TAG: WidgetTag<TransportBar> = WidgetTag::named("sway-tr
 /// |              transport bar                 |
 /// +--------+------------------------------------+
 /// | SCENE  |      bevy viewport                 |
-/// |        |                                    |
-/// | v root +------------------------------------+
-/// |  v rig |  graph canvas (pan/zoom)           |
+/// | v root |                                    |
+/// |  v rig +------------------------------------+
+/// +--------+  graph canvas (pan/zoom)           |
+/// |inspect |                                    |
 /// +--------+------------------------------------+
 /// ```
 ///
@@ -77,12 +82,23 @@ pub const TRANSPORT_BAR_TAG: WidgetTag<TransportBar> = WidgetTag::named("sway-tr
 /// which reads it directly off the tagged widget's own state -- see that
 /// method's doc comment for why.
 ///
-/// All four content widgets carry a `WidgetTag` so `apply_snapshot` and
+/// All five content widgets carry a `WidgetTag` so `apply_snapshot` and
 /// `viewport_rect` can reach them typed, without downcasting through the
 /// `Split`s.
 fn graph_root() -> NewWidget<dyn Widget> {
     let tree = Portal::new(SceneTree::new().prepare().with_tag(SCENE_TREE_TAG))
         .constrain_horizontal(true)
+        .prepare();
+
+    let inspector = Portal::new(Inspector::new().prepare().with_tag(INSPECTOR_TAG))
+        .constrain_horizontal(true)
+        .prepare();
+
+    let left = Split::new(tree, inspector)
+        .split_axis(Axis::Vertical)
+        .split_fraction(0.6)
+        .draggable(true)
+        .solid_bar(true)
         .prepare();
 
     let viewport = ViewportPlaceholder::new().prepare().with_tag(VIEWPORT_TAG);
@@ -95,7 +111,7 @@ fn graph_root() -> NewWidget<dyn Widget> {
         .solid_bar(true)
         .prepare();
 
-    let panes = Split::new(tree, right)
+    let panes = Split::new(left, right)
         .split_axis(Axis::Horizontal)
         .split_point_from_start(260.0.px())
         .draggable(true)
@@ -233,6 +249,9 @@ impl EditorUi {
         self.root.edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
             TransportBar::apply_snapshot(&mut bar, snap);
         });
+        self.root.edit_widget_with_tag(INSPECTOR_TAG, |mut inspector| {
+            Inspector::apply_snapshot(&mut inspector, snap);
+        });
     }
 
     /// Mirrors selection between the two panes.
@@ -273,6 +292,15 @@ impl EditorUi {
     /// a row that is not a graph node.
     fn last_snapshot_node_id(&self, entity: Entity) -> Option<NodeId> {
         self.node_ids.get(&entity).copied()
+    }
+
+    /// The entity the panes currently agree is selected.
+    ///
+    /// `sync_selection` keeps the tree and the canvas in step, so the tree's
+    /// answer is the shared one.
+    pub fn selected_entity(&mut self) -> Option<Entity> {
+        self.root
+            .edit_widget_with_tag(SCENE_TREE_TAG, |tree| tree.widget.selected())
     }
 
     /// The Bevy viewport's current window-space (logical pixel) rectangle, or
@@ -492,5 +520,23 @@ mod tests {
             rect.y0 >= crate::transport_bar::TRANSPORT_BAR_HEIGHT,
             "viewport rect {rect:?} must sit below the transport strip"
         );
+    }
+
+    #[test]
+    fn an_unchanged_selection_does_not_rebuild_the_inspector() {
+        // Same discipline as SceneTree: a steady-state world costs one
+        // comparison per frame.
+        let mut ui = EditorUi::new(PhysicalSize::new(1200, 800), 1.0);
+        let snap = WorldSnapshot::default();
+        ui.apply_snapshot(&snap);
+        let first = ui
+            .root
+            .edit_widget_with_tag(crate::INSPECTOR_TAG, |i| i.widget.generation());
+        ui.apply_snapshot(&snap);
+        let second = ui
+            .root
+            .edit_widget_with_tag(crate::INSPECTOR_TAG, |i| i.widget.generation());
+
+        assert_eq!(first, second);
     }
 }
