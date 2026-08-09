@@ -7,6 +7,7 @@ use bevy_app::App;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::With;
+use bevy_ecs::relationship::Relationship;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::world::World;
@@ -28,6 +29,13 @@ pub struct WireEntry {
     pub has_source: fn(&World, Entity) -> bool,
     /// Whether an entity could be this wire's consumer.
     pub has_target: fn(&World, Entity) -> bool,
+    /// Wire `dst`'s inlet to `src`, replacing whatever was there. The project
+    /// format's write path (project spec §3).
+    pub insert: fn(&mut World, Entity, Entity),
+    /// Disconnect `dst`'s inlet. A no-op if it is not connected.
+    pub remove: fn(&mut World, Entity),
+    /// The producer `dst`'s inlet currently names.
+    pub read: fn(&World, Entity) -> Option<Entity>,
 }
 
 pub struct BehaviourEntry {
@@ -59,6 +67,22 @@ fn collect_wire_of<W: Wire>(world: &mut World, out: &mut Vec<Link>) {
     }
 }
 
+fn insert_wire_of<W: Wire>(world: &mut World, dst: Entity, src: Entity) {
+    if let Ok(mut entity) = world.get_entity_mut(dst) {
+        entity.insert(W::from(src));
+    }
+}
+
+fn remove_wire_of<W: Wire>(world: &mut World, dst: Entity) {
+    if let Ok(mut entity) = world.get_entity_mut(dst) {
+        entity.remove::<W>();
+    }
+}
+
+fn read_wire_of<W: Wire>(world: &World, dst: Entity) -> Option<Entity> {
+    world.get::<W>(dst).map(Relationship::get)
+}
+
 fn collect_behaviour_of<C: Component>(world: &mut World, out: &mut Vec<Entity>) {
     let mut query = world.query_filtered::<Entity, With<C>>();
     out.extend(query.iter(world));
@@ -79,6 +103,9 @@ pub fn register_wire<W: Wire>(app: &mut App) {
             has_target: |world, entity| {
                 world.get_entity(entity).is_ok_and(|e| e.contains::<W::Target>())
             },
+            insert: insert_wire_of::<W>,
+            remove: remove_wire_of::<W>,
+            read: read_wire_of::<W>,
         });
 }
 
@@ -164,5 +191,61 @@ mod tests {
         let mut want = vec![a, b];
         want.sort();
         assert_eq!(found, want);
+    }
+
+    #[test]
+    fn a_registered_wire_can_be_inserted_read_and_removed() {
+        // The project format's whole write path for wires. Going through the
+        // registry rather than the concrete type is what lets the applier be
+        // generic over every wire type at once.
+        let mut app = App::new();
+        register_wire::<GainFrom>(&mut app);
+        let src = spawn_float(app.world_mut(), 1.0);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+
+        let entry_index = 0;
+        let (insert, read, remove) = {
+            let entry = &app.world().resource::<WireRegistry>().entries[entry_index];
+            (entry.insert, entry.read, entry.remove)
+        };
+
+        assert_eq!(read(app.world(), dst), None, "nothing wired yet");
+
+        insert(app.world_mut(), dst, src);
+        assert_eq!(read(app.world(), dst), Some(src));
+
+        remove(app.world_mut(), dst);
+        assert_eq!(read(app.world(), dst), None);
+    }
+
+    #[test]
+    fn inserting_over_an_existing_wire_replaces_its_source() {
+        let mut app = App::new();
+        register_wire::<GainFrom>(&mut app);
+        let first = spawn_float(app.world_mut(), 1.0);
+        let second = spawn_float(app.world_mut(), 2.0);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+
+        let (insert, read) = {
+            let entry = &app.world().resource::<WireRegistry>().entries[0];
+            (entry.insert, entry.read)
+        };
+
+        insert(app.world_mut(), dst, first);
+        insert(app.world_mut(), dst, second);
+
+        assert_eq!(read(app.world(), dst), Some(second));
+    }
+
+    #[test]
+    fn removing_a_wire_that_is_not_there_is_a_no_op() {
+        let mut app = App::new();
+        register_wire::<GainFrom>(&mut app);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+
+        let remove = app.world().resource::<WireRegistry>().entries[0].remove;
+        remove(app.world_mut(), dst);
+
+        assert!(app.world().get::<GainFrom>(dst).is_none());
     }
 }
