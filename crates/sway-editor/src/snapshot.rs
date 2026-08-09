@@ -5,11 +5,13 @@ use std::collections::HashSet;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::hierarchy::{ChildOf, Children};
 use bevy_ecs::name::Name;
+use bevy_ecs::reflect::{AppTypeRegistry, ReflectComponent};
 use bevy_ecs::world::World;
+use bevy_reflect::{PartialReflect, ReflectRef};
 use bevy_transform::components::Transform;
 use kurbo::Point;
 use sway_graph::order::{GraphOrder, Step};
-use sway_graph::{EditorPos, GraphDiagnostics, TransportTime, WireRegistry};
+use sway_graph::{ComponentDocRegistry, EditorPos, GraphDiagnostics, TransportTime, WireRegistry};
 
 /// The editor's display key for a node box.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -50,6 +52,105 @@ pub struct WorldSnapshot {
     pub edges: Vec<EdgeView>,
     pub diagnostics: GraphDiagnostics,
     pub transport: TransportView,
+    pub inspector: InspectorView,
+}
+
+/// One component's authored fields, flattened for display.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InspectorComponent {
+    pub name: String,
+    pub fields: Vec<(String, String)>,
+}
+
+/// What the inspector pane shows for the current selection.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InspectorView {
+    pub entity: Option<Entity>,
+    pub components: Vec<InspectorComponent>,
+}
+
+/// The authorable components on `entity`, walked by reflection.
+///
+/// The same walk the project format's reader and emitter perform, which is the
+/// point: this is what finally exercises editor `TypeData` (parent spec §7).
+pub fn inspect(world: &World, entity: Entity) -> InspectorView {
+    let (Some(docs), Some(registry)) = (
+        world.get_resource::<ComponentDocRegistry>(),
+        world.get_resource::<AppTypeRegistry>(),
+    ) else {
+        return InspectorView::default();
+    };
+    let registry = registry.read();
+    let Ok(entity_ref) = world.get_entity(entity) else {
+        return InspectorView::default();
+    };
+
+    let mut components = Vec::new();
+    for entry in &docs.entries {
+        let Some(registration) = registry.get(entry.type_id) else {
+            continue;
+        };
+        let Some(reflect_component) = registration.data::<ReflectComponent>() else {
+            continue;
+        };
+        let Some(value) = reflect_component.reflect(entity_ref) else {
+            continue;
+        };
+        components.push(InspectorComponent {
+            name: entry.name.to_string(),
+            fields: fields_of(value.as_partial_reflect()),
+        });
+    }
+
+    InspectorView { entity: Some(entity), components }
+}
+
+fn fields_of(value: &dyn PartialReflect) -> Vec<(String, String)> {
+    match value.reflect_ref() {
+        ReflectRef::Struct(s) => (0..s.field_len())
+            .map(|i| {
+                (
+                    s.name_at(i).unwrap_or("?").to_string(),
+                    format_value(s.field_at(i).expect("index in range")),
+                )
+            })
+            .collect(),
+        ReflectRef::TupleStruct(t) => (0..t.field_len())
+            .map(|i| (i.to_string(), format_value(t.field(i).expect("index in range"))))
+            .collect(),
+        ReflectRef::Enum(e) => vec![("variant".to_string(), e.variant_name().to_string())],
+        _ => vec![(String::new(), format_value(value))],
+    }
+}
+
+/// Renders the types a set actually uses; anything else falls back to its
+/// debug form, which is the signal that the type wants editor `TypeData`.
+fn format_value(value: &dyn PartialReflect) -> String {
+    if let Some(v) = value.try_downcast_ref::<f32>() {
+        return format!("{v:.3}");
+    }
+    if let Some(v) = value.try_downcast_ref::<f64>() {
+        return format!("{v:.3}");
+    }
+    if let Some(v) = value.try_downcast_ref::<bool>() {
+        return v.to_string();
+    }
+    if let Some(v) = value.try_downcast_ref::<u32>() {
+        return v.to_string();
+    }
+    if let Some(v) = value.try_downcast_ref::<String>() {
+        return v.clone();
+    }
+    if let Some(v) = value.try_downcast_ref::<bevy_math::Vec2>() {
+        return format!("{:.2}, {:.2}", v.x, v.y);
+    }
+    if let Some(v) = value.try_downcast_ref::<bevy_math::Vec3>() {
+        return format!("{:.2}, {:.2}, {:.2}", v.x, v.y, v.z);
+    }
+    if let ReflectRef::Enum(e) = value.reflect_ref() {
+        return e.variant_name().to_string();
+    }
+    format!("{value:?}")
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -120,6 +221,7 @@ pub fn capture(world: &World) -> WorldSnapshot {
             .cloned()
             .unwrap_or_default(),
         transport: capture_transport(world),
+        inspector: InspectorView::default(),
     }
 }
 
@@ -426,5 +528,50 @@ mod tests {
         let before = entities.len();
         entities.dedup();
         assert_eq!(entities.len(), before);
+    }
+
+    #[test]
+    fn the_inspector_lists_authorable_components_and_their_fields() {
+        let mut app = bevy_app::App::new();
+        app.add_plugins(sway_graph::WiresPlugin)
+            .add_plugins(sway_nodes::WireNodesPlugin);
+        let entity = app
+            .world_mut()
+            .spawn(sway_nodes::Lfo { beats: 4.0, shape: sway_nodes::Waveform::Saw, phase: 0.25, amplitude: 0.5 })
+            .id();
+
+        let view = inspect(app.world(), entity);
+
+        let lfo = view
+            .components
+            .iter()
+            .find(|c| c.name == "Lfo")
+            .expect("Lfo is authorable and present");
+        assert_eq!(lfo.fields.len(), 4);
+        assert_eq!(lfo.fields[0], ("beats".to_string(), "4.000".to_string()));
+        assert!(lfo.fields.iter().any(|(name, value)| name == "shape" && value == "Saw"));
+    }
+
+    #[test]
+    fn a_component_the_entity_does_not_have_is_not_listed() {
+        let mut app = bevy_app::App::new();
+        app.add_plugins(sway_graph::WiresPlugin)
+            .add_plugins(sway_nodes::WireNodesPlugin);
+        let entity = app.world_mut().spawn(sway_nodes::FloatOut(1.0)).id();
+
+        let view = inspect(app.world(), entity);
+
+        assert_eq!(view.components.len(), 1);
+        assert_eq!(view.components[0].name, "FloatOut");
+    }
+
+    #[test]
+    fn inspecting_a_dead_entity_is_empty_not_a_panic() {
+        let mut app = bevy_app::App::new();
+        app.add_plugins(sway_graph::WiresPlugin);
+        let entity = app.world_mut().spawn_empty().id();
+        app.world_mut().despawn(entity);
+
+        assert_eq!(inspect(app.world(), entity), InspectorView::default());
     }
 }

@@ -5378,6 +5378,7 @@ dependencies = [
  "masonry_testing",
  "peniko",
  "sway-graph",
+ "sway-nodes",
  "ui-events-winit",
  "winit",
 ]
