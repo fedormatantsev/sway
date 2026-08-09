@@ -23,6 +23,7 @@ const TICK_HZ: f64 = 120.0;
 enum Demo {
     PointCloud,
     Sprites,
+    SpriteDepth,
     Scatter,
     All,
 }
@@ -66,6 +67,7 @@ fn parse_args() -> Args {
                 args.demo = Some(match value.as_str() {
                     "point-cloud" => Demo::PointCloud,
                     "sprites" => Demo::Sprites,
+                    "sprite-depth" => Demo::SpriteDepth,
                     "scatter" => Demo::Scatter,
                     "all" => Demo::All,
                     other => panic!("unknown --demo value: {other}"),
@@ -252,6 +254,13 @@ fn main() {
                             sway_runtime::sprite_layer::spawn_demo_sprite_layers,
                             sway_runtime::sprite_layer::spawn_demo_camera,
                         ),
+                    );
+            }
+            Some(Demo::SpriteDepth) => {
+                app.add_plugins(sway_runtime::SpriteDepthPlugin)
+                    .add_systems(
+                        Startup,
+                        sway_runtime::sprite_depth_spike::spawn_depth_spike_scene,
                     );
             }
             Some(Demo::Scatter) => {

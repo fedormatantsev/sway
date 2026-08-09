@@ -20,6 +20,7 @@
 
 use bevy::{
     asset::{embedded_asset, embedded_path, AssetPath, RenderAssetUsages},
+    camera::visibility::NoFrustumCulling,
     prelude::*,
     reflect::TypePath,
     render::render_resource::{
@@ -149,6 +150,51 @@ pub fn solid_white_image(size: u32) -> Image {
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD,
     )
+}
+
+/// The spike scene, for looking at. Same geometry as the integration test,
+/// but off-axis: viewed straight on, correct per-pixel depth and a flat
+/// alpha mask look identical. The angle is what makes the difference
+/// visible.
+pub fn spawn_depth_spike_scene(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut standard: ResMut<Assets<StandardMaterial>>,
+    mut sprites: ResMut<Assets<SpriteDepthMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(2.0, 2.0, 2.0))),
+        MeshMaterial3d(standard.add(StandardMaterial {
+            base_color: Color::srgb(0.0, 1.0, 0.0),
+            unlit: true,
+            ..default()
+        })),
+        Transform::default(),
+    ));
+
+    let material = sprites.add(SpriteDepthMaterial {
+        layer: SpriteDepthUniform {
+            placement: Vec3::ZERO.extend(3.0),
+            tint: Vec4::new(1.0, 0.0, 0.0, 0.85),
+            atlas: Vec4::new(1.0, 1.0, 0.0, 0.0),
+            depth_params: Vec4::new(SPIKE_DEPTH_PIVOT, SPIKE_DEPTH_RANGE, 0.0, 0.0),
+        },
+        color_texture: images.add(solid_white_image(64)),
+        depth_texture: images.add(depth_step_image(64)),
+    });
+
+    commands.spawn((
+        Mesh3d(meshes.add(Rectangle::default())),
+        MeshMaterial3d(material),
+        Transform::default(),
+        NoFrustumCulling,
+    ));
+
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_xyz(3.5, 2.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
 }
 
 #[cfg(test)]
