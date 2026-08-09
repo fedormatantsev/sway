@@ -1,85 +1,114 @@
 # Sway — Ongoing work
 
-**Date:** 2026-07-25 (roadmap; architecture extracted 2026-08-09)
-**Status:** In implementation — M5 next
+**Date:** 2026-07-25 (roadmap; architecture extracted 2026-08-09; roadmap
+redefined 2026-08-09)
+**Status:** In implementation — M8-spike next
 **Architecture:** [`docs/architecture.md`](../../architecture.md) is the
-authority on current-state design. This document tracks remaining milestones
-and open work only.
+authority on current-state design.
+**Rationale:** [`2026-08-09-mvp-roadmap-design.md`](2026-08-09-mvp-roadmap-design.md)
+records the decisions behind the milestones below, the surveyed state of the
+code, and the full node set. This document is the terse roadmap only.
 
 Completed milestones (M0–M4, wires migration) and their findings live under
-`docs/superpowers/reports/` and the historical plans/specs beside them. They
-are not repeated here.
+`docs/superpowers/reports/` and the historical plans/specs beside them. They are
+not repeated here.
+
+## The deliverable
+
+**The target scene is built in the editor, saved, and reopened, without touching
+RON.**
+
+Four capabilities define it: create/edit nodes, manipulate the scene with
+gizmos and camera navigation, connect nodes with wires, open/save on disk.
+
+One scene must be buildable with them: several layers of animated spritesheets
+with depth and alpha, blended by alpha and occluded by z-depth; several 3D mesh
+objects with PBR materials whose transforms are animated by wiring; an HDR map
+or cubemap driving their lighting.
+
+MIDI transport and events are in scope. The full MIDI/transport node set is not.
 
 ## Roadmap
 
-Sizes are relative, not calendar. Ordering: one end-to-end path before deepening
-any layer; pull genuinely unknown work early.
+Sizes are relative, not calendar.
 
-### M5 — Visual runtime (L)
+### M8-spike — Prove the sprite depth pipeline (S)
 
-Re-attach the node set the wire migration deleted (pure logic and traces still
-exist), then make the scene look like the intended set.
+`Transparent3d` + `depth_write_enabled` via `Material::specialize` + a
+`frag_depth` fragment shader, against a cube. Jumps the queue: it is the only
+genuinely unknown item, and a negative result reshapes M8 alone.
 
-**Node re-attach.** Components, value wires, behaviours, and event emitters for
-the non-MIDI set in `sway-nodes`, and the MIDI/transport set in `sway-midi`
-(note, CC, envelope consumers, sync LFO, beat trigger, etc.). Each type must
-round-trip through `sway-document` as it lands. Event path follows
-architecture §3 (`sway-events`, per-wire buffers, pre-tick clear/copy).
+*Exit:* a sprite quad visibly interpenetrates a mesh, per-pixel.
 
-**Geometry flow + scene set (CPU).** `Asset`, `Camera`, one component per light
-type, `Scatter`, `CopyToPoints`, renderable marker, `Grid` / `Displace` /
-`Mesh` as operators. Decide intermediate ownership and cook gating under
-`Changed<T>` only — no GPU graph ops in MVP (architecture §6). Close M1's
-compute→draw gap only insofar as CPU/graph-authored visuals need it; do not
-inherit M1's unamortised per-frame instance-buffer clone unexamined.
+### M5 — Minimal scene slice (S/M)
 
-**Services.** `PointCloudSet`, `SpriteLayers`, `Emitters`, `CameraRig`,
-`AnimationDirector` with owned invariants; glTF instancing; curve-driven
-procedural animation; physics if wanted. Fire-and-forget via observers.
+`MeshAsset`, `PbrMaterial`, `SceneCamera`, `DirectionalLight`, `PointLight`,
+plus the `Vec3` / `Math` / `Remap` value nodes and the Vec3 transform wires,
+with `#[require]` companions. Deletes `DemoCube`, `setup_scene`, `mesh.rs`,
+`scene.rs`; absorbs `material.rs`; migrates the demo off `TranslationYFrom`.
 
-**Carry carefully.** Whatever replaces M2b's mesh upload gate must decide a
-cheap whole-`Geometry` identity so rewriting `N`/`uv`/indices while passing `P`
-through cannot leave a silently stale mesh.
+*Exit:* the demo document authors its own camera, light and PBR cube. No
+Rust-side scene setup remains.
 
-**Deliberately not here.** Attribute expression/wrangle languages. GPU-resident
-operators.
+### M6 — Editor write half (L)
 
-**Also land with M5 if not already extracted:** `sway-events` and
-`sway-document` as crates per architecture §8; MIDI nodes moved into
-`sway-midi`.
+Palette from `ComponentDocRegistry`; create; delete (reparent children first);
+reflect-driven inspector editing with wire-driven fields inert; drag-to-connect
+and disconnect with legality from the wire registry; Open / Save / Save As.
+Extracts `sway-document`.
 
-*Exit:* a set can be built that actually looks like the intended set.
+*Exit:* a node is created, wired, edited, saved and reopened without leaving the
+editor.
 
-### M6 — First show (M)
+### M7 — Viewport interaction (L)
 
-Hardening, not features. MIDI device hotplug and reconnect, preflight
-(project validation + display enumeration), output/display configuration,
-watchdog, black-frame fallback surviving any single subsystem failure.
+Pointer/key forwarding from the shell into Bevy over the viewport rect; an
+editor camera distinct from the scene camera with orbit/pan/dolly; click-to-
+select via `MeshRayCast`; a TRS gizmo writing `Transform`, with driven axes
+inert.
 
-*Exit:* a set is played with it.
+Independent of M6 — may be swapped or run in parallel.
 
-### M7 — Editor (L)
+*Exit:* the scene is composed by dragging, not by typing numbers.
 
-Write half of the editor. Read half already exists (scene/graph/viewport panes,
-live values, read-only inspector).
+### M8 — Visual target (M)
 
-- Topology editing: drag-to-connect, entity creation from a palette, deletion,
-  value editing. Legality from the wire registries (value and event). Render
-  `ProjectDiagnostics` beside `GraphDiagnostics`.
-- **In-place document writer** in `sway-document`: replace one line per changed
-  component/wire so comments and ordering survive; write `EditorPos` back.
-- Event-edge activity (per-edge ring buffer) once event wires exist.
-- Deleting an entity must reparent children first (Bevy despawn cascades).
-- Surface per-node cook time and display flag for geometry debugging.
+Sprite layers with per-pixel depth and atlas animation (`SpriteLayer`,
+`SpriteAnim`); `EnvironmentMap` from pre-baked KTX2 cubemaps.
 
-Show builds still compile topology watches out; stage remains MIDI-only.
+*Exit:* the scene looks like the intended scene.
 
-*Exit:* authoring without touching RON.
+### M9 — Events (L)
+
+`sway-events` with generic `TriggerOut<P>` payloads; `MidiNote` and
+`BeatTrigger` emitters; `Envelope`; `MidiCc`; event edges in the canvas. Folds
+in the MIDI-nodes → `sway-midi` move.
+
+*Exit:* a note drives an envelope drives a material, authored in the editor.
+
+## Refactoring policy
+
+Admitted only when the code is edited anyway, or when the move pushes the
+architecture considerably toward its stated shape. Three qualify:
+`sway-document` extraction (M6), MIDI → `sway-midi` (M9), and deleting the
+orphan helpers in `sway-nodes` (M5).
+
+`sway-geo`, `point_cloud.rs` and `scatter.rs` go **dormant** — left compiling
+and reachable through `--demo`, not developed and not cleaned up.
 
 ## Out of MVP
 
-- Variadic inlets (`Merge` / `Sum`) — compose binary `Math` / `Switch` instead.
-- Restore authored value on disconnect — editor/document policy later.
+- Procedural geometry operators (`Grid`, `Displace`, `Scatter`,
+  `CopyToPoints`), geometry intermediate ownership, mesh-identity
+  fingerprinting — the target scene uses asset meshes.
+- Point clouds and compute scatter.
+- The services layer (`PointCloudSet`, `SpriteLayers`, `Emitters`, `CameraRig`,
+  `AnimationDirector`).
+- Show hardening: device hotplug, preflight, output configuration, watchdog,
+  black-frame fallback.
+- Variadic inlets (`Merge` / `Sum`) — compose binary `Math` instead.
+- Restore authored value on disconnect — superseded by D2 (driven fields are
+  read-only in the editor).
 - GPU-resident geometry operators / compute cook path.
 - Live graph patching, presets/snapshots, video decode, audio reactivity (FFT),
   multi-output, NDI/Spout, timeline sequencing.
@@ -90,7 +119,6 @@ Show builds still compile topology watches out; stage remains MIDI-only.
   components on one entity flow in opposite directions. Cycles are already
   allowed (acyclic prefix + append). Richer `(entity, component)` vertices
   remain optional future work — see architecture §4.
-
-M5 may still fork on geometry intermediate ownership and mesh-identity
-fingerprinting; those are milestone design decisions, not standing architecture
-gaps.
+- **`MeshRayCast` outside `MeshPickingPlugin`** — unverified whether it needs
+  resources only that plugin initialises. Resolve at the top of M7; the fallback
+  is hand-rolled ray-vs-AABB, which the gizmo needs regardless.

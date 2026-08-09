@@ -26,6 +26,13 @@ and spritesheet layers with z-depth, animated 3D objects, procedural animation
 from curves and optionally physics. The scene reacts to MIDI notes and CC,
 locked to the transport.
 
+**The MVP target is narrower**, and the roadmap is scoped to it: spritesheet
+layers writing **per-pixel** depth from the sheet, asset meshes with PBR
+materials whose transforms are wire-animated, and an HDR/cubemap driving their
+lighting. Point clouds, procedural geometry, curve nodes and physics are all
+past the MVP. See
+`docs/superpowers/specs/2026-08-09-mvp-roadmap-design.md`.
+
 ### Audience
 
 Built for one performer's own sets first, architected so it could be handed to
@@ -150,12 +157,21 @@ wire type per material or light kind, matching Bevy's own types where applicable
 Events are not value wires and are not owned by `sway-graph`. **`sway-events`**
 registers the systems that own buffer lifecycle.
 
-- **Emitter entities** carry concrete **`TriggerOut`** components. Each
-  implementation decides how that outlet is populated (MIDI note edge, transport
-  boundary, and so on).
-- **Event wires** connect a `TriggerOut` to a **`TriggerIn`**.
+- **Emitter entities** carry **`TriggerOut<P>`** components, generic over an
+  event payload `P`. Each implementation decides how that outlet is populated
+  (MIDI note edge, transport boundary, and so on).
+- **Event wires** are `Relationship` components on the consumer, implementing
+  an `EventWire` trait that names a `Payload` type and a wire `NAME`. They
+  connect a `TriggerOut<P>` to a **`TriggerIn<W>`**.
 - **Buffers exist only per event wire**, never on the `TriggerOut` — fan-out
-  gives each consumer its own copy.
+  gives each consumer its own copy. `TriggerIn<W>` *is* that buffer, living on
+  the consumer; a component hook installed by `register_event_wire::<W>`
+  inserts it alongside `W`.
+- Registration monomorphises the clear and copy functions exactly as
+  `register_wire` does, so the tick never sees a generic.
+- Event wires round-trip through the document like value wires, so there is a
+  **separate event-wire registry** alongside the value-wire one. Drag-to-connect
+  legality reads both.
 
 **Order relative to the graph tick** (`FixedUpdate`):
 
@@ -275,7 +291,7 @@ not months of dependency patching.
 | Topological order, step list, walk, graph diagnostics | **`sway-graph`** |
 | Event-wire buffers + pre-tick clear/copy | **`sway-events`** |
 | Document parse/emit | **`sway-document`** via ECS |
-| Geometry tables / operators | **`sway-geo`** (CPU for MVP) |
+| Geometry tables / operators | **`sway-geo`** (CPU; dormant for the MVP, §6) |
 | MIDI IO + phase estimation + MIDI nodes | **`sway-midi`** |
 
 `sway-graph` must not depend on `bevy_render`, MIDI types, or the document
@@ -318,8 +334,14 @@ kind), not assigned — sharing is visible topology.
 cook-gate resource. Intermediate geometry on non-renderable entities stays
 inspectable.
 
-**MVP:** geometry operators run on the CPU. GPU-resident graph ops and mixed
-CPU/GPU residency are out of scope for MVP.
+**MVP:** geometry *operators* are out of scope entirely — the MVP's target scene
+uses asset meshes, so `Grid` / `Displace` / `Scatter` / `CopyToPoints`,
+geometry-intermediate ownership, and mesh-identity fingerprinting all move
+past it. `sway-geo` stays dormant. The `Geometry` component and the
+geometry-flow connection kind remain part of the design; nothing in the MVP
+produces one.
+
+GPU-resident graph ops and mixed CPU/GPU residency remain out of scope.
 
 ## 7. Graph state and the ECS
 
@@ -352,8 +374,18 @@ mutation follows the same discipline outside the graph (`get`, compare, then
 ### Unconnected values
 
 A connected wire overwrites the field each tick; on disconnect the field keeps
-whatever arrived last. Restore-to-authored-on-disconnect is out of MVP
-(document/editor policy later). Continuously driven transforms should write a
+whatever arrived last. Restore-to-authored-on-disconnect is out of MVP.
+
+There is no authored value distinct from the live value: the component *is* the
+value, and `to_document(world)` serializes what the world holds. The editor
+therefore treats **wire-driven fields as read-only** — the gizmo and the
+inspector refuse to edit them, and they render inert. Without that rule, saving
+after a gizmo drag would record whatever phase the driving LFO happened to be
+at. A save still bakes the instantaneous driven value into the file (a wire
+targets a field path, but a component is emitted whole); harmless, since the
+first tick after load overwrites it, and no machinery is built against it.
+
+Continuously driven transforms should write a
 previous/next pair (`DrivenTransform`) and let a per-frame system lerp by
 `Time<Fixed>::overstep_fraction`.
 
@@ -413,16 +445,25 @@ need a separate schema crate.
 
 - Evaluation cost is the author's problem; the tool reports rather than
   polices.
-- Events as in §3; value wires and event wires are distinct.
+- Events as in §3; value wires and event wires are distinct. Event payloads are
+  generic (`TriggerOut<P>`).
 - Document lives outside `sway-graph`; authoring API is the ECS.
 - Transport and MIDI nodes live in `sway-midi`; the graph stays MIDI-free.
 - Fixed graph tick retained for continuous values.
-- Components and wires are strongly typed throughout.
+- Components and wires are strongly typed throughout. Transform, colour and
+  tint inlets take `Vec3`, not per-axis floats; a `Vec3 { x, y, z }` value node
+  with driveable components is what produces them. Genuinely scalar fields take
+  floats.
+- Component sets that belong together are declared with Bevy's `#[require]`,
+  not with an editor-side template registry — so the palette can list component
+  types straight from `ComponentDocRegistry` and still spawn a working node.
 
 **Out of MVP**
 
 - Variadic inlets (`Merge` / `Sum`).
-- Restore authored value on disconnect.
+- Restore authored value on disconnect (see §7 — wire-driven fields are
+  read-only in the editor instead).
+- Geometry operators and the geometry cook path (§6).
 - GPU-resident geometry operators / compute cook path.
 
 **Open**
