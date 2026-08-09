@@ -63,8 +63,10 @@ fn reflect_component(registry: &TypeRegistry) -> ReflectComponent {
         .clone()
 }
 
-/// CLAIM 1: a ron::Value can drive a reflect deserializer at all, and a full
-/// payload reconstructs the component exactly.
+/// CLAIM 1: a `ron::Deserializer` driven from raw text can feed a reflect
+/// deserializer, and a full payload reconstructs the component exactly.
+/// (The original plan assumed `ron::Value` would do this; Task 1 disproved
+/// that for enum fields, so the helper above uses `from_str` instead.)
 #[test]
 fn a_full_payload_becomes_the_component() {
     let registry = registry();

@@ -18,6 +18,14 @@ use crate::project::registry::ComponentDocRegistry;
 use crate::registry_wires::WireRegistry;
 
 pub fn to_document(world: &mut World) -> ProjectDoc {
+    let empty = ProjectDoc {
+        version: FORMAT_VERSION,
+        entities: Vec::new(),
+    };
+    let Some(type_registry) = world.get_resource::<AppTypeRegistry>().cloned() else {
+        return empty;
+    };
+
     let mut carriers: Vec<(String, Entity)> = world
         .query::<(Entity, &DocId)>()
         .iter(world)
@@ -30,11 +38,12 @@ pub fn to_document(world: &mut World) -> ProjectDoc {
         .map(|(id, entity)| (*entity, id.clone()))
         .collect();
 
+    let had_components = world.get_resource::<ComponentDocRegistry>().is_some();
     let components = world
         .remove_resource::<ComponentDocRegistry>()
         .unwrap_or_default();
+    let had_wires = world.get_resource::<WireRegistry>().is_some();
     let wires = world.remove_resource::<WireRegistry>().unwrap_or_default();
-    let type_registry = world.resource::<AppTypeRegistry>().clone();
 
     let mut entities = Vec::with_capacity(carriers.len());
     {
@@ -91,8 +100,12 @@ pub fn to_document(world: &mut World) -> ProjectDoc {
         }
     }
 
-    world.insert_resource(components);
-    world.insert_resource(wires);
+    if had_components {
+        world.insert_resource(components);
+    }
+    if had_wires {
+        world.insert_resource(wires);
+    }
 
     ProjectDoc { version: FORMAT_VERSION, entities }
 }

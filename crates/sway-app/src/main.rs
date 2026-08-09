@@ -1,4 +1,5 @@
-mod demo_assets;
+use sway_app::demo_assets;
+
 mod midi_feed;
 mod presenter;
 mod scene;
@@ -14,7 +15,7 @@ use scene::setup_scene;
 /// Provisional graph tick rate pending the measurements specified in spec §11.
 const TICK_HZ: f64 = 120.0;
 
-/// Which M1 render spike (if any) to run instead of the M2b demo graph. See
+/// Which M1 render spike (if any) to run instead of the project document. See
 /// `main`'s demo-dispatch match for how each variant is wired up, and its
 /// comment on the camera-collision hazard between these demos and
 /// `scene::setup_scene`.
@@ -220,7 +221,7 @@ fn main() {
         .add_systems(Update, (log_monitors, log_fps));
 
         // Camera-collision hazard: `scene::setup_scene` (camera + light for
-        // the M2b demo graph) and each demo's own setup helper each spawn a
+        // the project-document demo) and each demo's own setup helper each spawn a
         // camera, and Bevy renders every camera with the same (default)
         // order to the same target -- the last one drawn wins and the rest
         // are invisibly overdrawn. So exactly one of "the demo graph" or "a

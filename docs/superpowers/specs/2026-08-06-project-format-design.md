@@ -215,8 +215,11 @@ document is the normal state of a file being edited, and refusing to apply the
 other forty entities would make live authoring unusable.
 
 Everything lands in a `ProjectDiagnostics` resource — the same shape as
-`GraphDiagnostics`, rendered beside it. A syntax error is surfaced through
+`GraphDiagnostics`. A syntax error is surfaced through
 `AssetLoadFailedEvent`, so a rejected reload is visible rather than silent.
+Rendering either diagnostics resource beside the other is M7's: neither
+`ProjectDiagnostics` nor `GraphDiagnostics` has a widget yet, and M4 only
+fills the resource.
 
 ## 5. Writing back
 

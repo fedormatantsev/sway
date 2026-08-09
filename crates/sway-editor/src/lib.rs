@@ -62,8 +62,7 @@ pub const VIEWPORT_TAG: WidgetTag<ViewportPlaceholder> = WidgetTag::named("sway-
 /// Reaches the transport readout from `EditorUi::apply_snapshot`.
 pub const TRANSPORT_BAR_TAG: WidgetTag<TransportBar> = WidgetTag::named("sway-transport-bar");
 
-/// Builds the root widget: a transport strip above three panes, split four
-/// times.
+/// Builds the root widget: a transport strip above four panes.
 ///
 /// ```text
 /// +-------------------------------------------+

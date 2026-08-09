@@ -7,8 +7,8 @@
 //! Component payloads are captured as raw, unparsed RON text
 //! (`ron::value::RawValue`) rather than `ron::Value`: Task 1 found that
 //! `ron::Value` cannot drive `bevy_reflect`'s `TypedReflectDeserializer`
-//! through an enum field. Task 6 re-parses each payload's raw text directly
-//! via `ron::Deserializer::from_str` instead.
+//! through an enum field. The applier's component pass re-parses each
+//! payload's raw text directly via `ron::Deserializer::from_str` instead.
 
 use std::collections::BTreeMap;
 

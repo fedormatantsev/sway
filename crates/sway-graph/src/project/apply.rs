@@ -5,7 +5,7 @@
 //! entity declared later in the file.
 
 use std::any::TypeId;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy_ecs::entity::Entity;
 use bevy_ecs::name::Name;
@@ -24,17 +24,22 @@ use crate::registry_wires::WireRegistry;
 /// Applies `doc` to `world` and returns what it could not do.
 ///
 /// Never panics and never returns `Err`: a document is authored text, and a
-/// half-typed one is the normal state of a file being edited.
+/// half-typed one is the normal state of a file being edited. Missing
+/// registries degrade to empty ones for the duration of this call and are
+/// not inserted back if they were never present.
 pub fn apply(world: &mut World, doc: &ProjectDoc) -> ProjectDiagnostics {
     let mut diagnostics = ProjectDiagnostics::default();
+    let Some(type_registry) = world.get_resource::<AppTypeRegistry>().cloned() else {
+        return diagnostics;
+    };
     let ids = reconcile_entities(world, doc);
 
     // Taken out so the passes can hold `&mut World`, put back after. The
     // registries are read-only here; this is a borrow move, not a mutation.
+    let had_components = world.get_resource::<ComponentDocRegistry>().is_some();
     let components = world
         .remove_resource::<ComponentDocRegistry>()
         .unwrap_or_default();
-    let type_registry = world.resource::<AppTypeRegistry>().clone();
 
     {
         let type_registry = type_registry.read();
@@ -53,6 +58,7 @@ pub fn apply(world: &mut World, doc: &ProjectDoc) -> ProjectDiagnostics {
         }
     }
 
+    let had_wires = world.get_resource::<WireRegistry>().is_some();
     let wires = world.remove_resource::<WireRegistry>().unwrap_or_default();
     for entity_doc in &doc.entities {
         let Some(&entity) = ids.get(&entity_doc.id) else {
@@ -60,13 +66,17 @@ pub fn apply(world: &mut World, doc: &ProjectDoc) -> ProjectDiagnostics {
         };
         apply_wires(world, entity, entity_doc, &ids, &wires, &mut diagnostics);
     }
-    world.insert_resource(wires);
+    if had_wires {
+        world.insert_resource(wires);
+    }
 
     if let Some(mut dirty) = world.get_resource_mut::<TopologyDirty>() {
         dirty.0 = true;
     }
 
-    world.insert_resource(components);
+    if had_components {
+        world.insert_resource(components);
+    }
     diagnostics
 }
 
@@ -100,11 +110,18 @@ fn apply_components(
             });
             continue;
         };
+        // Mark this component "named by the document" as soon as we know
+        // it, before any fallible resolution step. A later failure in this
+        // same iteration (bad payload, missing registry data, ...) must
+        // still count as "the document named it" so the removal pass below
+        // leaves the entity's existing value alone instead of deleting it —
+        // spec §4.3: a failed item is skipped, not removed.
+        written.push(entry.type_id);
         let Some(registration) = type_registry.get(entry.type_id) else {
             diagnostics.items.push(ItemError::BadPayload {
                 entity: entity_doc.id.clone(),
                 name: name.clone(),
-                message: "type is not in the reflect registry".to_string(),
+                message: format!("{} is not in the reflect registry", entry.type_path),
             });
             continue;
         };
@@ -136,12 +153,10 @@ fn apply_components(
             diagnostics.items.push(ItemError::BadPayload {
                 entity: entity_doc.id.clone(),
                 name: name.clone(),
-                message: "type is not a reflectable component".to_string(),
+                message: format!("{} is not a reflectable component", entry.type_path),
             });
             continue;
         };
-
-        written.push(entry.type_id);
 
         let current_matches = world
             .get_entity(entity)
@@ -162,7 +177,11 @@ fn apply_components(
         reflect_component.insert(&mut entity_mut, &*value, type_registry);
     }
 
-    // Anything registered-authorable, present, and absent from the document.
+    // Anything registered-authorable, present, and absent from the document
+    // is removed — including components the entity only acquired implicitly
+    // (Bevy required-components, a runtime system). `Transform` is the
+    // sharpest case: any doc-owned entity that picks one up outside the
+    // document loses it on the next reload. Spec §4.1; intended.
     for entry in &components.entries {
         if written.contains(&entry.type_id) {
             continue;
@@ -198,22 +217,33 @@ fn apply_wires(
     wires: &WireRegistry,
     diagnostics: &mut ProjectDiagnostics,
 ) {
+    // Wire names this entity named in the document but that failed to
+    // resolve (unknown wire, or a target id that doesn't resolve). These
+    // are left alone below rather than treated as "wanted = None", so a
+    // transient typo mid-edit doesn't rip out a wire that was already
+    // successfully wired — spec §4.3: a failed item is skipped, not removed.
+    let mut diagnosed: HashSet<&str> = HashSet::new();
     for (name, target_id) in &entity_doc.wires {
         if wires.entries.iter().all(|entry| entry.name != name) {
             diagnostics.items.push(ItemError::UnknownWire {
                 entity: entity_doc.id.clone(),
                 wire: name.clone(),
             });
+            diagnosed.insert(name.as_str());
         } else if !ids.contains_key(target_id) {
             diagnostics.items.push(ItemError::UnresolvedTarget {
                 entity: entity_doc.id.clone(),
                 wire: name.clone(),
                 target: target_id.clone(),
             });
+            diagnosed.insert(name.as_str());
         }
     }
 
     for entry in &wires.entries {
+        if diagnosed.contains(entry.name) {
+            continue; // named but unresolved this round — leave it alone
+        }
         let wanted = entity_doc
             .wires
             .get(entry.name)
@@ -239,14 +269,14 @@ fn reconcile_entities(world: &mut World, doc: &ProjectDoc) -> HashMap<String, En
         .map(|(entity, id)| (id.0.clone(), entity))
         .collect();
 
-    let wanted: Vec<&str> = doc.entities.iter().map(|e| e.id.as_str()).collect();
+    let wanted: HashSet<&str> = doc.entities.iter().map(|e| e.id.as_str()).collect();
 
     // Pass 1. Despawn takes children and any wire on the despawned entity
     // with it; a wire *pointing at* it is left dangling until the next
     // rebuild, which is exactly what `propagate_of` already tolerates.
     let departed: Vec<String> = existing
         .keys()
-        .filter(|id| !wanted.contains(&id.as_str()))
+        .filter(|id| !wanted.contains(id.as_str()))
         .cloned()
         .collect();
     for id in departed {
@@ -546,6 +576,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_payload_that_will_not_deserialize_leaves_the_existing_component_alone() {
+        // Finding 1: a live component from a prior successful reload must
+        // survive a later reload where that same component's payload is
+        // mid-edit and momentarily fails to deserialize. Losing it would be
+        // strictly worse than the "everything else applies, this one item
+        // is skipped" contract spec §4.3 promises.
+        let mut app = doc_app();
+        apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "a", components: { "Osc": (hz: 3.0, amplitude: 0.25) })
+            ])"#),
+        );
+        let entity = entity_of(app.world_mut(), "a").expect("spawned");
+        assert_eq!(
+            app.world().get::<Osc>(entity),
+            Some(&Osc { hz: 3.0, amplitude: 0.25 })
+        );
+
+        let diagnostics = apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "a", components: { "Osc": (hz: "not a number") })
+            ])"#),
+        );
+
+        assert!(
+            matches!(diagnostics.items.as_slice(), [ItemError::BadPayload { name, .. }] if name == "Osc"),
+            "got {:?}",
+            diagnostics.items
+        );
+        assert_eq!(
+            app.world().get::<Osc>(entity),
+            Some(&Osc { hz: 3.0, amplitude: 0.25 }),
+            "the live component must be left alone, not deleted"
+        );
+    }
+
     use crate::order::TopologyDirty;
     use crate::registry_wires::register_wire;
     use crate::test_wires::{FloatOut, Gain, GainFrom};
@@ -653,6 +722,44 @@ mod tests {
     }
 
     #[test]
+    fn a_wire_naming_a_missing_entity_leaves_an_existing_wire_alone() {
+        // Finding 2: a live wire from a prior successful reload must
+        // survive a later reload where that same wire's target id is
+        // mid-edit and momentarily doesn't resolve to any entity. The
+        // diagnostic loop correctly reports `UnresolvedTarget`; the
+        // reconcile loop must not then also treat the wire as "wanted =
+        // None" and remove it.
+        let mut app = wired_app();
+        apply(app.world_mut(), &doc(WIRED));
+        let src = entity_of(app.world_mut(), "src").expect("spawned");
+        let dst = entity_of(app.world_mut(), "dst").expect("spawned");
+        assert_eq!(app.world().get::<GainFrom>(dst).map(|w| w.0), Some(src));
+
+        let diagnostics = apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "src", components: { "FloatOut": (2.0) }),
+                Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) },
+                       wires: { "factor": "lfoB_typo_mid_edit" }),
+            ])"#),
+        );
+
+        assert_eq!(
+            diagnostics.items,
+            vec![ItemError::UnresolvedTarget {
+                entity: "dst".to_string(),
+                wire: "factor".to_string(),
+                target: "lfoB_typo_mid_edit".to_string(),
+            }]
+        );
+        assert_eq!(
+            app.world().get::<GainFrom>(dst).map(|w| w.0),
+            Some(src),
+            "the live wire must be left alone, not removed"
+        );
+    }
+
+    #[test]
     fn an_unknown_wire_name_is_reported() {
         let mut app = wired_app();
         let diagnostics = apply(
@@ -671,6 +778,38 @@ mod tests {
                 wire: "nope".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn an_unknown_wire_name_leaves_an_existing_wire_under_a_different_name_alone() {
+        // Same contract as the unresolved-target case, but for a wire name
+        // the registry doesn't know at all (e.g. a typo in the wire's own
+        // name). `factor` is live from a prior reload; the second document
+        // additionally names a bogus `nope` wire, which must not disturb
+        // `factor`.
+        let mut app = wired_app();
+        apply(app.world_mut(), &doc(WIRED));
+        let src = entity_of(app.world_mut(), "src").expect("spawned");
+        let dst = entity_of(app.world_mut(), "dst").expect("spawned");
+        assert_eq!(app.world().get::<GainFrom>(dst).map(|w| w.0), Some(src));
+
+        let diagnostics = apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "src", components: { "FloatOut": (2.0) }),
+                Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) },
+                       wires: { "factor": "src", "nope": "src" }),
+            ])"#),
+        );
+
+        assert_eq!(
+            diagnostics.items,
+            vec![ItemError::UnknownWire {
+                entity: "dst".to_string(),
+                wire: "nope".to_string(),
+            }]
+        );
+        assert_eq!(app.world().get::<GainFrom>(dst).map(|w| w.0), Some(src));
     }
 
     #[test]

@@ -1140,7 +1140,8 @@ The shape, decided here rather than at M7:
   the running world: a bad keystroke mid-set must not empty the scene. A
   semantic error — unknown component, unresolvable wire target, a payload that
   will not deserialize — applies everything else and reports the item into a
-  `ProjectDiagnostics` resource beside `GraphDiagnostics`.
+  `ProjectDiagnostics` resource beside `GraphDiagnostics`. Rendering either
+  resource is M7's; M4 only fills them.
 
 Two things this milestone inherits:
 
@@ -1184,13 +1185,20 @@ formatter and falls back to `{value:?}` debug output — the signal, per the
 inspector's own doc comment, that the type wants editor `TypeData`. Every
 other field the demo's five authorable components actually use (`f32`,
 `Vec2`, `Vec3`, and the `Waveform` enum) renders cleanly. Carried forward to
-M7, which is where an editable, non-read-only `TypeData` widget for `Quat`
-would land anyway.
+M7: an editable, non-read-only `TypeData` widget for `Quat`, and rendering
+`ProjectDiagnostics` (and `GraphDiagnostics`) beside each other — M4 fills
+the resource and surfaces syntax failures through Bevy's asset-load log, but
+per-item errors (`UnknownComponent`, `BadPayload`, `UnknownWire`,
+`UnresolvedTarget`) have no widget yet, so a typo in a component name is
+silent in the UI.
 
 The whole-document round-trip (world → document → world, spec §5) holds:
 `document_to_world_to_document_is_stable` and `the_emitted_text_reparses`
-both pass against the demo's real component/wire set. The one thing the
-format still cannot express is an asset handle — `Handle<Mesh>` is asset
+both pass against the engine's wire fixtures, and
+`demo_document_round_trips_through_the_world` pins the same completeness
+check against the demo's real component/wire set (`Lfo`, `Transform`,
+`EditorPos`, `DemoCube`, `ChildOf`, and the four demo wires). The one thing
+the format still cannot express is an asset handle — `Handle<Mesh>` is asset
 flow, which is M5's — so the demo's cubes are authored as a `DemoCube`
 marker component and a plain Bevy `Added<T>` system attaches the mesh and
 material outside the document, exactly as designed as the milestone's one
@@ -1285,7 +1293,9 @@ always was.
   ship as a lie), entity creation from a palette, deletion, and value editing in
   the inspector. The palette and the legality of a drag both come from the wire
   registry: a wire may be drawn from an entity carrying its `Source` to one
-  carrying its `Target`, and the registry already answers both.
+  carrying its `Target`, and the registry already answers both. Also the
+  diagnostics pane M4 left empty: render `ProjectDiagnostics` beside
+  `GraphDiagnostics` so a mid-edit typo is visible rather than silent.
 - **The in-place document writer.** M4 decided the format and left this: locate
   the one line for the component or wire that changed and replace it, so
   comments and ordering survive. Plus `EditorPos` written back against M2c's
