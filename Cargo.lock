@@ -5323,6 +5323,7 @@ name = "sway-graph"
 version = "0.1.0"
 dependencies = [
  "bevy_app",
+ "bevy_asset",
  "bevy_ecs",
  "bevy_math",
  "bevy_reflect",

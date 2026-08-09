@@ -9,6 +9,7 @@ version = "0.1.0"
 [workspace.dependencies]
 bevy = "=0.19.0"
 bevy_app = "=0.19.0"
+bevy_asset = "=0.19.0"
 bevy_ecs = "=0.19.0"
 bevy_math = "=0.19.0"
 bevy_reflect = "=0.19.0"
