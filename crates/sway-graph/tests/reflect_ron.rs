@@ -123,7 +123,7 @@ fn apply_overwrites_unnamed_fields_via_eager_default_fill() {
     let entity = world
         .spawn(Osc { hz: 1.0, shape: Shape::Saw, amplitude: 0.9 })
         .id();
-    reflect.apply(&mut world.entity_mut(entity), &*value);
+    reflect.apply(world.entity_mut(entity), &*value);
 
     assert_eq!(
         world.get::<Osc>(entity),
