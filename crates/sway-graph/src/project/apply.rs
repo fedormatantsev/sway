@@ -4,23 +4,172 @@
 //! first two complete before any wire is resolved, so a wire may name an
 //! entity declared later in the file.
 
+use std::any::TypeId;
 use std::collections::HashMap;
 
 use bevy_ecs::entity::Entity;
 use bevy_ecs::name::Name;
+use bevy_ecs::reflect::{AppTypeRegistry, ReflectComponent};
 use bevy_ecs::world::World;
+use bevy_reflect::TypeRegistry;
+use bevy_reflect::serde::TypedReflectDeserializer;
+use serde::de::DeserializeSeed;
 
-use crate::project::diagnostics::{DocId, ProjectDiagnostics};
-use crate::project::doc::ProjectDoc;
+use crate::project::diagnostics::{DocId, ItemError, ProjectDiagnostics};
+use crate::project::doc::{EntityDoc, ProjectDoc};
+use crate::project::registry::ComponentDocRegistry;
 
 /// Applies `doc` to `world` and returns what it could not do.
 ///
 /// Never panics and never returns `Err`: a document is authored text, and a
 /// half-typed one is the normal state of a file being edited.
 pub fn apply(world: &mut World, doc: &ProjectDoc) -> ProjectDiagnostics {
-    let diagnostics = ProjectDiagnostics::default();
-    let _ids = reconcile_entities(world, doc);
+    let mut diagnostics = ProjectDiagnostics::default();
+    let ids = reconcile_entities(world, doc);
+
+    // Taken out so the passes can hold `&mut World`, put back after. The
+    // registries are read-only here; this is a borrow move, not a mutation.
+    let components = world
+        .remove_resource::<ComponentDocRegistry>()
+        .unwrap_or_default();
+    let type_registry = world.resource::<AppTypeRegistry>().clone();
+
+    {
+        let type_registry = type_registry.read();
+        for entity_doc in &doc.entities {
+            let Some(&entity) = ids.get(&entity_doc.id) else {
+                continue;
+            };
+            apply_components(
+                world,
+                entity,
+                entity_doc,
+                &components,
+                &type_registry,
+                &mut diagnostics,
+            );
+        }
+    }
+
+    world.insert_resource(components);
     diagnostics
+}
+
+/// Pass 3: writes each entity's named components from its payload, and
+/// removes any registered-authorable component the document dropped.
+///
+/// A document names a *subset* of a component's fields (spec §4.1); the
+/// deserializer fills the rest via `ReflectDefault` before the value ever
+/// reaches the world (Task 1's characterization: `bevy_reflect` 0.19 does
+/// this eagerly, per field, at deserialize time). So there is no unnamed-
+/// field value left to preserve by the time this function has a `Box<dyn
+/// Reflect>` in hand — inserting is the only option, not a choice between
+/// `apply` and `insert`. A reload therefore resets a component's unnamed
+/// fields to their defaults rather than leaving them at whatever a wire most
+/// recently drove them to; accepted loss, recorded in Task 1's ledger.
+fn apply_components(
+    world: &mut World,
+    entity: Entity,
+    entity_doc: &EntityDoc,
+    components: &ComponentDocRegistry,
+    type_registry: &TypeRegistry,
+    diagnostics: &mut ProjectDiagnostics,
+) {
+    let mut written: Vec<TypeId> = Vec::new();
+
+    for (name, payload) in &entity_doc.components {
+        let Some(entry) = components.by_name(name) else {
+            diagnostics.items.push(ItemError::UnknownComponent {
+                entity: entity_doc.id.clone(),
+                name: name.clone(),
+            });
+            continue;
+        };
+        let Some(registration) = type_registry.get(entry.type_id) else {
+            diagnostics.items.push(ItemError::BadPayload {
+                entity: entity_doc.id.clone(),
+                name: name.clone(),
+                message: "type is not in the reflect registry".to_string(),
+            });
+            continue;
+        };
+        let mut deserializer = match ron::de::Deserializer::from_str(payload.get_ron()) {
+            Ok(deserializer) => deserializer,
+            Err(error) => {
+                diagnostics.items.push(ItemError::BadPayload {
+                    entity: entity_doc.id.clone(),
+                    name: name.clone(),
+                    message: error.to_string(),
+                });
+                continue;
+            }
+        };
+        let value = match TypedReflectDeserializer::new(registration, type_registry)
+            .deserialize(&mut deserializer)
+        {
+            Ok(value) => value,
+            Err(error) => {
+                diagnostics.items.push(ItemError::BadPayload {
+                    entity: entity_doc.id.clone(),
+                    name: name.clone(),
+                    message: error.to_string(),
+                });
+                continue;
+            }
+        };
+        let Some(reflect_component) = registration.data::<ReflectComponent>() else {
+            diagnostics.items.push(ItemError::BadPayload {
+                entity: entity_doc.id.clone(),
+                name: name.clone(),
+                message: "type is not a reflectable component".to_string(),
+            });
+            continue;
+        };
+
+        written.push(entry.type_id);
+
+        let current_matches = world
+            .get_entity(entity)
+            .ok()
+            .and_then(|entity_ref| reflect_component.reflect(entity_ref))
+            .and_then(|current| value.reflect_partial_eq(current.as_partial_reflect()))
+            .unwrap_or(false);
+        if current_matches {
+            continue; // writing an equal value would mark Changed for nothing
+        }
+
+        let Ok(mut entity_mut) = world.get_entity_mut(entity) else {
+            continue;
+        };
+        // The deserializer already filled any unnamed field via
+        // `ReflectDefault`, so there is nothing left for `apply` to preserve
+        // that `insert` would not already carry.
+        reflect_component.insert(&mut entity_mut, &*value, type_registry);
+    }
+
+    // Anything registered-authorable, present, and absent from the document.
+    for entry in &components.entries {
+        if written.contains(&entry.type_id) {
+            continue;
+        }
+        let Some(registration) = type_registry.get(entry.type_id) else {
+            continue;
+        };
+        let Some(reflect_component) = registration.data::<ReflectComponent>() else {
+            continue;
+        };
+        let present = world
+            .get_entity(entity)
+            .ok()
+            .and_then(|entity_ref| reflect_component.reflect(entity_ref))
+            .is_some();
+        if !present {
+            continue;
+        }
+        if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
+            reflect_component.remove(&mut entity_mut);
+        }
+    }
 }
 
 /// Passes 1 and 2: despawn what left, spawn what arrived, keep what stayed.
@@ -69,6 +218,12 @@ fn reconcile_entities(world: &mut World, doc: &ProjectDoc) -> HashMap<String, En
 mod tests {
     use super::*;
     use crate::project::doc::parse;
+    use crate::project::registry::register_authorable;
+    use bevy_app::App;
+    use bevy_ecs::component::Component;
+    use bevy_ecs::query::Changed;
+    use bevy_reflect::Reflect;
+    use bevy_reflect::std_traits::ReflectDefault;
 
     fn doc(text: &str) -> ProjectDoc {
         parse(text).expect("test document parses")
@@ -95,6 +250,7 @@ mod tests {
     #[test]
     fn a_first_load_spawns_every_entity_with_its_id_and_name() {
         let mut world = World::new();
+        world.init_resource::<AppTypeRegistry>();
         apply(
             &mut world,
             &doc(r#"Project(version: 1, entities: [Entity(id: "a"), Entity(id: "b")])"#),
@@ -111,6 +267,7 @@ mod tests {
         // identity, the entity's children, and anything a runtime system
         // attached all ride on this.
         let mut world = World::new();
+        world.init_resource::<AppTypeRegistry>();
         apply(&mut world, &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#));
         let before = entity_of(&mut world, "a").expect("spawned");
 
@@ -126,6 +283,7 @@ mod tests {
     #[test]
     fn an_entity_dropped_from_the_document_is_despawned() {
         let mut world = World::new();
+        world.init_resource::<AppTypeRegistry>();
         apply(
             &mut world,
             &doc(r#"Project(version: 1, entities: [Entity(id: "a"), Entity(id: "b")])"#),
@@ -142,6 +300,7 @@ mod tests {
     fn entities_without_a_doc_id_are_never_touched() {
         // The camera, the light, anything a runtime system spawned.
         let mut world = World::new();
+        world.init_resource::<AppTypeRegistry>();
         let runtime_owned = world.spawn(Name::new("camera")).id();
 
         apply(&mut world, &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#));
@@ -153,9 +312,179 @@ mod tests {
     #[test]
     fn an_empty_document_clears_the_authored_world() {
         let mut world = World::new();
+        world.init_resource::<AppTypeRegistry>();
         apply(&mut world, &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#));
         apply(&mut world, &doc("Project(version: 1, entities: [])"));
 
         assert!(ids(&mut world).is_empty());
+    }
+
+    #[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]
+    #[reflect(Component, Default, PartialEq)]
+    struct Osc {
+        hz: f32,
+        amplitude: f32,
+    }
+
+    impl Default for Osc {
+        fn default() -> Self {
+            Self { hz: 1.0, amplitude: 0.5 }
+        }
+    }
+
+    /// An app with `Osc` authorable, which is all the component pass needs.
+    fn doc_app() -> App {
+        let mut app = App::new();
+        register_authorable::<Osc>(&mut app, "Osc");
+        app
+    }
+
+    #[test]
+    fn a_named_component_is_inserted_from_its_payload() {
+        let mut app = doc_app();
+        apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "a", components: { "Osc": (hz: 3.0, amplitude: 0.25) })
+            ])"#),
+        );
+
+        let entity = entity_of(app.world_mut(), "a").expect("spawned");
+        assert_eq!(
+            app.world().get::<Osc>(entity),
+            Some(&Osc { hz: 3.0, amplitude: 0.25 })
+        );
+    }
+
+    #[test]
+    fn a_partial_payload_resets_the_other_fields_to_default_on_reload() {
+        // Spec §4.1 originally called for `apply` to touch only the named
+        // fields, so a reload would not clobber what a wire is driving.
+        // Task 1's characterization found `bevy_reflect` 0.19 fills unnamed
+        // fields via `ReflectDefault` *during deserialization*, before this
+        // pass ever sees a `Box<dyn Reflect>` — so there is no partial value
+        // left for `apply` to merge, and `insert` is the only option
+        // (ledger: Task 1 DECISION for Task 6). This test pins the accepted
+        // loss: a reload resets unnamed fields to their default, not to
+        // whatever a wire last drove them to.
+        let mut app = doc_app();
+        apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "a", components: { "Osc": (hz: 3.0, amplitude: 0.25) })
+            ])"#),
+        );
+        let entity = entity_of(app.world_mut(), "a").expect("spawned");
+        // Something else — a wire — moves amplitude.
+        app.world_mut().get_mut::<Osc>(entity).expect("present").amplitude = 0.9;
+
+        apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "a", components: { "Osc": (hz: 4.0) })
+            ])"#),
+        );
+
+        assert_eq!(
+            app.world().get::<Osc>(entity),
+            Some(&Osc { hz: 4.0, amplitude: 0.5 })
+        );
+    }
+
+    #[test]
+    fn an_unchanged_component_is_not_marked_changed() {
+        // The same discipline wires live under (parent spec §2.11): writing an
+        // equal value destroys change detection for everything downstream.
+        let mut app = doc_app();
+        let text = r#"Project(version: 1, entities: [
+            Entity(id: "a", components: { "Osc": (hz: 3.0, amplitude: 0.25) })
+        ])"#;
+        apply(app.world_mut(), &doc(text));
+        app.world_mut().clear_trackers();
+
+        apply(app.world_mut(), &doc(text));
+
+        let changed = app
+            .world_mut()
+            .query_filtered::<(), Changed<Osc>>()
+            .iter(app.world())
+            .count();
+        assert_eq!(changed, 0, "an identical reload must touch nothing");
+    }
+
+    #[test]
+    fn a_component_dropped_from_the_document_is_removed() {
+        let mut app = doc_app();
+        apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "a", components: { "Osc": (hz: 3.0) })
+            ])"#),
+        );
+        let entity = entity_of(app.world_mut(), "a").expect("spawned");
+
+        apply(app.world_mut(), &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#));
+
+        assert!(app.world().get::<Osc>(entity).is_none());
+    }
+
+    #[test]
+    fn an_unregistered_component_on_the_entity_survives_a_reload() {
+        // A `Mesh3d` a runtime system attached. The applier only removes
+        // components it is registered to author.
+        #[derive(Component)]
+        struct RuntimeOwned;
+
+        let mut app = doc_app();
+        apply(app.world_mut(), &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#));
+        let entity = entity_of(app.world_mut(), "a").expect("spawned");
+        app.world_mut().entity_mut(entity).insert(RuntimeOwned);
+
+        apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "a", components: { "Osc": (hz: 1.0) })
+            ])"#),
+        );
+
+        assert!(app.world().get::<RuntimeOwned>(entity).is_some());
+    }
+
+    #[test]
+    fn an_unknown_component_name_is_reported_and_the_rest_applies() {
+        let mut app = doc_app();
+        let diagnostics = apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "a", components: { "Nope": (), "Osc": (hz: 2.0) })
+            ])"#),
+        );
+
+        let entity = entity_of(app.world_mut(), "a").expect("spawned");
+        assert_eq!(app.world().get::<Osc>(entity).map(|o| o.hz), Some(2.0));
+        assert_eq!(
+            diagnostics.items,
+            vec![ItemError::UnknownComponent {
+                entity: "a".to_string(),
+                name: "Nope".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_payload_that_will_not_deserialize_is_reported_not_panicked() {
+        let mut app = doc_app();
+        let diagnostics = apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "a", components: { "Osc": (hz: "not a number") })
+            ])"#),
+        );
+
+        assert!(
+            matches!(diagnostics.items.as_slice(), [ItemError::BadPayload { name, .. }] if name == "Osc"),
+            "got {:?}",
+            diagnostics.items
+        );
     }
 }
