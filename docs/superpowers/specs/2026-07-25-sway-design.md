@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-25 (roadmap; architecture extracted 2026-08-09; roadmap
 redefined 2026-08-09)
-**Status:** In implementation — M8-spike next
+**Status:** In implementation — M8-spike complete, M5 next
 **Architecture:** [`docs/architecture.md`](../../architecture.md) is the
 authority on current-state design.
 **Rationale:** [`2026-08-09-mvp-roadmap-design.md`](2026-08-09-mvp-roadmap-design.md)
@@ -41,6 +41,8 @@ genuinely unknown item, and a negative result reshapes M8 alone.
 *Exit:* a sprite quad visibly interpenetrates a mesh, per-pixel.
 
 ### M5 — Minimal scene slice (S/M)
+
+Designed in [`2026-08-10-m5-minimal-scene-slice-design.md`](2026-08-10-m5-minimal-scene-slice-design.md).
 
 `MeshAsset`, `PbrMaterial`, `SceneCamera`, `DirectionalLight`, `PointLight`,
 plus the `Vec3` / `Math` / `Remap` value nodes and the Vec3 transform wires,
