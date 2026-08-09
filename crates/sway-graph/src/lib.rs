@@ -15,6 +15,7 @@ pub mod wire;
 pub use ctx::{EditorPos, TickCtx};
 pub use diagnostics::GraphDiagnostics;
 pub use order::{GraphOrder, Link, Sorted, Step, TopologyDirty, rebuild_order, topological_order};
+pub use project::{ComponentDocRegistry, ProjectHandle, ProjectPlugin, register_authorable};
 pub use registry_wires::{
     BehaviourEntry, BehaviourFn, BehaviourRegistry, WireEntry, WireRegistry, register_behaviour,
     register_wire,

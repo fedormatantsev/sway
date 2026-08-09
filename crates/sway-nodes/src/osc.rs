@@ -13,7 +13,8 @@ use crate::lfo::{wave, Waveform};
 use crate::outputs::FloatOut;
 
 /// Period in beats, plus shape, phase offset in cycles, and amplitude.
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
+#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]
+#[reflect(Component, Default, PartialEq)]
 pub struct Lfo {
     pub beats: f32,
     pub shape: Waveform,

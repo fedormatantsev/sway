@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use bevy::asset::AssetPlugin;
 use bevy::camera::{ManualTextureViewHandle, RenderTarget};
 use bevy::prelude::*;
 use bevy::render::render_resource::{TextureFormat, TextureView as BevyTextureView};
@@ -51,6 +52,12 @@ pub fn build_app(
             .set(WindowPlugin {
                 primary_window: None,
                 exit_condition: bevy::window::ExitCondition::DontExit,
+                ..default()
+            })
+            .set(AssetPlugin {
+                // M4: editing the project document with the app running is the
+                // whole point of the milestone.
+                watch_for_changes_override: Some(true),
                 ..default()
             })
             .disable::<WinitPlugin>(),

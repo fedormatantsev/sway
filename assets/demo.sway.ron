@@ -1,0 +1,53 @@
+// The wire-model demo, as a document.
+//
+//   Lfo A ──amplitude──▶ Lfo B ──translation.y──▶ cube B
+//         └─translation.y──▶ cube A            (fan-out)
+//   group ──parent──▶ cube A, cube B
+//
+// The cubes' mesh and material are not here: a Handle is asset flow, which is
+// M5. `DemoCube` is a marker a plain Bevy system reacts to — deliberately the
+// ugly seam, and exactly the shape of what M5 replaces.
+Project(
+    version: 1,
+    entities: [
+        Entity(
+            id: "lfoA",
+            components: {
+                "Lfo": (beats: 8.0, shape: Sine, phase: 0.0, amplitude: 0.5),
+                "FloatOut": (0.0),
+                "EditorPos": ((-320.0, 40.0)),
+            },
+        ),
+        Entity(
+            id: "lfoB",
+            components: {
+                "Lfo": (beats: 2.0, shape: Sine, phase: 0.0, amplitude: 0.0),
+                "FloatOut": (0.0),
+                "EditorPos": ((-120.0, 40.0)),
+            },
+            wires: { "amplitude": "lfoA" },
+        ),
+        Entity(
+            id: "group",
+            components: { "Transform": (), "EditorPos": ((80.0, 200.0)) },
+        ),
+        Entity(
+            id: "cubeA",
+            components: {
+                "Transform": (translation: (-0.8, 0.0, 0.0)),
+                "DemoCube": (),
+                "EditorPos": ((80.0, 40.0)),
+            },
+            wires: { "translation.y": "lfoA", "parent": "group" },
+        ),
+        Entity(
+            id: "cubeB",
+            components: {
+                "Transform": (translation: (0.8, 0.0, 0.0)),
+                "DemoCube": (),
+                "EditorPos": ((80.0, 120.0)),
+            },
+            wires: { "translation.y": "lfoB", "parent": "group" },
+        ),
+    ],
+)

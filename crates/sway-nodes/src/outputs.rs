@@ -3,8 +3,10 @@
 
 use bevy::prelude::*;
 
-#[derive(Component, Default, Debug, Clone, Copy, PartialEq)]
+#[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
+#[reflect(Component, Default, PartialEq)]
 pub struct FloatOut(pub f32);
 
-#[derive(Component, Default, Debug, Clone, Copy, PartialEq)]
+#[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
+#[reflect(Component, Default, PartialEq)]
 pub struct Vec3Out(pub Vec3);

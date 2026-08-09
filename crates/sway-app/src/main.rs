@@ -1,4 +1,4 @@
-mod demo_graph;
+mod demo_assets;
 mod midi_feed;
 mod presenter;
 mod scene;
@@ -8,7 +8,6 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::math::UVec2;
 use bevy::prelude::*;
 use bevy::window::Monitor;
-use demo_graph::setup_demo_graph;
 use midi_feed::{MidiClockOffset, MidiRx, feed_midi};
 use scene::setup_scene;
 
@@ -122,6 +121,10 @@ fn log_fps(diagnostics: Res<DiagnosticsStore>, time: Res<Time>, mut since_last_l
     }
 }
 
+fn load_project(asset_server: Res<AssetServer>, mut handle: ResMut<sway_graph::ProjectHandle>) {
+    handle.0 = Some(asset_server.load("demo.sway.ron"));
+}
+
 fn main() {
     let args = parse_args();
 
@@ -204,13 +207,15 @@ fn main() {
         app.add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
             sway_graph::WiresPlugin,
+            sway_graph::ProjectPlugin,
             sway_nodes::WireNodesPlugin,
             sway_nodes::MidiPlugin,
+            demo_assets::DemoAssetsPlugin,
         ))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
         .insert_resource(MidiRx(rx))
         .init_resource::<MidiClockOffset>()
-        .add_systems(Startup, setup_demo_graph)
+        .add_systems(Startup, load_project)
         .add_systems(PreUpdate, feed_midi)
         .add_systems(Update, (log_monitors, log_fps));
 

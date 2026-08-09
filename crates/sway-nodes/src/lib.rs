@@ -33,6 +33,14 @@ impl bevy_app::Plugin for WireNodesPlugin {
         sway_graph::register_wire::<AmplitudeFrom>(app);
         sway_graph::register_wire::<TranslationYFrom>(app);
         sway_graph::register_wire::<bevy::prelude::ChildOf>(app);
+
+        // What a project document may name (M4). Short names, not type paths.
+        app.register_type::<Waveform>();
+        sway_graph::register_authorable::<Lfo>(app, "Lfo");
+        sway_graph::register_authorable::<FloatOut>(app, "FloatOut");
+        sway_graph::register_authorable::<Vec3Out>(app, "Vec3Out");
+        sway_graph::register_authorable::<bevy::prelude::Transform>(app, "Transform");
+        sway_graph::register_authorable::<sway_graph::EditorPos>(app, "EditorPos");
     }
 }
 
@@ -46,5 +54,20 @@ mod tests {
         assert_eq!(MathOp::default(), MathOp::Add);
         assert_eq!(NoteField::default(), NoteField::Note);
         assert_eq!(Division::default(), Division::Beat);
+    }
+
+    #[test]
+    fn the_plugin_registers_every_authorable_component() {
+        let mut app = bevy_app::App::new();
+        app.add_plugins(sway_graph::WiresPlugin)
+            .add_plugins(WireNodesPlugin);
+
+        let registry = app.world().resource::<sway_graph::ComponentDocRegistry>();
+        let mut names: Vec<&str> = registry.entries.iter().map(|e| e.name).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["EditorPos", "FloatOut", "Lfo", "Transform", "Vec3Out"]
+        );
     }
 }
