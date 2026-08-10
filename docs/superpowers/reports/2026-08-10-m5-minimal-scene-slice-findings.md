@@ -18,7 +18,9 @@ scene needs — `camera`, `sun`, `mat`, `lfoA`, `lfoB`, `vec3A`, `vec3B`,
 `cubeA`, `cubeB`, `group` — and `crates/sway-app/src/main.rs` no longer spawns
 anything but the window and its plugins. `crates/sway-app/src/scene.rs`,
 `demo_assets.rs` and `lib.rs` are gone. `cargo test --workspace`: **269
-passed, 0 failed** (1 pre-existing ignored doctest, unrelated). By eye: two
+passed, 0 failed** (1 ignored doctest — `field_wire!`'s usage example,
+added with the macro in Task 2, `#[ignore]`d since it needs macro-expansion
+context rustdoc doesn't have; unrelated to Tasks 9/10). By eye: two
 pale blue cubes bob on Y at different rates, lit from above-right, exactly as
 the document specifies.
 
