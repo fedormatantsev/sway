@@ -1,10 +1,12 @@
+use bevy_ecs::schedule::IntoScheduleConfigs;
+
 mod beat;
 mod envelope;
 mod field_wire;
 mod lfo;
 mod material;
 mod math;
-mod mesh;
+mod mesh_asset;
 mod midi;
 mod osc;
 mod outputs;
@@ -20,7 +22,7 @@ pub use envelope::*;
 pub use lfo::*;
 pub use material::*;
 pub use math::*;
-pub use mesh::*;
+pub use mesh_asset::*;
 pub use midi::*;
 pub use osc::*;
 pub use outputs::*;
@@ -61,6 +63,12 @@ impl bevy_app::Plugin for WireNodesPlugin {
         sway_graph::register_authorable::<Vec3Value>(app, "Vec3");
         sway_graph::register_authorable::<Math>(app, "Math");
         sway_graph::register_authorable::<Remap>(app, "Remap");
+
+        sway_graph::register_authorable::<MeshAsset>(app, "MeshAsset");
+        app.add_systems(
+            bevy_app::Update,
+            load_mesh_assets.run_if(bevy_ecs::prelude::resource_exists::<bevy::prelude::AssetServer>),
+        );
     }
 }
 
@@ -87,7 +95,10 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec!["EditorPos", "FloatOut", "Lfo", "Math", "Remap", "Transform", "Vec3", "Vec3Out"]
+            vec![
+                "EditorPos", "FloatOut", "Lfo", "Math", "MeshAsset", "Remap", "Transform", "Vec3",
+                "Vec3Out"
+            ]
         );
     }
 }
