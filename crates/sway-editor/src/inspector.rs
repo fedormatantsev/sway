@@ -61,9 +61,9 @@ impl Inspector {
             return lines;
         }
         for component in &snap.inspector.components {
-            lines.push((component.name.clone(), true));
-            for (name, value) in &component.fields {
-                lines.push((format!("{name}  {value}"), false));
+            lines.push((component.name.to_string(), true));
+            for field in &component.fields {
+                lines.push((format!("{}  {}", field.name, field.value), false));
             }
         }
         if lines.is_empty() {

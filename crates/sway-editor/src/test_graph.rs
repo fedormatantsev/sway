@@ -61,19 +61,25 @@ pub(crate) fn app() -> App {
 }
 
 pub(crate) fn spawn_emit(world: &mut World, _id: u32, pos: Option<Vec2>) -> Entity {
-    let mut entity = world.spawn((Name::new("Emit"), Emit, FloatOut(0.75)));
-    if let Some(pos) = pos {
-        entity.insert(EditorPos(pos));
-    }
-    entity.id()
+    world
+        .spawn((
+            Name::new("Emit"),
+            Emit,
+            FloatOut(0.75),
+            EditorPos(pos.unwrap_or(Vec2::ZERO)),
+        ))
+        .id()
 }
 
 pub(crate) fn spawn_recv(world: &mut World, _id: u32, pos: Option<Vec2>) -> Entity {
-    let mut entity = world.spawn((Name::new("Recv"), Recv, Gain::default()));
-    if let Some(pos) = pos {
-        entity.insert(EditorPos(pos));
-    }
-    entity.id()
+    world
+        .spawn((
+            Name::new("Recv"),
+            Recv,
+            Gain::default(),
+            EditorPos(pos.unwrap_or(Vec2::ZERO)),
+        ))
+        .id()
 }
 
 pub(crate) fn connect(
@@ -91,12 +97,8 @@ pub(crate) fn recompile(app: &mut App) {
     rebuild_order(app.world_mut());
 }
 
-pub(crate) fn spawn_spatial(
-    world: &mut World,
-    _id: u32,
-    parent: Option<Entity>,
-) -> Entity {
-    let mut entity = world.spawn(Transform::default());
+pub(crate) fn spawn_spatial(world: &mut World, _id: u32, parent: Option<Entity>) -> Entity {
+    let mut entity = world.spawn((Transform::default(), EditorPos(Vec2::ZERO)));
     if let Some(parent) = parent {
         entity.insert(ChildOf(parent));
     }
@@ -107,6 +109,34 @@ pub(crate) fn spawn_named_spatial(world: &mut World, name: &str) -> Entity {
     world
         .spawn((Name::new(name.to_string()), Transform::default()))
         .id()
+}
+
+/// Sources two registered wires at once (`amount` via `FloatOut`, `parent` via
+/// `Transform`). M6-6 collapses that to a single outlet socket.
+pub(crate) fn spawn_double_source(world: &mut World) -> Entity {
+    world
+        .spawn((
+            Name::new("BothOut"),
+            FloatOut(0.5),
+            Transform::default(),
+            EditorPos(Vec2::ZERO),
+        ))
+        .id()
+}
+
+/// Targets two registered wires at once, so its inlets are `[amount, parent]`
+/// and an inbound `parent` edge has a non-zero ordinal to land on.
+pub(crate) fn spawn_double_target(world: &mut World, parent: Option<Entity>) -> Entity {
+    let mut entity = world.spawn((
+        Name::new("BothIn"),
+        Gain::default(),
+        Transform::default(),
+        EditorPos(Vec2::ZERO),
+    ));
+    if let Some(parent) = parent {
+        entity.insert(ChildOf(parent));
+    }
+    entity.id()
 }
 
 pub(crate) struct ParentingIds {

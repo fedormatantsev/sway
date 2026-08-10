@@ -406,6 +406,10 @@ impl GraphCanvas {
         }
 
         for (index, view) in snap.nodes.iter().enumerate() {
+            // One socket per inlet: a wire inlet is scalar. `NodeSlot.inlets`
+            // and `NodeBox` still speak in per-field slot counts, so this is
+            // the one place the two representations meet.
+            let inlet_counts: Vec<u16> = vec![1; view.inlets.len()];
             match this.widget.slots.get_mut(&view.id) {
                 Some(slot) => {
                     if slot.label != view.name {
@@ -416,11 +420,11 @@ impl GraphCanvas {
                     // Socket counts change when a `Vec` inlet is resized
                     // (e.g. a `Group`'s `children`) -- not on every snapshot,
                     // so this is gated the same way `label` is.
-                    if slot.inlets != view.inlets || slot.outlets != view.outlets {
-                        slot.inlets = view.inlets.clone();
+                    if slot.inlets != inlet_counts || slot.outlets != view.outlets {
+                        slot.inlets = inlet_counts.clone();
                         slot.outlets = view.outlets;
                         let mut child = this.ctx.get_mut(&mut slot.pod);
-                        NodeBox::set_sockets(&mut child, view.inlets.clone(), view.outlets);
+                        NodeBox::set_sockets(&mut child, inlet_counts.clone(), view.outlets);
                     }
                     // A `NodeId` can outlive the entity it names across a
                     // recompile, so this is refreshed every snapshot even
@@ -441,7 +445,7 @@ impl GraphCanvas {
                         * Affine::translate(pos.to_vec2());
                     let pod = NodeBox::new(view.name.clone())
                         .with_initial_transform(transform)
-                        .with_sockets(view.inlets.clone(), view.outlets)
+                        .with_sockets(inlet_counts.clone(), view.outlets)
                         .prepare()
                         .to_pod();
                     this.widget.slots.insert(
@@ -451,7 +455,7 @@ impl GraphCanvas {
                             pos,
                             label: view.name.clone(),
                             entity: view.entity,
-                            inlets: view.inlets.clone(),
+                            inlets: inlet_counts,
                             outlets: view.outlets,
                         },
                     );
@@ -983,16 +987,25 @@ mod tests {
     }
 
     #[test]
-    fn a_node_box_lays_out_one_socket_per_slot() {
-        // Inlet counts are per-instance now, so sockets come from the
-        // snapshot rather than from a node type.
-        let view = NodeView { inlets: vec![2, 1], outlets: 1, ..node(0, "Group", None) };
+    fn a_node_box_lays_out_one_socket_per_inlet() {
+        // An inlet is one registered wire type, so it is always exactly one
+        // socket. Variadic (`Vec`) inlets stay out of MVP; `NodeBox` still
+        // carries the per-field count that would express them.
+        use crate::snapshot::InletView;
+        let view = NodeView {
+            inlets: vec![
+                InletView { wire: "amount", connected: true },
+                InletView { wire: "parent", connected: false },
+            ],
+            outlets: 1,
+            ..node(0, "Recv", None)
+        };
         let mut harness = harness_with(snapshot(vec![view], vec![]));
         let box_id = harness.root_widget().widget_id_of(NodeId(0)).unwrap();
 
         harness.edit_widget_with_id(box_id, |mut widget| {
             let node_box = widget.downcast::<NodeBox>();
-            assert_eq!(node_box.widget.inlet_socket_count(), 3, "2 children + 1 scalar");
+            assert_eq!(node_box.widget.inlet_socket_count(), 2);
             assert_eq!(node_box.widget.outlet_socket_count(), 1);
         });
     }

@@ -23,14 +23,39 @@ impl NodeId {
     }
 }
 
+/// One inlet socket: a registered wire type this entity could consume.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InletView {
+    pub wire: &'static str,
+    pub connected: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeView {
     pub entity: Entity,
     pub id: NodeId,
     pub name: String,
     pub pos: Option<Point>,
-    pub inlets: Vec<u16>,
+    pub inlets: Vec<InletView>,
+    /// 0 or 1. Architecture §2: an outlet is a *component*, and no node in the
+    /// current set carries two distinct source component types (spec M6-6).
     pub outlets: u16,
+}
+
+/// What kind of editor a field wants. The widget layer switches on this; the
+/// snapshot layer never builds a widget.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FieldKind {
+    Float,
+    Int,
+    Bool,
+    /// Every variant name, current one included.
+    Enum(Vec<String>),
+    Str,
+    Vec3,
+    /// Anything the walk could not classify — rendered read-only, and the
+    /// signal that a type wants editor `TypeData`.
+    Opaque,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,11 +80,22 @@ pub struct WorldSnapshot {
     pub inspector: InspectorView,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct InspectorField {
+    /// A struct field's reflected name, or a tuple-struct field's index as a
+    /// string — which is why this is owned and `InspectorComponent::name` is not.
+    pub name: String,
+    pub value: String,
+    pub kind: FieldKind,
+}
+
 /// One component's authored fields, flattened for display.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InspectorComponent {
-    pub name: String,
-    pub fields: Vec<(String, String)>,
+    /// `ComponentEntry::name` verbatim, so Task 8 can put it straight into an
+    /// `EditorCommand::SetField` without leaking a `String`.
+    pub name: &'static str,
+    pub fields: Vec<InspectorField>,
 }
 
 /// What the inspector pane shows for the current selection.
@@ -97,7 +133,7 @@ pub fn inspect(world: &World, entity: Entity) -> InspectorView {
             continue;
         };
         components.push(InspectorComponent {
-            name: entry.name.to_string(),
+            name: entry.name,
             fields: fields_of(value.as_partial_reflect()),
         });
     }
@@ -105,22 +141,78 @@ pub fn inspect(world: &World, entity: Entity) -> InspectorView {
     InspectorView { entity: Some(entity), components }
 }
 
-fn fields_of(value: &dyn PartialReflect) -> Vec<(String, String)> {
+fn fields_of(value: &dyn PartialReflect) -> Vec<InspectorField> {
     match value.reflect_ref() {
         ReflectRef::Struct(s) => (0..s.field_len())
             .map(|i| {
-                (
-                    s.name_at(i).unwrap_or("?").to_string(),
-                    format_value(s.field_at(i).expect("index in range")),
-                )
+                let field = s.field_at(i).expect("index in range");
+                InspectorField {
+                    name: s.name_at(i).unwrap_or("?").to_string(),
+                    value: format_value(field),
+                    kind: kind_of(field),
+                }
             })
             .collect(),
         ReflectRef::TupleStruct(t) => (0..t.field_len())
-            .map(|i| (i.to_string(), format_value(t.field(i).expect("index in range"))))
+            .map(|i| {
+                let field = t.field(i).expect("index in range");
+                InspectorField {
+                    name: i.to_string(),
+                    value: format_value(field),
+                    kind: kind_of(field),
+                }
+            })
             .collect(),
-        ReflectRef::Enum(e) => vec![("variant".to_string(), e.variant_name().to_string())],
-        _ => vec![(String::new(), format_value(value))],
+        ReflectRef::Enum(e) => vec![InspectorField {
+            name: "variant".to_string(),
+            value: e.variant_name().to_string(),
+            kind: enum_kind(value),
+        }],
+        _ => vec![InspectorField {
+            name: String::new(),
+            value: format_value(value),
+            kind: kind_of(value),
+        }],
     }
+}
+
+fn kind_of(value: &dyn PartialReflect) -> FieldKind {
+    if value.try_downcast_ref::<f32>().is_some() || value.try_downcast_ref::<f64>().is_some() {
+        return FieldKind::Float;
+    }
+    if value.try_downcast_ref::<i64>().is_some()
+        || value.try_downcast_ref::<i32>().is_some()
+        || value.try_downcast_ref::<u32>().is_some()
+        || value.try_downcast_ref::<usize>().is_some()
+    {
+        return FieldKind::Int;
+    }
+    if value.try_downcast_ref::<bool>().is_some() {
+        return FieldKind::Bool;
+    }
+    if value.try_downcast_ref::<String>().is_some() {
+        return FieldKind::Str;
+    }
+    if value.try_downcast_ref::<bevy_math::Vec3>().is_some() {
+        return FieldKind::Vec3;
+    }
+    if matches!(value.reflect_ref(), ReflectRef::Enum(_)) {
+        return enum_kind(value);
+    }
+    FieldKind::Opaque
+}
+
+/// Every variant name of an enum field, from its `TypeInfo` — the current
+/// value only tells us one of them, and the editor needs the whole list.
+fn enum_kind(value: &dyn PartialReflect) -> FieldKind {
+    let Some(bevy_reflect::TypeInfo::Enum(info)) = value.get_represented_type_info() else {
+        return FieldKind::Opaque;
+    };
+    FieldKind::Enum(
+        info.iter()
+            .map(|variant| variant.name().to_string())
+            .collect(),
+    )
 }
 
 /// Renders the types a set actually uses; anything else falls back to its
@@ -244,58 +336,85 @@ fn graph_entities(world: &World) -> Vec<Entity> {
     entities
 }
 
+/// Every entity the canvas draws: those carrying `EditorPos` (spec M6-4).
+fn canvas_entities(world: &World) -> Vec<Entity> {
+    let mut entities: Vec<Entity> = world
+        .iter_entities()
+        .filter(|entity| entity.contains::<EditorPos>())
+        .map(|entity| entity.id())
+        .collect();
+    entities.sort();
+    entities
+}
+
+/// The inlet sockets of one entity, in `WireRegistry` order — which is
+/// registration order, fixed at startup, so a socket's ordinal is stable.
+fn inlets_of(world: &World, registry: &WireRegistry, entity: Entity) -> Vec<InletView> {
+    registry
+        .entries
+        .iter()
+        .filter(|entry| (entry.has_target)(world, entity))
+        .map(|entry| InletView {
+            wire: entry.name,
+            connected: (entry.read)(world, entity).is_some(),
+        })
+        .collect()
+}
+
 fn capture_nodes(world: &World) -> Vec<NodeView> {
     let Some(registry) = world.get_resource::<WireRegistry>() else {
         return Vec::new();
     };
-    graph_entities(world)
+    canvas_entities(world)
         .into_iter()
-        .map(|entity| {
-            let inlets = registry
+        .map(|entity| NodeView {
+            entity,
+            id: NodeId::of(entity),
+            name: world
+                .get::<Name>(entity)
+                .map(|name| name.as_str().to_string())
+                .unwrap_or_else(|| format!("Entity {}", entity.index())),
+            pos: world
+                .get::<EditorPos>(entity)
+                .map(|pos| Point::new(pos.0.x as f64, pos.0.y as f64)),
+            inlets: inlets_of(world, registry, entity),
+            outlets: registry
                 .entries
                 .iter()
-                .filter(|entry| (entry.has_target)(world, entity))
-                .count();
-            let outlets = registry
-                .entries
-                .iter()
-                .filter(|entry| (entry.has_source)(world, entity))
-                .count() as u16;
-            NodeView {
-                entity,
-                id: NodeId::of(entity),
-                name: world
-                    .get::<Name>(entity)
-                    .map(|name| name.as_str().to_string())
-                    .unwrap_or_else(|| format!("Entity {}", entity.index())),
-                pos: world
-                    .get::<EditorPos>(entity)
-                    .map(|pos| Point::new(pos.0.x as f64, pos.0.y as f64)),
-                inlets: vec![1; inlets],
-                outlets,
-            }
+                .any(|entry| (entry.has_source)(world, entity)) as u16,
         })
         .collect()
 }
 
 fn capture_edges(world: &World) -> Vec<EdgeView> {
-    let Some(order) = world.get_resource::<GraphOrder>() else {
+    let (Some(order), Some(registry)) = (
+        world.get_resource::<GraphOrder>(),
+        world.get_resource::<WireRegistry>(),
+    ) else {
         return Vec::new();
     };
     order
         .steps
         .iter()
         .filter_map(|step| match *step {
-            Step::Propagate { src, dst, wire, .. } => Some(EdgeView {
-                from: NodeId::of(src),
-                from_field: 0,
-                from_index: 0,
-                to: NodeId::of(dst),
-                to_field: 0,
-                to_index: 0,
-                wire,
-                activity: None,
-            }),
+            Step::Propagate { src, dst, wire, .. } => {
+                // The inlet ordinal, so the edge lands on its own socket
+                // rather than always on socket 0 (spec M6-6).
+                let to_field = inlets_of(world, registry, dst)
+                    .iter()
+                    .position(|inlet| inlet.wire == wire)
+                    .unwrap_or(0) as u16;
+                Some(EdgeView {
+                    from: NodeId::of(src),
+                    from_field: 0,
+                    from_index: 0,
+                    to: NodeId::of(dst),
+                    to_field,
+                    to_index: 0,
+                    wire,
+                    activity: None,
+                })
+            }
             Step::Run { .. } => None,
         })
         .collect()
@@ -397,8 +516,8 @@ fn push_scene_subtree(
 mod tests {
     use super::*;
     use crate::test_graph::{
-        Emit, Recv, app, connect, fixture_with_parenting, recompile, spawn_emit,
-        spawn_named_spatial, spawn_recv, spawn_spatial,
+        Emit, Recv, app, connect, fixture_with_parenting, recompile, spawn_double_source,
+        spawn_double_target, spawn_emit, spawn_named_spatial, spawn_recv, spawn_spatial,
     };
     use bevy_math::Vec2;
 
@@ -548,8 +667,9 @@ mod tests {
             .find(|c| c.name == "Lfo")
             .expect("Lfo is authorable and present");
         assert_eq!(lfo.fields.len(), 4);
-        assert_eq!(lfo.fields[0], ("beats".to_string(), "4.000".to_string()));
-        assert!(lfo.fields.iter().any(|(name, value)| name == "shape" && value == "Saw"));
+        assert_eq!(lfo.fields[0].name, "beats");
+        assert_eq!(lfo.fields[0].value, "4.000");
+        assert!(lfo.fields.iter().any(|f| f.name == "shape" && f.value == "Saw"));
     }
 
     #[test]
@@ -573,5 +693,120 @@ mod tests {
         app.world_mut().despawn(entity);
 
         assert_eq!(inspect(app.world(), entity), InspectorView::default());
+    }
+
+    #[test]
+    fn a_node_with_no_wires_still_appears_on_the_canvas() {
+        // M6-4. Before M6 the canvas drew only entities in GraphOrder, so a
+        // camera or light was structurally invisible.
+        let mut app = app();
+        let lonely = app.world_mut().spawn(EditorPos(Vec2::new(3.0, 4.0))).id();
+        recompile(&mut app);
+
+        let snapshot = capture(app.world());
+
+        assert!(
+            snapshot.nodes.iter().any(|node| node.entity == lonely),
+            "an EditorPos entity is a canvas node whether or not anything wires to it",
+        );
+    }
+
+    #[test]
+    fn an_entity_without_an_editor_pos_is_not_a_canvas_node() {
+        let mut app = app();
+        let runtime_owned = app.world_mut().spawn_empty().id();
+        recompile(&mut app);
+
+        assert!(!capture(app.world()).nodes.iter().any(|n| n.entity == runtime_owned));
+    }
+
+    #[test]
+    fn an_entity_sourcing_several_wires_reports_exactly_one_outlet() {
+        // M6-6. Counting per wire drew seven dots on an Lfo; only socket 0 has
+        // ever had an edge attached, because capture_edges hardcodes from_field.
+        // `spawn_double_source` sources both `amount` and `parent`, so the old
+        // `count()` reported 2 here and the new `any()` reports 1.
+        let mut app = app();
+        let both = spawn_double_source(app.world_mut());
+        recompile(&mut app);
+
+        let node = capture(app.world()).nodes.into_iter().find(|n| n.entity == both).unwrap();
+        assert_eq!(node.outlets, 1);
+    }
+
+    #[test]
+    fn inlets_carry_their_wire_name_and_whether_they_are_connected() {
+        let mut app = app();
+        let emit = spawn_emit(app.world_mut(), 1, None);
+        let recv = spawn_recv(app.world_mut(), 2, None);
+        connect(app.world_mut(), emit, Emit::OUT_VALUE, recv, Recv::AMOUNT);
+        recompile(&mut app);
+
+        let node = capture(app.world()).nodes.into_iter().find(|n| n.entity == recv).unwrap();
+        let amount = node.inlets.iter().find(|i| i.wire == "amount").expect("named inlet");
+        assert!(amount.connected);
+    }
+
+    #[test]
+    fn an_edge_lands_on_its_own_wires_inlet_ordinal_not_on_socket_zero() {
+        // The to_field defect M6-6 names: every inbound edge used to draw into
+        // socket 0 whatever wire it was.
+        //
+        // This needs a target with more than one inlet, or the assertion is
+        // vacuous — `spawn_double_target` carries both `Gain` (target of
+        // `amount`) and `Transform` (target of `parent`), and `WireRegistry`
+        // order is registration order, so its inlets are `[amount, parent]`.
+        // The `parent` edge must therefore land on ordinal 1, which is exactly
+        // what the hardcoded `to_field: 0` got wrong.
+        let mut app = app();
+        let grandparent = spawn_spatial(app.world_mut(), 1, None);
+        let both = spawn_double_target(app.world_mut(), Some(grandparent));
+        recompile(&mut app);
+
+        let snapshot = capture(app.world());
+        let node = snapshot.nodes.iter().find(|n| n.entity == both).unwrap();
+        assert_eq!(
+            node.inlets.iter().map(|i| i.wire).collect::<Vec<_>>(),
+            vec!["amount", "parent"],
+            "inlet ordinals come from WireRegistry order",
+        );
+
+        let edge = snapshot
+            .edges
+            .iter()
+            .find(|e| e.wire == "parent" && e.to == NodeId::of(both))
+            .expect("the parenting edge");
+        assert_eq!(edge.to_field, 1);
+    }
+
+    #[test]
+    fn inspector_fields_carry_a_kind_the_widget_layer_can_switch_on() {
+        let mut app = bevy_app::App::new();
+        app.add_plugins(sway_graph::WiresPlugin)
+            .add_plugins(sway_nodes::WireNodesPlugin);
+        let entity = app
+            .world_mut()
+            .spawn(sway_nodes::Lfo {
+                beats: 4.0,
+                shape: sway_nodes::Waveform::Saw,
+                phase: 0.25,
+                amplitude: 0.5,
+            })
+            .id();
+
+        let view = inspect(app.world(), entity);
+        let lfo = view.components.iter().find(|c| c.name == "Lfo").unwrap();
+
+        let beats = lfo.fields.iter().find(|f| f.name == "beats").unwrap();
+        assert_eq!(beats.kind, FieldKind::Float);
+
+        let shape = lfo.fields.iter().find(|f| f.name == "shape").unwrap();
+        match &shape.kind {
+            FieldKind::Enum(variants) => {
+                assert!(variants.iter().any(|v| v == "Saw"), "got {variants:?}");
+                assert!(variants.len() > 1, "every variant is offered, not just the current one");
+            }
+            other => panic!("expected an enum kind, got {other:?}"),
+        }
     }
 }
