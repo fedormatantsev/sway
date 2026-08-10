@@ -1,5 +1,6 @@
 mod beat;
 mod envelope;
+mod field_wire;
 mod lfo;
 mod material;
 mod math;
@@ -10,6 +11,9 @@ mod outputs;
 mod scene;
 mod spatial;
 mod transport;
+mod value;
+#[cfg(test)]
+mod wire_testing;
 
 pub use beat::*;
 pub use envelope::*;
@@ -23,6 +27,7 @@ pub use outputs::*;
 pub use scene::*;
 pub use spatial::*;
 pub use transport::*;
+pub use value::*;
 
 /// The implemented wire-model slice.
 pub struct WireNodesPlugin;
@@ -33,6 +38,10 @@ impl bevy_app::Plugin for WireNodesPlugin {
         sway_graph::register_wire::<AmplitudeFrom>(app);
         sway_graph::register_wire::<TranslationYFrom>(app);
         sway_graph::register_wire::<bevy::prelude::ChildOf>(app);
+        sway_graph::register_behaviour::<Vec3Value>(app, vec3_behaviour);
+        sway_graph::register_wire::<Vec3XFrom>(app);
+        sway_graph::register_wire::<Vec3YFrom>(app);
+        sway_graph::register_wire::<Vec3ZFrom>(app);
 
         // What a project document may name (M4). Short names, not type paths.
         app.register_type::<Waveform>();
@@ -41,6 +50,7 @@ impl bevy_app::Plugin for WireNodesPlugin {
         sway_graph::register_authorable::<Vec3Out>(app, "Vec3Out");
         sway_graph::register_authorable::<bevy::prelude::Transform>(app, "Transform");
         sway_graph::register_authorable::<sway_graph::EditorPos>(app, "EditorPos");
+        sway_graph::register_authorable::<Vec3Value>(app, "Vec3");
     }
 }
 
@@ -67,7 +77,7 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec!["EditorPos", "FloatOut", "Lfo", "Transform", "Vec3Out"]
+            vec!["EditorPos", "FloatOut", "Lfo", "Transform", "Vec3", "Vec3Out"]
         );
     }
 }

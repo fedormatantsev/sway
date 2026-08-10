@@ -7,7 +7,7 @@
 
 use bevy::prelude::*;
 use bevy_ecs::change_detection::DetectChangesMut;
-use sway_graph::{TickCtx, Transport, TransportTime, Wire};
+use sway_graph::{EditorPos, TickCtx, Transport, TransportTime, Wire};
 
 use crate::lfo::{wave, Waveform};
 use crate::outputs::FloatOut;
@@ -15,6 +15,7 @@ use crate::outputs::FloatOut;
 /// Period in beats, plus shape, phase offset in cycles, and amplitude.
 #[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]
 #[reflect(Component, Default, PartialEq)]
+#[require(FloatOut, EditorPos)]
 pub struct Lfo {
     pub beats: f32,
     pub shape: Waveform,
