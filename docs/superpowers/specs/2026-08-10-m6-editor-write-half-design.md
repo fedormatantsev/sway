@@ -163,20 +163,55 @@ in the editor instead)" loses its justification and is restated.
 **Inherited by M7:** the gizmo was to refuse driven axes under the same rule. It
 now has no detection machinery to build on and must decide for itself.
 
-### M6-6 — Sockets gain identity; legality is already in the registry
+### M6-6 — Sockets gain identity from data the registry already holds
 
-`NodeView.inlets: Vec<u16>` is a count today, so nothing can say what a socket
-connects to. It becomes:
+No new registry fields. `WireEntry` already carries `name`, `has_source`,
+`has_target`, `read`, `insert` and `remove`, and that is the whole requirement.
 
-- **inlets** — one per registered wire type `W` where `has_target(world, e)`,
-  labelled `W::NAME`, carrying whether `(entry.read)(world, e)` is `Some`.
-- **outlets** — one per *distinct* `Source` component type among registered
-  wires where `has_source(world, e)`.
+**Inlets — one per registered wire type `W` where `has_target(world, e)`.** The
+count is already correct today: a `Transform`-carrying cube has four inlets
+(`TranslationFrom`, `RotationFrom`, `ScaleFrom`, `ChildOf`) and those are four
+genuinely distinct sockets. What is missing is the label (`WireEntry::name`)
+and a stable socket **ordinal** — the wire's position in the filtered list,
+taken from `WireRegistry` iteration order, which is registration order and
+therefore fixed at startup.
 
-The outlet change fixes an existing miscount: `Vec3Out` is counted six times
-today, once per wire that reads it. Grouping needs a `source_type_id` on
-`WireEntry`, which is `TypeId::of::<W::Source>()` read off the existing
-associated type inside `register_wire` — **not** a change to the `Wire` trait.
+The real defect is elsewhere: `capture_edges` hardcodes `to_field: 0`, so every
+inbound edge is drawn into the top inlet socket whatever wire it is — a `Vec3`
+wired into `scale` renders as a line into `translation`. Fixed by the ordinal
+lookup above.
+
+**Outlets — one, or none.**
+
+```rust
+let outlets = registry.entries.iter().any(|e| (e.has_source)(world, entity)) as u16;
+```
+
+`count()` becomes `any()`. Today the count is one per *wire* that could read
+the entity, so an `Lfo` draws seven outlet dots (`FloatOut` sources
+`AmplitudeFrom`, the three `Vec3*From`, both `Math*From`, and `RemapInputFrom`)
+and a `Vec3` draws three. Since `capture_edges` also hardcodes `from_field: 0`,
+sockets 1..n have never had an edge attached and are pure noise; collapsing
+them makes the existing edge rendering correct rather than accidentally so.
+
+This is also what architecture §2 means — "outlets are components". Per entity
+that resolves to one: `Lfo` → `FloatOut`, `Vec3` → `Vec3Out`, cube →
+`Transform` (it can be a parent, through `ChildOf`). No node in the current set
+carries two distinct source component types.
+
+**Legality needs no source type.** A drag from `A` may land on `B`'s inlet for
+wire `W` iff `(W.has_source)(world, A) && (W.has_target)(world, B)`.
+`has_source` resolves `A.contains::<W::Source>()` internally, so the editor
+holds an `Entity` and asks each wire entry; it never names the type.
+`inserting_over_an_existing_wire_replaces_its_source` already pins that rewire
+needs no prior disconnect.
+
+**Accepted limit.** A hand-authored entity carrying both `Transform` and
+`FloatOut` would offer parenting inlets and float inlets from one dot —
+visually coarser, behaviourally identical, since each inlet accepts exactly one
+wire type and an illegal drop is refused. If that ever needs splitting, a
+`source_type_id` derived from `TypeId::of::<W::Source>()` inside `register_wire`
+is one line, added then.
 
 Drag legality then falls out of data already present: a drag from `A`'s outlet
 may land on `B`'s inlet for wire `W` iff `has_source(world, A)` and
@@ -310,6 +345,9 @@ Per architecture §9. No pixel tests.
 - **Widgets** (`masonry_testing`) — palette filtering; the widget kind chosen
   per `FieldKind`; a commit emits exactly one `SetField`; drag legality
   highlights only legal inlets.
+- **Sockets** — an entity sourcing several wire types reports exactly one
+  outlet; an inbound edge is drawn at its own wire's inlet ordinal, not at
+  socket 0 (the `to_field` defect M6-6 names).
 - **By eye** — the exit criterion itself, run through
   `cargo run -p sway-app -- --editor --windowed`.
 
@@ -338,7 +376,7 @@ Each phase leaves the workspace green and is reviewable on its own.
 1. **`sway-document` extraction.** Pure move plus M6-2's registry split. No new
    behaviour; the existing test suite is the acceptance criterion.
 2. **The write path, headless.** Command channel, `apply_editor_commands`,
-   `WireEntry::source_type_id`, snapshot extensions (M6-4, M6-6, `FieldKind`).
+   snapshot extensions (M6-4, M6-6, `FieldKind`). No registry changes.
    No UI.
 3. **Signal sink + inspector editing.** First visible capability: edit a value,
    watch the scene change.
