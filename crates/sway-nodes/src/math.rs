@@ -43,10 +43,6 @@ pub fn remap_value(
     }
 }
 
-pub fn switch_value(select: bool, a: f32, b: f32) -> f32 {
-    if select { a } else { b }
-}
-
 #[derive(Reflect, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoteField {
     #[default]

@@ -44,15 +44,23 @@ impl bevy_app::Plugin for WireNodesPlugin {
         sway_graph::register_wire::<Vec3XFrom>(app);
         sway_graph::register_wire::<Vec3YFrom>(app);
         sway_graph::register_wire::<Vec3ZFrom>(app);
+        sway_graph::register_behaviour::<Math>(app, math_behaviour);
+        sway_graph::register_behaviour::<Remap>(app, remap_behaviour);
+        sway_graph::register_wire::<MathAFrom>(app);
+        sway_graph::register_wire::<MathBFrom>(app);
+        sway_graph::register_wire::<RemapInputFrom>(app);
 
         // What a project document may name (M4). Short names, not type paths.
         app.register_type::<Waveform>();
+        app.register_type::<MathOp>();
         sway_graph::register_authorable::<Lfo>(app, "Lfo");
         sway_graph::register_authorable::<FloatOut>(app, "FloatOut");
         sway_graph::register_authorable::<Vec3Out>(app, "Vec3Out");
         sway_graph::register_authorable::<bevy::prelude::Transform>(app, "Transform");
         sway_graph::register_authorable::<sway_graph::EditorPos>(app, "EditorPos");
         sway_graph::register_authorable::<Vec3Value>(app, "Vec3");
+        sway_graph::register_authorable::<Math>(app, "Math");
+        sway_graph::register_authorable::<Remap>(app, "Remap");
     }
 }
 
@@ -79,7 +87,7 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec!["EditorPos", "FloatOut", "Lfo", "Transform", "Vec3", "Vec3Out"]
+            vec!["EditorPos", "FloatOut", "Lfo", "Math", "Remap", "Transform", "Vec3", "Vec3Out"]
         );
     }
 }
