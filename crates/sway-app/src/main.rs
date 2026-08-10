@@ -191,6 +191,8 @@ fn main() {
     let demo = args.demo;
     let editor = args.editor;
 
+    let (editor_tx, editor_rx) = crossbeam_channel::unbounded();
+
     // Everything demo-specific is built into the closure the shell calls
     // once the window, shared device, and viewport texture exist --
     // `sway_runtime::headless::build_app` builds the underlying `App`
@@ -200,7 +202,8 @@ fn main() {
         let mut app = sway_runtime::headless::build_app(gpu, viewport, size);
 
         if editor {
-            app.insert_resource(sway_graph::Authoring);
+            app.insert_resource(sway_graph::Authoring)
+                .insert_resource(sway_graph::EditorRx(editor_rx));
         }
 
         app.add_plugins((
@@ -285,5 +288,6 @@ fn main() {
     shell::run(shell::ShellConfig {
         editor,
         build_app,
+        commands: editor_tx,
     });
 }

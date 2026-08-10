@@ -12,6 +12,7 @@ peniko.workspace = true
 ui-events-winit.workspace = true
 winit.workspace = true
 sway-graph.workspace = true
+crossbeam-channel.workspace = true
 bevy_ecs.workspace = true
 bevy_math.workspace = true
 bevy_reflect.workspace = true

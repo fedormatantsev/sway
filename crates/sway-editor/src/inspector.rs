@@ -5,6 +5,7 @@
 //! exists to prove the reflect walk and to surface types that still want
 //! editor `TypeData`.
 
+use crossbeam_channel::Sender;
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
     AccessCtx, ChildrenIds, LayoutCtx, MeasureCtx, PaintCtx, PropertiesRef, RegisterCtx, Widget,
@@ -15,6 +16,7 @@ use masonry::layout::{LenReq, Length};
 use masonry::widgets::Label;
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
+use sway_graph::EditorCommand;
 
 use crate::snapshot::WorldSnapshot;
 
@@ -32,17 +34,14 @@ pub struct Inspector {
     rows: Vec<Row>,
     signature: Vec<String>,
     generation: u64,
-}
-
-impl Default for Inspector {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Unused until Task 8 wires up field editing.
+    #[allow(dead_code)]
+    commands: Sender<EditorCommand>,
 }
 
 impl Inspector {
-    pub fn new() -> Self {
-        Self { rows: Vec::new(), signature: Vec::new(), generation: 0 }
+    pub fn new(commands: Sender<EditorCommand>) -> Self {
+        Self { rows: Vec::new(), signature: Vec::new(), generation: 0, commands }
     }
 
     pub fn row_count(&self) -> usize {

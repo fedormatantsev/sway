@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use bevy::app::App;
 use bevy::math::UVec2;
+use crossbeam_channel::Sender;
 use sway_gpu::{Compositor, GpuContext, ViewportTexture, WindowSurface};
+use sway_graph::EditorCommand;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
@@ -48,6 +50,7 @@ pub struct ShellConfig {
     /// plain `ShowPresenter` (viewport fullscreen, no masonry).
     pub editor: bool,
     pub build_app: AppBuilder,
+    pub commands: Sender<EditorCommand>,
 }
 
 /// Everything that exists only once the window (and therefore the GPU
@@ -177,7 +180,12 @@ impl ApplicationHandler for Shell {
         // `EditorPresenter`, not the `ShowPresenter` fallback Task 3 left in
         // place.
         let presenter = if config.editor {
-            Presenter::Editor(Box::new(EditorPresenter::new(&gpu, size, scale_factor)))
+            Presenter::Editor(Box::new(EditorPresenter::new(
+                &gpu,
+                size,
+                scale_factor,
+                config.commands,
+            )))
         } else {
             Presenter::Show(ShowPresenter)
         };
@@ -207,6 +215,12 @@ impl ApplicationHandler for Shell {
         // unconditionally for every event this shell also handles below.
         if let Presenter::Editor(presenter) = &mut running.presenter {
             presenter.handle_winit_event(running.window.scale_factor(), &event);
+        }
+
+        if let Presenter::Editor(presenter) = &mut running.presenter
+            && let Some(icon) = presenter.take_cursor()
+        {
+            running.window.set_cursor(icon);
         }
 
         match event {

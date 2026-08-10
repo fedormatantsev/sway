@@ -22,3 +22,4 @@ winit.workspace = true
 kurbo.workspace = true
 peniko.workspace = true
 imaging.workspace = true
+masonry_core.workspace = true

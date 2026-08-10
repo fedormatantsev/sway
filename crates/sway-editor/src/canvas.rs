@@ -17,6 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bevy_ecs::entity::Entity;
+use crossbeam_channel::Sender;
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
     AccessCtx, ActionCtx, ChildrenIds, ErasedAction, EventCtx, LayoutCtx, MeasureCtx, Modifiers,
@@ -29,6 +30,7 @@ use masonry::imaging::Painter;
 use masonry_core::kurbo::{Affine, Axis, BezPath, Point, Size, Stroke, Vec2};
 use masonry::layout::{LenReq, Length};
 use peniko::Color;
+use sway_graph::EditorCommand;
 
 use crate::node_box::{self, NodeBox, NodeBoxAction};
 use crate::snapshot::{NodeId, WorldSnapshot};
@@ -109,18 +111,15 @@ pub struct GraphCanvas {
     /// A middle-drag pan in progress (brief step 4): the last-seen
     /// window-space (logical) pointer position. `None` when not panning.
     panning: Option<Point>,
+    /// Unused until Task 13 wires up create/delete/move/rewire.
+    #[allow(dead_code)]
+    commands: Sender<EditorCommand>,
 }
 
 // --- MARK: BUILDERS
-impl Default for GraphCanvas {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl GraphCanvas {
     /// Creates an empty canvas. Content arrives through `apply_snapshot`.
-    pub fn new() -> Self {
+    pub fn new(commands: Sender<EditorCommand>) -> Self {
         Self {
             nodes: Vec::new(),
             slots: HashMap::new(),
@@ -129,6 +128,7 @@ impl GraphCanvas {
             zoom: 1.0,
             selected: None,
             panning: None,
+            commands,
         }
     }
 }
@@ -756,8 +756,9 @@ mod tests {
     }
 
     fn harness_with(snap: WorldSnapshot) -> TestHarness<GraphCanvas> {
+        let (tx, _rx) = crossbeam_channel::unbounded();
         let mut harness =
-            TestHarness::create(DefaultProperties::default(), GraphCanvas::new().prepare());
+            TestHarness::create(DefaultProperties::default(), GraphCanvas::new(tx).prepare());
         harness.edit_root_widget(|mut canvas| {
             GraphCanvas::apply_snapshot(&mut canvas, &snap);
         });

@@ -20,21 +20,27 @@ pub mod transport_bar;
 #[cfg(test)]
 mod test_graph;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
 use bevy_ecs::entity::Entity;
+use crossbeam_channel::Sender;
 use imaging::record::replay_transformed;
 use masonry_core::app::{
     RenderRoot, RenderRootOptions, RenderRootSignal, VisualLayerKind, VisualLayerPlan,
     WindowSizePolicy,
 };
-use masonry_core::core::{NewWidget, TextEvent, Widget, WidgetTag, WindowEvent as MasonryWindowEvent};
+use masonry_core::core::{
+    CursorIcon, NewWidget, TextEvent, Widget, WidgetTag, WindowEvent as MasonryWindowEvent,
+};
 use masonry::kurbo::{Affine, Rect};
 use masonry::layout::AsUnit;
 use masonry::widgets::{Portal, Split};
 use masonry_core::kurbo::Axis;
+use sway_graph::EditorCommand;
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use winit::dpi::PhysicalSize;
 
@@ -84,12 +90,16 @@ pub const TRANSPORT_BAR_TAG: WidgetTag<TransportBar> = WidgetTag::named("sway-tr
 /// All five content widgets carry a `WidgetTag` so `apply_snapshot` and
 /// `viewport_rect` can reach them typed, without downcasting through the
 /// `Split`s.
-fn graph_root() -> NewWidget<dyn Widget> {
+///
+/// `commands` is handed to the two panes that write: the inspector edits
+/// fields, the canvas creates, deletes, moves and rewires. The tree and the
+/// transport bar are read-only and do not get it.
+fn graph_root(commands: Sender<EditorCommand>) -> NewWidget<dyn Widget> {
     let tree = Portal::new(SceneTree::new().prepare().with_tag(SCENE_TREE_TAG))
         .constrain_horizontal(true)
         .prepare();
 
-    let inspector = Portal::new(Inspector::new().prepare().with_tag(INSPECTOR_TAG))
+    let inspector = Portal::new(Inspector::new(commands.clone()).prepare().with_tag(INSPECTOR_TAG))
         .constrain_horizontal(true)
         .prepare();
 
@@ -101,7 +111,7 @@ fn graph_root() -> NewWidget<dyn Widget> {
         .prepare();
 
     let viewport = ViewportPlaceholder::new().prepare().with_tag(VIEWPORT_TAG);
-    let canvas = GraphCanvas::new().prepare().with_tag(GRAPH_CANVAS_TAG);
+    let canvas = GraphCanvas::new(commands).prepare().with_tag(GRAPH_CANVAS_TAG);
 
     let right = Split::new(viewport, canvas)
         .split_axis(Axis::Vertical)
@@ -143,19 +153,26 @@ pub struct EditorUi {
     /// Populated by `apply_snapshot`; used by `sync_selection` to translate a
     /// tree-row selection (an `Entity`) into a canvas selection (a `NodeId`).
     node_ids: HashMap<Entity, NodeId>,
+    /// Masonry emits signals while it holds `RenderRoot` borrowed, and
+    /// servicing a layer signal needs `&mut RenderRoot` -- so they are
+    /// collected here and drained afterwards, exactly as `masonry_winit` does.
+    signals: Rc<RefCell<Vec<RenderRootSignal>>>,
+    /// The most recent cursor request, for the shell to apply to the window.
+    cursor: Option<CursorIcon>,
+    /// Handed to `graph_root`'s write-capable children at construction time;
+    /// kept here too so a future caller doesn't have to thread its own copy
+    /// through `EditorUi`. Unused as a read from this struct until then.
+    #[allow(dead_code)]
+    commands: Sender<EditorCommand>,
 }
 
 impl EditorUi {
-    pub fn new(size: PhysicalSize<u32>, scale_factor: f64) -> Self {
+    pub fn new(size: PhysicalSize<u32>, scale_factor: f64, commands: Sender<EditorCommand>) -> Self {
+        let signals: Rc<RefCell<Vec<RenderRootSignal>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink_signals = signals.clone();
         let root = RenderRoot::new(
-            graph_root(),
-            // R2 (controller dispatch ruling): the signal sink is a no-op.
-            // Masonry emits `RenderRootSignal`s for cursor changes, IME, and
-            // window requests (resize, title, exit, ...); a spike driving one
-            // hardcoded window with no interactive widgets needs none of
-            // them. Dropped silently and deliberately -- Task 8 records this
-            // as a known simplification, not a bug to fix here.
-            |_signal: RenderRootSignal| {},
+            graph_root(commands.clone()),
+            move |signal: RenderRootSignal| sink_signals.borrow_mut().push(signal),
             RenderRootOptions {
                 default_properties: Arc::new(masonry::theme::default_property_set()),
                 use_system_fonts: true,
@@ -171,6 +188,9 @@ impl EditorUi {
             scale_factor,
             last_anim_tick: Instant::now(),
             node_ids: HashMap::new(),
+            signals,
+            cursor: None,
+            commands,
         }
     }
 
@@ -193,6 +213,38 @@ impl EditorUi {
                 }
             }
         }
+        self.drain_signals();
+    }
+
+    /// Services everything masonry asked the host for since the last call.
+    ///
+    /// Layers are the load-bearing case: `ctx.create_layer` only *emits*
+    /// `NewLayer`, and a popup does not exist until the host calls back into
+    /// `RenderRoot`. Signals this editor has no use for (IME, clipboard,
+    /// window geometry, `Exit`) are dropped deliberately -- the shell owns
+    /// the window and this editor has one, fixed, non-closable pane layout.
+    fn drain_signals(&mut self) {
+        let drained: Vec<RenderRootSignal> = std::mem::take(&mut *self.signals.borrow_mut());
+        for signal in drained {
+            match signal {
+                RenderRootSignal::NewLayer(_layer_type, root, pos) => {
+                    self.root.add_layer(root, pos);
+                }
+                RenderRootSignal::RemoveLayer(root_id) => {
+                    self.root.remove_layer(root_id);
+                }
+                RenderRootSignal::RepositionLayer(root_id, pos) => {
+                    self.root.reposition_layer(root_id, pos);
+                }
+                RenderRootSignal::SetCursor(icon) => self.cursor = Some(icon),
+                _ => {}
+            }
+        }
+    }
+
+    /// The pending cursor request, if any. Cleared by reading it.
+    pub fn take_cursor(&mut self) -> Option<CursorIcon> {
+        self.cursor.take()
     }
 
     /// The window's current DPI scale factor (physical pixels per logical
@@ -357,6 +409,7 @@ impl EditorUi {
     /// was wired in: an `External` layer that never receives an anim frame
     /// vanishes from the very next `VisualLayerPlan`.
     pub fn redraw(&mut self) -> VisualLayerPlan {
+        self.drain_signals();
         self.sync_selection();
 
         let now = Instant::now();
@@ -397,7 +450,7 @@ mod tests {
     use bevy_ecs::entity::Entity;
     use imaging::Painter;
     use kurbo::{Affine, Point as KurboPoint, Rect};
-    use masonry_core::app::{VisualLayer, VisualLayerKind, VisualLayerPlan};
+    use masonry_core::app::{RenderRootSignal, VisualLayer, VisualLayerKind, VisualLayerPlan};
     use masonry_core::core::{NewWidget, WidgetId};
     use masonry::widgets::Label;
     use peniko::Color;
@@ -463,7 +516,8 @@ mod tests {
 
     #[test]
     fn selecting_a_node_box_highlights_its_tree_row() {
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0);
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
         let snap = one_node_snapshot();
         ui.apply_snapshot(&snap);
 
@@ -480,7 +534,8 @@ mod tests {
 
     #[test]
     fn selecting_a_graph_node_row_highlights_its_node_box() {
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0);
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
         let snap = one_node_snapshot();
         ui.apply_snapshot(&snap);
 
@@ -504,7 +559,8 @@ mod tests {
     /// origin regardless of where the `Split`s actually placed it.
     #[test]
     fn viewport_rect_reflects_its_position_inside_nested_splits() {
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0);
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
         // Settles layout/compose so the widget tree's geometry is current.
         ui.redraw();
 
@@ -525,7 +581,8 @@ mod tests {
     fn an_unchanged_selection_does_not_rebuild_the_inspector() {
         // Same discipline as SceneTree: a steady-state world costs one
         // comparison per frame.
-        let mut ui = EditorUi::new(PhysicalSize::new(1200, 800), 1.0);
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(1200, 800), 1.0, tx);
         let snap = WorldSnapshot::default();
         ui.apply_snapshot(&snap);
         let first = ui
@@ -537,5 +594,77 @@ mod tests {
             .edit_widget_with_tag(crate::INSPECTOR_TAG, |i| i.widget.generation());
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn a_new_layer_signal_puts_the_widget_in_the_tree() {
+        // Before M6 the sink was a no-op, so no popup, tooltip or Selector
+        // dropdown could appear at all: ctx.create_layer only *emits*
+        // NewLayer, and the layer does not exist until the host calls back
+        // into RenderRoot.
+        use masonry_core::core::{LayerType, NewWidget};
+        use masonry::widgets::Label;
+
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
+        ui.redraw();
+
+        let popup = NewWidget::new(Label::new("popup"));
+        let popup_id = popup.id();
+        assert!(!ui.root.has_widget(popup_id), "not in the tree before the signal");
+
+        ui.signals.borrow_mut().push(RenderRootSignal::NewLayer(
+            LayerType::Other,
+            popup.erased(),
+            KurboPoint::new(10.0, 10.0),
+        ));
+        ui.drain_signals();
+
+        assert!(ui.root.has_widget(popup_id), "the layer signal was serviced");
+    }
+
+    #[test]
+    fn a_remove_layer_signal_takes_the_widget_back_out() {
+        use masonry_core::core::{LayerType, NewWidget};
+        use masonry::widgets::Label;
+
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
+        ui.redraw();
+
+        let popup = NewWidget::new(Label::new("popup"));
+        let popup_id = popup.id();
+        ui.signals.borrow_mut().push(RenderRootSignal::NewLayer(
+            LayerType::Other,
+            popup.erased(),
+            KurboPoint::new(10.0, 10.0),
+        ));
+        ui.drain_signals();
+
+        ui.signals
+            .borrow_mut()
+            .push(RenderRootSignal::RemoveLayer(popup_id));
+        ui.drain_signals();
+
+        assert!(!ui.root.has_widget(popup_id));
+    }
+
+    #[test]
+    fn a_set_cursor_signal_is_handed_to_the_shell_once() {
+        // Drag-to-connect (Task 15) wants cursor feedback, and the shell owns
+        // the window. Reading it clears it, so the shell does not re-apply the
+        // same icon every frame.
+        use masonry_core::core::CursorIcon;
+
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
+
+        ui.signals
+            .borrow_mut()
+            .push(RenderRootSignal::SetCursor(CursorIcon::Crosshair));
+        ui.drain_signals();
+
+        assert_eq!(ui.take_cursor(), Some(CursorIcon::Crosshair));
+        assert_eq!(ui.take_cursor(), None, "reading the request clears it");
     }
 }

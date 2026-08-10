@@ -6,7 +6,10 @@
 
 use bevy::app::App;
 use bevy::math::UVec2;
+use crossbeam_channel::Sender;
+use masonry_core::core::CursorIcon;
 use sway_gpu::{Compositor, GpuContext, Quad, UiRenderer, UiTexture, ViewportTexture, WindowSurface};
+use sway_graph::EditorCommand;
 use winit::dpi::PhysicalSize;
 
 /// Blits the viewport fullscreen. No masonry, no vello.
@@ -62,8 +65,13 @@ pub struct EditorPresenter {
 }
 
 impl EditorPresenter {
-    pub fn new(gpu: &GpuContext, size: PhysicalSize<u32>, scale_factor: f64) -> Self {
-        let editor = sway_editor::EditorUi::new(size, scale_factor);
+    pub fn new(
+        gpu: &GpuContext,
+        size: PhysicalSize<u32>,
+        scale_factor: f64,
+        commands: Sender<EditorCommand>,
+    ) -> Self {
+        let editor = sway_editor::EditorUi::new(size, scale_factor, commands);
         let ui_texture = UiTexture::new(&gpu.device, size.width.max(1), size.height.max(1));
         let ui_renderer = UiRenderer::new(gpu.device.clone(), gpu.queue.clone());
         Self {
@@ -71,6 +79,12 @@ impl EditorPresenter {
             ui_texture,
             ui_renderer,
         }
+    }
+
+    /// The pending cursor request, if any. Forwards to `EditorUi::take_cursor`;
+    /// reading it clears it, so the shell applies it at most once per request.
+    pub fn take_cursor(&mut self) -> Option<CursorIcon> {
+        self.editor.take_cursor()
     }
 
     /// Forwards one winit window event to the masonry widget tree. Most
