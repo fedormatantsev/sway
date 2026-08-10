@@ -14,6 +14,7 @@ bevy_math.workspace = true
 bevy_reflect.workspace = true
 bevy_time.workspace = true
 bevy_transform.workspace = true
+crossbeam-channel.workspace = true
 
 [features]
 test-wires = []

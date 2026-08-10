@@ -1,5 +1,6 @@
 //! The sway wire engine. Spec: docs/superpowers/specs/2026-08-05-wires-design.md
 
+pub mod command;
 pub mod ctx;
 pub mod diagnostics;
 pub mod order;
@@ -12,6 +13,7 @@ pub mod transport;
 pub mod watch;
 pub mod wire;
 
+pub use command::{EditorCommand, EditorRx, FieldValue, apply_editor_command, apply_editor_commands};
 pub use ctx::{EditorPos, TickCtx};
 pub use diagnostics::GraphDiagnostics;
 pub use order::{GraphOrder, Link, Sorted, Step, TopologyDirty, rebuild_order, topological_order};

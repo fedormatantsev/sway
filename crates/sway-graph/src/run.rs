@@ -62,6 +62,15 @@ impl Plugin for WiresPlugin {
                 crate::watch::Authoring,
             >),
         );
+
+        app.add_systems(
+            bevy_app::PreUpdate,
+            crate::command::apply_editor_commands
+                .before(crate::watch::WatchSet)
+                .run_if(bevy_ecs::schedule::common_conditions::resource_exists::<
+                    crate::command::EditorRx,
+                >),
+        );
     }
 }
 

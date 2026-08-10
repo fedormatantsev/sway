@@ -5435,6 +5435,7 @@ dependencies = [
  "bevy_reflect",
  "bevy_time",
  "bevy_transform",
+ "crossbeam-channel",
 ]
 
 [[package]]
