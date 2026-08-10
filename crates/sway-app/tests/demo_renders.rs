@@ -106,8 +106,8 @@ fn the_demo_document_renders_its_cubes() {
     // The document is applied directly rather than through ProjectPlugin's
     // asset load: this test is about the scene it describes, not about the
     // .ron's own loading path, which demo_document.rs already covers.
-    let document = sway_graph::project::parse(DEMO_DOCUMENT).expect("parses");
-    let diagnostics = sway_graph::project::apply(app.world_mut(), &document);
+    let document = sway_document::parse(DEMO_DOCUMENT).expect("parses");
+    let diagnostics = sway_document::apply(app.world_mut(), &document);
     assert!(diagnostics.is_clean(), "{:?}", diagnostics.items);
 
     // A bounded poll, not a fixed count. Two independent asynchronous things

@@ -16,9 +16,9 @@ use bevy_ecs::system::ResMut;
 use bevy_ecs::world::World;
 use bevy_reflect::TypePath;
 
-use crate::project::apply::apply;
-use crate::project::diagnostics::ProjectDiagnostics;
-use crate::project::doc::{ParseError, ProjectDoc, parse};
+use crate::apply::apply;
+use crate::diagnostics::ProjectDiagnostics;
+use crate::doc::{ParseError, ProjectDoc, parse};
 
 #[derive(Asset, TypePath, Debug, Clone)]
 pub struct ProjectAsset {
@@ -135,7 +135,7 @@ impl Plugin for ProjectPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::diagnostics::DocId;
+    use crate::diagnostics::DocId;
     use bevy_app::App;
     use bevy_asset::AssetPlugin;
     use bevy_ecs::entity::Entity;

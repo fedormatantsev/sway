@@ -16,11 +16,11 @@ use bevy_reflect::TypeRegistry;
 use bevy_reflect::serde::TypedReflectDeserializer;
 use serde::de::DeserializeSeed;
 
-use crate::order::TopologyDirty;
-use crate::project::diagnostics::{DocId, ItemError, ProjectDiagnostics};
-use crate::project::doc::{EntityDoc, ProjectDoc};
-use crate::project::registry::ComponentDocRegistry;
-use crate::registry_wires::WireRegistry;
+use sway_graph::TopologyDirty;
+use crate::diagnostics::{DocId, ItemError, ProjectDiagnostics};
+use crate::doc::{EntityDoc, ProjectDoc};
+use sway_graph::ComponentDocRegistry;
+use sway_graph::WireRegistry;
 
 /// Applies `doc` to `world` and returns what it could not do.
 ///
@@ -333,8 +333,8 @@ fn reconcile_entities(world: &mut World, doc: &ProjectDoc) -> HashMap<String, En
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::doc::parse;
-    use crate::project::registry::register_authorable;
+    use crate::doc::parse;
+    use sway_graph::register_authorable;
     use bevy_app::App;
     use bevy_ecs::component::Component;
     use bevy_ecs::query::Changed;
@@ -705,9 +705,9 @@ mod tests {
         );
     }
 
-    use crate::order::TopologyDirty;
-    use crate::registry_wires::register_wire;
-    use crate::test_wires::{FloatOut, Gain, GainFrom};
+    use sway_graph::TopologyDirty;
+    use sway_graph::register_wire;
+    use sway_graph::test_wires::{FloatOut, Gain, GainFrom};
 
     /// `Gain` is the wire fixture's target and `FloatOut` its source; both
     /// become authorable so a document can build the whole graph.

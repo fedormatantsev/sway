@@ -120,7 +120,7 @@ fn log_fps(diagnostics: Res<DiagnosticsStore>, time: Res<Time>, mut since_last_l
     }
 }
 
-fn load_project(asset_server: Res<AssetServer>, mut handle: ResMut<sway_graph::ProjectHandle>) {
+fn load_project(asset_server: Res<AssetServer>, mut handle: ResMut<sway_document::ProjectHandle>) {
     handle.0 = Some(asset_server.load("demo.sway.ron"));
 }
 
@@ -206,7 +206,7 @@ fn main() {
         app.add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
             sway_graph::WiresPlugin,
-            sway_graph::ProjectPlugin,
+            sway_document::ProjectPlugin,
             sway_nodes::WireNodesPlugin,
             sway_nodes::MidiPlugin,
         ))

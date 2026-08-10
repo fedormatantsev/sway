@@ -12,10 +12,10 @@ use bevy_ecs::reflect::{AppTypeRegistry, ReflectComponent};
 use bevy_ecs::world::World;
 use bevy_reflect::serde::TypedReflectSerializer;
 
-use crate::project::diagnostics::DocId;
-use crate::project::doc::{EntityDoc, FORMAT_VERSION, ProjectDoc};
-use crate::project::registry::ComponentDocRegistry;
-use crate::registry_wires::WireRegistry;
+use crate::diagnostics::DocId;
+use crate::doc::{EntityDoc, FORMAT_VERSION, ProjectDoc};
+use sway_graph::ComponentDocRegistry;
+use sway_graph::WireRegistry;
 
 pub fn to_document(world: &mut World) -> ProjectDoc {
     let empty = ProjectDoc {
@@ -126,12 +126,12 @@ pub fn to_ron(doc: &ProjectDoc) -> Result<String, ron::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::order::TopologyDirty;
-    use crate::project::apply::apply;
-    use crate::project::doc::parse;
-    use crate::project::registry::register_authorable;
-    use crate::registry_wires::register_wire;
-    use crate::test_wires::{FloatOut, Gain, GainFrom};
+    use sway_graph::TopologyDirty;
+    use crate::apply::apply;
+    use crate::doc::parse;
+    use sway_graph::register_authorable;
+    use sway_graph::register_wire;
+    use sway_graph::test_wires::{FloatOut, Gain, GainFrom};
     use bevy_app::App;
 
     fn round_trip_app() -> App {

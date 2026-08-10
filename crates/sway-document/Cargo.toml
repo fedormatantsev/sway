@@ -1,0 +1,20 @@
+[package]
+name = "sway-document"
+version.workspace = true
+edition.workspace = true
+
+# The on-disk format only. Depends on sway-graph for the registries it reads
+# (ComponentDocRegistry, WireRegistry) — never the other way round.
+[dependencies]
+bevy_app.workspace = true
+bevy_asset.workspace = true
+bevy_ecs.workspace = true
+bevy_math.workspace = true
+bevy_reflect.workspace = true
+sway-graph.workspace = true
+ron.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+bevy_app.workspace = true
+sway-graph = { workspace = true, features = ["test-wires"] }

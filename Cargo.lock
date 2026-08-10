@@ -5351,6 +5351,7 @@ dependencies = [
  "imaging",
  "kurbo",
  "peniko",
+ "sway-document",
  "sway-editor",
  "sway-geo",
  "sway-gpu",
@@ -5359,6 +5360,20 @@ dependencies = [
  "sway-nodes",
  "sway-runtime",
  "winit",
+]
+
+[[package]]
+name = "sway-document"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_asset",
+ "bevy_ecs",
+ "bevy_math",
+ "bevy_reflect",
+ "ron",
+ "serde",
+ "sway-graph",
 ]
 
 [[package]]
@@ -5415,14 +5430,11 @@ name = "sway-graph"
 version = "0.1.0"
 dependencies = [
  "bevy_app",
- "bevy_asset",
  "bevy_ecs",
  "bevy_math",
  "bevy_reflect",
  "bevy_time",
  "bevy_transform",
- "ron",
- "serde",
 ]
 
 [[package]]

@@ -13,7 +13,7 @@
 
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::prelude::*;
-use sway_graph::project::{DocId, to_document};
+use sway_document::{DocId, to_document};
 use sway_nodes::{AmplitudeFrom, MaterialFrom, MaterialOut, TranslationFrom, Vec3YFrom};
 
 const DEMO_DOCUMENT: &str = include_str!("../assets/demo.sway.ron");
@@ -35,15 +35,15 @@ fn entity_named(world: &mut World, id: &str) -> Entity {
 
 #[test]
 fn demo_document_parses() {
-    sway_graph::project::parse(DEMO_DOCUMENT).expect("assets/demo.sway.ron parses");
+    sway_document::parse(DEMO_DOCUMENT).expect("assets/demo.sway.ron parses");
 }
 
 #[test]
 fn demo_document_loads_and_reconciles_cleanly() {
-    let document = sway_graph::project::parse(DEMO_DOCUMENT).expect("parses");
+    let document = sway_document::parse(DEMO_DOCUMENT).expect("parses");
     let mut app = demo_app();
 
-    let diagnostics = sway_graph::project::apply(app.world_mut(), &document);
+    let diagnostics = sway_document::apply(app.world_mut(), &document);
 
     assert!(
         diagnostics.is_clean(),
@@ -108,12 +108,12 @@ fn demo_document_survives_a_reload() {
     // The hot-reload path, and the sharp case for Task 1's exemption: on the
     // second apply the required companions are already present and still
     // unnamed, which is exactly what the removal pass looks for.
-    let document = sway_graph::project::parse(DEMO_DOCUMENT).expect("parses");
+    let document = sway_document::parse(DEMO_DOCUMENT).expect("parses");
     let mut app = demo_app();
-    sway_graph::project::apply(app.world_mut(), &document);
+    sway_document::apply(app.world_mut(), &document);
     let cube = entity_named(app.world_mut(), "cubeA");
 
-    sway_graph::project::apply(app.world_mut(), &document);
+    sway_document::apply(app.world_mut(), &document);
 
     assert!(app.world().get::<Mesh3d>(cube).is_some(), "Mesh3d survived the reload");
     assert!(app.world().get::<Transform>(cube).is_some(), "Transform survived the reload");
@@ -121,13 +121,13 @@ fn demo_document_survives_a_reload() {
 
 #[test]
 fn demo_document_round_trips_through_the_world() {
-    let document = sway_graph::project::parse(DEMO_DOCUMENT).expect("parses");
+    let document = sway_document::parse(DEMO_DOCUMENT).expect("parses");
     let mut app = demo_app();
-    sway_graph::project::apply(app.world_mut(), &document);
+    sway_document::apply(app.world_mut(), &document);
     let once = to_document(app.world_mut());
 
     let mut second = demo_app();
-    let diagnostics = sway_graph::project::apply(second.world_mut(), &once);
+    let diagnostics = sway_document::apply(second.world_mut(), &once);
     assert!(diagnostics.is_clean(), "re-apply of emitted doc: {:?}", diagnostics.items);
     let twice = to_document(second.world_mut());
 
