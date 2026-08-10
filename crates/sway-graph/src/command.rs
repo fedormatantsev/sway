@@ -5,9 +5,12 @@
 //! knows the document format exists.
 
 use bevy_ecs::entity::Entity;
+use bevy_ecs::hierarchy::{ChildOf, Children};
+use bevy_ecs::reflect::{AppTypeRegistry, ReflectComponent};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use bevy_math::{Vec2, Vec3};
+use bevy_reflect::std_traits::ReflectDefault;
 use crossbeam_channel::Receiver;
 
 use crate::ctx::EditorPos;
@@ -78,12 +81,71 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
                 editor_pos.0 = *pos;
             }
         }
-        // Tasks 3-5 fill these in.
-        EditorCommand::Create { .. }
-        | EditorCommand::Delete { .. }
-        | EditorCommand::SetField { .. }
-        | EditorCommand::Connect { .. }
-        | EditorCommand::Disconnect { .. } => {}
+        EditorCommand::Create { component, pos } => {
+            let Some(registry) = world.get_resource::<crate::ComponentDocRegistry>() else {
+                return;
+            };
+            let Some(type_id) = registry.by_name(component).map(|entry| entry.type_id) else {
+                return; // an unregistered name is a no-op, not a panic
+            };
+            let Some(type_registry) = world.get_resource::<AppTypeRegistry>().cloned() else {
+                return;
+            };
+
+            let entity = world.spawn(EditorPos(*pos)).id();
+            {
+                // `AppTypeRegistry` is cloned above (it is an Arc) so the read
+                // guard does not borrow `world` while the world is mutated.
+                let registry = type_registry.read();
+                let Some(registration) = registry.get(type_id) else {
+                    return;
+                };
+                let (Some(reflect_component), Some(reflect_default)) = (
+                    registration.data::<ReflectComponent>(),
+                    registration.data::<ReflectDefault>(),
+                ) else {
+                    return;
+                };
+                let value = reflect_default.default();
+                let Ok(mut entity_mut) = world.get_entity_mut(entity) else {
+                    return;
+                };
+                reflect_component.insert(&mut entity_mut, value.as_partial_reflect(), &registry);
+            }
+            // `EditorPos` is inserted before the component so a component that
+            // `#[require]`s it does not overwrite the click position with a
+            // default. Re-assert it afterwards in case it did.
+            if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
+                entity_mut.insert(EditorPos(*pos));
+            }
+        }
+        EditorCommand::Delete { entity } => {
+            let Ok(entity_ref) = world.get_entity(*entity) else {
+                return;
+            };
+            let parent = entity_ref.get::<ChildOf>().map(|c| c.0);
+            let children: Vec<Entity> = entity_ref
+                .get::<Children>()
+                .map(|c| c.iter().copied().collect())
+                .unwrap_or_default();
+
+            for child in children {
+                let Ok(mut child_mut) = world.get_entity_mut(child) else {
+                    continue;
+                };
+                match parent {
+                    Some(grandparent) => {
+                        child_mut.insert(ChildOf(grandparent));
+                    }
+                    None => {
+                        child_mut.remove::<ChildOf>();
+                    }
+                }
+            }
+            world.despawn(*entity);
+        }
+        // Tasks 4-5 fill these in.
+        EditorCommand::SetField { .. } | EditorCommand::Connect { .. } | EditorCommand::Disconnect { .. } => {}
     }
 }
 
@@ -149,5 +211,112 @@ mod tests {
 
         tx.send(EditorCommand::MoveNode { entity, pos: Vec2::ONE }).unwrap();
         app.update();
+    }
+
+    use bevy_ecs::component::Component;
+    use bevy_ecs::hierarchy::ChildOf;
+    use bevy_reflect::Reflect;
+
+    #[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
+    #[reflect(Component, Default, PartialEq)]
+    struct Blip(f32);
+
+    #[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
+    #[reflect(Component, Default, PartialEq)]
+    #[require(Blip, EditorPos)]
+    struct Widget { size: f32 }
+
+    fn registry_app() -> App {
+        let (_, rx) = crossbeam_channel::unbounded();
+        let mut app = App::new();
+        app.add_plugins(bevy_time::TimePlugin)
+            .insert_resource(Time::<Fixed>::from_hz(120.0))
+            .insert_resource(Authoring)
+            .insert_resource(EditorRx(rx))
+            .add_plugins(WiresPlugin);
+        crate::register_authorable::<Widget>(&mut app, "Widget");
+        crate::register_authorable::<Blip>(&mut app, "Blip");
+        crate::register_authorable::<EditorPos>(&mut app, "EditorPos");
+        app
+    }
+
+    #[test]
+    fn create_spawns_the_component_its_requires_and_an_editor_pos() {
+        let mut app = registry_app();
+
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::Create { component: "Widget", pos: Vec2::new(12.0, 34.0) },
+        );
+
+        let entity = app
+            .world_mut()
+            .query_filtered::<Entity, bevy_ecs::query::With<Widget>>()
+            .single(app.world())
+            .expect("exactly one Widget was created");
+        assert!(app.world().get::<Blip>(entity).is_some(), "#[require] supplied Blip");
+        assert_eq!(
+            app.world().get::<EditorPos>(entity).map(|p| p.0),
+            Some(Vec2::new(12.0, 34.0)),
+            "the palette's click position becomes the canvas position",
+        );
+    }
+
+    #[test]
+    fn create_uses_the_components_reflect_default() {
+        let mut app = registry_app();
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::Create { component: "Widget", pos: Vec2::ZERO },
+        );
+        let entity = app
+            .world_mut()
+            .query_filtered::<Entity, bevy_ecs::query::With<Widget>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(app.world().get::<Widget>(entity), Some(&Widget::default()));
+    }
+
+    #[test]
+    fn create_with_an_unregistered_name_does_nothing() {
+        let mut app = registry_app();
+        let before = app.world().entities().len();
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::Create { component: "Nonexistent", pos: Vec2::ZERO },
+        );
+        assert_eq!(app.world().entities().len(), before);
+    }
+
+    #[test]
+    fn delete_reparents_children_to_the_grandparent_before_despawning() {
+        // Bevy's despawn cascades through Children, so a child would be
+        // destroyed with its parent unless it is moved first.
+        let mut app = registry_app();
+        let grandparent = app.world_mut().spawn(EditorPos(Vec2::ZERO)).id();
+        let parent = app.world_mut().spawn((EditorPos(Vec2::ZERO), ChildOf(grandparent))).id();
+        let child = app.world_mut().spawn((EditorPos(Vec2::ZERO), ChildOf(parent))).id();
+
+        apply_editor_command(app.world_mut(), &EditorCommand::Delete { entity: parent });
+
+        assert!(app.world().get_entity(parent).is_err(), "the target despawned");
+        assert!(app.world().get_entity(child).is_ok(), "the child survived");
+        assert_eq!(
+            app.world().get::<ChildOf>(child).map(|c| c.0),
+            Some(grandparent),
+            "the child was reparented to its grandparent",
+        );
+    }
+
+    #[test]
+    fn deleting_a_root_makes_its_children_roots() {
+        let mut app = registry_app();
+        let parent = app.world_mut().spawn(EditorPos(Vec2::ZERO)).id();
+        let child = app.world_mut().spawn((EditorPos(Vec2::ZERO), ChildOf(parent))).id();
+
+        apply_editor_command(app.world_mut(), &EditorCommand::Delete { entity: parent });
+
+        assert!(app.world().get_entity(child).is_ok());
+        assert!(app.world().get::<ChildOf>(child).is_none());
     }
 }
