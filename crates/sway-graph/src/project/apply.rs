@@ -7,6 +7,7 @@
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
 
+use bevy_ecs::component::ComponentId;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::name::Name;
 use bevy_ecs::reflect::{AppTypeRegistry, ReflectComponent};
@@ -177,13 +178,40 @@ fn apply_components(
         reflect_component.insert(&mut entity_mut, &*value, type_registry);
     }
 
-    // Anything registered-authorable, present, and absent from the document
-    // is removed — including components the entity only acquired implicitly
-    // (Bevy required-components, a runtime system). `Transform` is the
-    // sharpest case: any doc-owned entity that picks one up outside the
-    // document loses it on the next reload. Spec §4.1; intended.
+    // A component the document did not name is removed below — but a
+    // `#[require]` companion was never the document's to name. `Lfo` carries
+    // `FloatOut` because `Lfo` requires it (roadmap D4), and a document that
+    // names only `Lfo` must still load a node with an outlet. So anything
+    // required, transitively, by a component this document named on this
+    // entity is exempt. `ComponentInfo::required_components()` reports the
+    // transitive set, so a `MeshAsset` that requires `Mesh3d` exempts
+    // `Transform` too.
+    let mut required_by_named: Vec<ComponentId> = Vec::new();
+    for type_id in &written {
+        let Some(component_id) = world.components().get_id(*type_id) else {
+            continue;
+        };
+        let Some(info) = world.components().get_info(component_id) else {
+            continue;
+        };
+        required_by_named.extend(info.required_components().iter_ids());
+    }
+
+    // Anything registered-authorable, present, absent from the document, and
+    // not required by something the document did name is removed — including
+    // components the entity acquired from a runtime system. `Transform` is the
+    // sharpest case: a doc-owned entity that picks one up outside the document,
+    // and whose named components do not require one, loses it on the next
+    // reload. Spec §4.1; intended.
     for entry in &components.entries {
         if written.contains(&entry.type_id) {
+            continue;
+        }
+        if world
+            .components()
+            .get_id(entry.type_id)
+            .is_some_and(|id| required_by_named.contains(&id))
+        {
             continue;
         }
         let Some(registration) = type_registry.get(entry.type_id) else {
@@ -420,6 +448,24 @@ mod tests {
         }
     }
 
+    #[derive(Component, Reflect, Debug, Default, Clone, Copy, PartialEq)]
+    #[reflect(Component, Default, PartialEq)]
+    struct Outlet(f32);
+
+    /// Stands in for `Lfo`, which requires `FloatOut` (roadmap D4).
+    #[derive(Component, Reflect, Debug, Default, Clone, Copy, PartialEq)]
+    #[reflect(Component, Default, PartialEq)]
+    #[require(Outlet)]
+    struct Emitter;
+
+    fn require_app() -> App {
+        let mut app = App::new();
+        register_authorable::<Emitter>(&mut app, "Emitter");
+        register_authorable::<Outlet>(&mut app, "Outlet");
+        register_authorable::<Osc>(&mut app, "Osc");
+        app
+    }
+
     /// An app with `Osc` authorable, which is all the component pass needs.
     fn doc_app() -> App {
         let mut app = App::new();
@@ -514,6 +560,50 @@ mod tests {
         apply(app.world_mut(), &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#));
 
         assert!(app.world().get::<Osc>(entity).is_none());
+    }
+
+    #[test]
+    fn a_required_companion_survives_a_document_that_does_not_name_it() {
+        // D4: the palette spawns one component and Bevy materialises the rest,
+        // so a document naming `Emitter` alone must still load an entity with
+        // its outlet attached. Without the exemption the removal pass strips
+        // `Outlet` right back off again and the node has no output.
+        let mut app = require_app();
+        let text = r#"Project(version: 1, entities: [
+            Entity(id: "a", components: { "Emitter": () })
+        ])"#;
+
+        apply(app.world_mut(), &doc(text));
+        let entity = entity_of(app.world_mut(), "a").expect("spawned");
+        assert!(app.world().get::<Outlet>(entity).is_some(), "first load");
+
+        // A reload is the sharper case: now the component is already present
+        // and unnamed, which is exactly what the removal pass looks for.
+        apply(app.world_mut(), &doc(text));
+        assert!(app.world().get::<Outlet>(entity).is_some(), "after reload");
+    }
+
+    #[test]
+    fn a_component_no_named_component_requires_is_still_removed() {
+        // The exemption must be narrow: only what a *named* component pulls in.
+        let mut app = require_app();
+        apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "a", components: { "Emitter": (), "Osc": (hz: 3.0) })
+            ])"#),
+        );
+        let entity = entity_of(app.world_mut(), "a").expect("spawned");
+
+        apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [
+                Entity(id: "a", components: { "Emitter": () })
+            ])"#),
+        );
+
+        assert!(app.world().get::<Outlet>(entity).is_some(), "required, kept");
+        assert!(app.world().get::<Osc>(entity).is_none(), "not required, dropped");
     }
 
     #[test]
