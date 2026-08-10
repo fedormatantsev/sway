@@ -72,7 +72,8 @@ impl Wire for AmplitudeFrom {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spatial::TranslationYFrom;
+    use crate::spatial::TranslationFrom;
+    use crate::value::{Vec3Value, Vec3YFrom};
     use sway_graph::WiresPlugin;
 
     /// At beat 0 with `phase = 0.25`, a sine LFO's phase is exactly 0.25 and
@@ -96,17 +97,19 @@ mod tests {
 
     #[test]
     fn a_modulated_lfo_reaches_a_transform_in_one_tick() {
-        // The chain the design turns on:
-        //   Lfo A -> Lfo B.amplitude -> B computes -> Transform.translation.y
+        // The chain the design turns on, now one node longer (D5):
+        //   Lfo A -> Lfo B.amplitude -> B computes -> Vec3.y -> Transform
         // A's output is 1.0 * 0.5 = 0.5, which becomes B's amplitude, so B's
-        // output is 1.0 * 0.5 = 0.5. If the order were wrong, B would still
-        // hold its authored amplitude of 0.0 and y would be 0.0.
+        // output is 0.5, which becomes the vector's y. If the order were wrong,
+        // B would still hold its authored amplitude of 0.0 and y would be 0.0.
         let mut app = slice_app();
-        let a = app.world_mut().spawn((lfo(0.25, 0.5), FloatOut::default())).id();
-        let b = app.world_mut().spawn((lfo(0.25, 0.0), FloatOut::default())).id();
+        let a = app.world_mut().spawn(lfo(0.25, 0.5)).id();
+        let b = app.world_mut().spawn(lfo(0.25, 0.0)).id();
+        let vector = app.world_mut().spawn(Vec3Value::default()).id();
         let mesh = app.world_mut().spawn(Transform::default()).id();
         app.world_mut().entity_mut(b).insert(AmplitudeFrom(a));
-        app.world_mut().entity_mut(mesh).insert(TranslationYFrom(b));
+        app.world_mut().entity_mut(vector).insert(Vec3YFrom(b));
+        app.world_mut().entity_mut(mesh).insert(TranslationFrom(vector));
 
         app.update();
 
@@ -122,11 +125,13 @@ mod tests {
     #[test]
     fn one_producer_fans_out_to_two_consumers() {
         let mut app = slice_app();
-        let a = app.world_mut().spawn((lfo(0.25, 0.5), FloatOut::default())).id();
+        let a = app.world_mut().spawn(lfo(0.25, 0.5)).id();
+        let vector = app.world_mut().spawn(Vec3Value::default()).id();
+        app.world_mut().entity_mut(vector).insert(Vec3YFrom(a));
         let x = app.world_mut().spawn(Transform::default()).id();
         let y = app.world_mut().spawn(Transform::default()).id();
-        app.world_mut().entity_mut(x).insert(TranslationYFrom(a));
-        app.world_mut().entity_mut(y).insert(TranslationYFrom(a));
+        app.world_mut().entity_mut(x).insert(TranslationFrom(vector));
+        app.world_mut().entity_mut(y).insert(TranslationFrom(vector));
 
         app.update();
 

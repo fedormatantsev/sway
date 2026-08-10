@@ -12,15 +12,15 @@
 //! file, and asserts the resulting world against the document's own
 //! comment-drawn diagram:
 //!
-//!   Lfo A ──amplitude──▶ Lfo B ──translation.y──▶ cube B
-//!         └─translation.y──▶ cube A            (fan-out)
+//!   Lfo A ──amplitude──▶ Lfo B ──vec3.y──▶ vec3B ──translation──▶ cube B
+//!         └──vec3.y──▶ vec3A ──translation──▶ cube A
 //!   group ──parent──▶ cube A, cube B
 
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::prelude::{App, Entity};
 use sway_app::demo_assets::DemoAssetsPlugin;
 use sway_graph::project::{DocId, to_document};
-use sway_nodes::{AmplitudeFrom, TranslationYFrom};
+use sway_nodes::{AmplitudeFrom, TranslationFrom, Vec3YFrom};
 
 const DEMO_DOCUMENT: &str = include_str!("../assets/demo.sway.ron");
 
@@ -68,8 +68,10 @@ fn demo_document_loads_and_reconciles_cleanly() {
             "group".to_string(),
             "lfoA".to_string(),
             "lfoB".to_string(),
+            "vec3A".to_string(),
+            "vec3B".to_string(),
         ],
-        "exactly the demo's 5 entities should carry a DocId"
+        "exactly the demo's 7 entities should carry a DocId"
     );
 
     let lfo_a = entity_named(world, "lfoA");
@@ -78,11 +80,15 @@ fn demo_document_loads_and_reconciles_cleanly() {
     let cube_a = entity_named(world, "cubeA");
     let cube_b = entity_named(world, "cubeB");
 
-    // Four wires: amplitude, two translation.y, and two parent wires —
-    // five Relationship components on the world, matching the document.
+    // Six wires: amplitude, two vec3.y, two translation, and two parent
+    // wires — matching the document.
     assert_eq!(world.get::<AmplitudeFrom>(lfo_b).map(|w| w.0), Some(lfo_a));
-    assert_eq!(world.get::<TranslationYFrom>(cube_a).map(|w| w.0), Some(lfo_a));
-    assert_eq!(world.get::<TranslationYFrom>(cube_b).map(|w| w.0), Some(lfo_b));
+    let vec3_a = entity_named(world, "vec3A");
+    let vec3_b = entity_named(world, "vec3B");
+    assert_eq!(world.get::<Vec3YFrom>(vec3_a).map(|w| w.0), Some(lfo_a));
+    assert_eq!(world.get::<Vec3YFrom>(vec3_b).map(|w| w.0), Some(lfo_b));
+    assert_eq!(world.get::<TranslationFrom>(cube_a).map(|w| w.0), Some(vec3_a));
+    assert_eq!(world.get::<TranslationFrom>(cube_b).map(|w| w.0), Some(vec3_b));
     assert_eq!(world.get::<ChildOf>(cube_a).map(|c| c.parent()), Some(group));
     assert_eq!(world.get::<ChildOf>(cube_b).map(|c| c.parent()), Some(group));
 }

@@ -1,7 +1,7 @@
 // The wire-model demo, as a document.
 //
-//   Lfo A ──amplitude──▶ Lfo B ──translation.y──▶ cube B
-//         └─translation.y──▶ cube A            (fan-out)
+//   Lfo A ──amplitude──▶ Lfo B ──vec3.y──▶ vec3B ──translation──▶ cube B
+//         └──vec3.y──▶ vec3A ──translation──▶ cube A
 //   group ──parent──▶ cube A, cube B
 //
 // The cubes' mesh and material are not here: a Handle is asset flow, which is
@@ -32,22 +32,38 @@ Project(
             components: { "Transform": (), "EditorPos": ((80.0, 200.0)) },
         ),
         Entity(
+            id: "vec3A",
+            components: {
+                "Vec3": (x: -0.8, y: 0.0, z: 0.0),
+                "EditorPos": ((-40.0, 40.0)),
+            },
+            wires: { "vec3.y": "lfoA" },
+        ),
+        Entity(
+            id: "vec3B",
+            components: {
+                "Vec3": (x: 0.8, y: 0.0, z: 0.0),
+                "EditorPos": ((-40.0, 120.0)),
+            },
+            wires: { "vec3.y": "lfoB" },
+        ),
+        Entity(
             id: "cubeA",
             components: {
-                "Transform": (translation: (-0.8, 0.0, 0.0)),
+                "Transform": (),
                 "DemoCube": (),
-                "EditorPos": ((80.0, 40.0)),
+                "EditorPos": ((180.0, 40.0)),
             },
-            wires: { "translation.y": "lfoA", "parent": "group" },
+            wires: { "translation": "vec3A", "parent": "group" },
         ),
         Entity(
             id: "cubeB",
             components: {
-                "Transform": (translation: (0.8, 0.0, 0.0)),
+                "Transform": (),
                 "DemoCube": (),
-                "EditorPos": ((80.0, 120.0)),
+                "EditorPos": ((180.0, 120.0)),
             },
-            wires: { "translation.y": "lfoB", "parent": "group" },
+            wires: { "translation": "vec3B", "parent": "group" },
         ),
     ],
 )

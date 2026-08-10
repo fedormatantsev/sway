@@ -36,7 +36,9 @@ impl bevy_app::Plugin for WireNodesPlugin {
     fn build(&self, app: &mut bevy_app::App) {
         sway_graph::register_behaviour::<Lfo>(app, lfo_behaviour);
         sway_graph::register_wire::<AmplitudeFrom>(app);
-        sway_graph::register_wire::<TranslationYFrom>(app);
+        sway_graph::register_wire::<TranslationFrom>(app);
+        sway_graph::register_wire::<RotationFrom>(app);
+        sway_graph::register_wire::<ScaleFrom>(app);
         sway_graph::register_wire::<bevy::prelude::ChildOf>(app);
         sway_graph::register_behaviour::<Vec3Value>(app, vec3_behaviour);
         sway_graph::register_wire::<Vec3XFrom>(app);
