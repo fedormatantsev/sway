@@ -11,6 +11,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use bevy_math::{Vec2, Vec3};
 use bevy_reflect::std_traits::ReflectDefault;
+use bevy_reflect::{PartialReflect, ReflectMut, ReflectRef};
 use crossbeam_channel::Receiver;
 
 use crate::ctx::EditorPos;
@@ -144,8 +145,92 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
             }
             world.despawn(*entity);
         }
-        // Tasks 4-5 fill these in.
-        EditorCommand::SetField { .. } | EditorCommand::Connect { .. } | EditorCommand::Disconnect { .. } => {}
+        EditorCommand::SetField { entity, component, field, value } => {
+            let Some(type_id) = world
+                .get_resource::<crate::ComponentDocRegistry>()
+                .and_then(|r| r.by_name(component))
+                .map(|entry| entry.type_id)
+            else {
+                return;
+            };
+            let Some(type_registry) = world.get_resource::<AppTypeRegistry>().cloned() else {
+                return;
+            };
+            let registry = type_registry.read();
+            let Some(reflect_component) =
+                registry.get(type_id).and_then(|r| r.data::<ReflectComponent>())
+            else {
+                return;
+            };
+            let Ok(entity_ref) = world.get_entity(*entity) else {
+                return;
+            };
+
+            // Reach the field through an immutable reflect first: taking a
+            // `Mut` via `reflect_mut` marks `Changed` on deref regardless of
+            // whether a write follows, so the equal-value no-op has to be
+            // decided before any mutable borrow is taken.
+            let Some(reflected) = reflect_component.reflect(entity_ref) else {
+                return;
+            };
+            let ReflectRef::Struct(target) = reflected.reflect_ref() else {
+                return;
+            };
+            let Some(existing) = target.field(field) else {
+                return;
+            };
+
+            let replacement: Box<dyn PartialReflect> = match value {
+                FieldValue::Float(v) => Box::new(*v),
+                FieldValue::Int(v) => Box::new(*v),
+                FieldValue::Bool(v) => Box::new(*v),
+                FieldValue::Str(v) => Box::new(v.clone()),
+                FieldValue::Vec3(v) => Box::new(*v),
+                FieldValue::Enum(variant) => {
+                    // A unit variant is addressed by name against the field's
+                    // own static type info, so the caller never needs the
+                    // type path, and the variant name is validated to exist
+                    // before a `DynamicEnum` naming it is ever constructed.
+                    let Some(bevy_reflect::TypeInfo::Enum(enum_info)) =
+                        existing.get_represented_type_info()
+                    else {
+                        return;
+                    };
+                    if !enum_info.contains_variant(variant.as_str()) {
+                        return;
+                    }
+                    // `DynamicEnum` names the variant directly; applying it to
+                    // the concrete field converts it back.
+                    Box::new(bevy_reflect::enums::DynamicEnum::new(
+                        variant.clone(),
+                        bevy_reflect::enums::DynamicVariant::Unit,
+                    ))
+                }
+            };
+
+            // Type mismatch and equal-value are both no-ops.
+            if existing.reflect_partial_eq(replacement.as_ref()) == Some(true) {
+                return;
+            }
+
+            let Ok(entity_mut) = world.get_entity_mut(*entity) else {
+                return;
+            };
+            let Some(mut reflected) = reflect_component.reflect_mut(entity_mut) else {
+                return;
+            };
+            let ReflectMut::Struct(target) = reflected.reflect_mut() else {
+                return;
+            };
+            let Some(existing) = target.field_mut(field) else {
+                return;
+            };
+            // A failed apply here would mean the equal-value check above
+            // passed a value `try_apply` then rejects; nothing else follows
+            // in this arm, so the error is simply dropped.
+            let _ = existing.try_apply(replacement.as_ref());
+        }
+        EditorCommand::Connect { .. } | EditorCommand::Disconnect { .. } => {}
     }
 }
 
@@ -318,5 +403,87 @@ mod tests {
 
         assert!(app.world().get_entity(child).is_ok());
         assert!(app.world().get::<ChildOf>(child).is_none());
+    }
+
+    #[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
+    #[reflect(Component, Default, PartialEq)]
+    struct Knobs { gain: f32, steps: i64, on: bool }
+
+    fn knobs_app() -> App {
+        let mut app = registry_app();
+        crate::register_authorable::<Knobs>(&mut app, "Knobs");
+        app
+    }
+
+    #[test]
+    fn set_field_writes_a_float_through_reflection() {
+        let mut app = knobs_app();
+        let entity = app.world_mut().spawn(Knobs::default()).id();
+
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::SetField {
+                entity,
+                component: "Knobs",
+                field: "gain".to_string(),
+                value: FieldValue::Float(0.75),
+            },
+        );
+
+        assert_eq!(app.world().get::<Knobs>(entity).map(|k| k.gain), Some(0.75));
+    }
+
+    #[test]
+    fn set_field_writes_ints_and_bools() {
+        let mut app = knobs_app();
+        let entity = app.world_mut().spawn(Knobs::default()).id();
+
+        apply_editor_command(app.world_mut(), &EditorCommand::SetField {
+            entity, component: "Knobs", field: "steps".to_string(), value: FieldValue::Int(9),
+        });
+        apply_editor_command(app.world_mut(), &EditorCommand::SetField {
+            entity, component: "Knobs", field: "on".to_string(), value: FieldValue::Bool(true),
+        });
+
+        let knobs = app.world().get::<Knobs>(entity).copied().unwrap();
+        assert_eq!(knobs.steps, 9);
+        assert!(knobs.on);
+    }
+
+    #[test]
+    fn writing_an_equal_value_does_not_mark_the_component_changed() {
+        let mut app = knobs_app();
+        let entity = app.world_mut().spawn(Knobs { gain: 0.5, ..Default::default() }).id();
+        app.update();
+
+        apply_editor_command(app.world_mut(), &EditorCommand::SetField {
+            entity, component: "Knobs", field: "gain".to_string(), value: FieldValue::Float(0.5),
+        });
+
+        assert!(!app.world().entity(entity).get_ref::<Knobs>().unwrap().is_changed());
+    }
+
+    #[test]
+    fn a_type_mismatch_leaves_the_field_alone() {
+        let mut app = knobs_app();
+        let entity = app.world_mut().spawn(Knobs { gain: 0.25, ..Default::default() }).id();
+
+        apply_editor_command(app.world_mut(), &EditorCommand::SetField {
+            entity,
+            component: "Knobs",
+            field: "gain".to_string(),
+            value: FieldValue::Bool(true),
+        });
+
+        assert_eq!(app.world().get::<Knobs>(entity).map(|k| k.gain), Some(0.25));
+    }
+
+    #[test]
+    fn an_unknown_field_name_is_ignored() {
+        let mut app = knobs_app();
+        let entity = app.world_mut().spawn(Knobs::default()).id();
+        apply_editor_command(app.world_mut(), &EditorCommand::SetField {
+            entity, component: "Knobs", field: "nope".to_string(), value: FieldValue::Float(1.0),
+        });
     }
 }
