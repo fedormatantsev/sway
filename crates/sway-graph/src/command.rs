@@ -230,7 +230,31 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
             // in this arm, so the error is simply dropped.
             let _ = existing.try_apply(replacement.as_ref());
         }
-        EditorCommand::Connect { .. } | EditorCommand::Disconnect { .. } => {}
+        EditorCommand::Connect { wire, src, dst } => {
+            let Some((insert, has_source, has_target)) = world
+                .get_resource::<crate::WireRegistry>()
+                .and_then(|r| r.entries.iter().find(|e| e.name == *wire))
+                .map(|e| (e.insert, e.has_source, e.has_target))
+            else {
+                return;
+            };
+            // The editor filters illegal drops before sending, but a command
+            // is data and may arrive stale — the world enforces it too.
+            if !has_source(world, *src) || !has_target(world, *dst) {
+                return;
+            }
+            insert(world, *dst, *src);
+        }
+        EditorCommand::Disconnect { wire, dst } => {
+            let Some(remove) = world
+                .get_resource::<crate::WireRegistry>()
+                .and_then(|r| r.entries.iter().find(|e| e.name == *wire))
+                .map(|e| e.remove)
+            else {
+                return;
+            };
+            remove(world, *dst);
+        }
     }
 }
 
@@ -485,5 +509,102 @@ mod tests {
         apply_editor_command(app.world_mut(), &EditorCommand::SetField {
             entity, component: "Knobs", field: "nope".to_string(), value: FieldValue::Float(1.0),
         });
+    }
+
+    use crate::test_wires::{GainFrom, spawn_float, spawn_gain};
+
+    fn wired_app() -> App {
+        let mut app = registry_app();
+        crate::register_wire::<GainFrom>(&mut app);
+        app
+    }
+
+    #[test]
+    fn connect_inserts_the_wire() {
+        let mut app = wired_app();
+        let src = spawn_float(app.world_mut(), 1.0);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::Connect { wire: "factor", src, dst },
+        );
+
+        assert_eq!(app.world().get::<GainFrom>(dst).map(|w| w.0), Some(src));
+    }
+
+    #[test]
+    fn connect_replaces_an_existing_source_without_a_disconnect_first() {
+        let mut app = wired_app();
+        let first = spawn_float(app.world_mut(), 1.0);
+        let second = spawn_float(app.world_mut(), 2.0);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+
+        apply_editor_command(app.world_mut(), &EditorCommand::Connect { wire: "factor", src: first, dst });
+        apply_editor_command(app.world_mut(), &EditorCommand::Connect { wire: "factor", src: second, dst });
+
+        assert_eq!(app.world().get::<GainFrom>(dst).map(|w| w.0), Some(second));
+    }
+
+    #[test]
+    fn connect_refuses_a_source_without_the_source_component() {
+        let mut app = wired_app();
+        let not_a_source = app.world_mut().spawn(EditorPos(Vec2::ZERO)).id();
+        let dst = spawn_gain(app.world_mut(), 0.0);
+
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::Connect { wire: "factor", src: not_a_source, dst },
+        );
+
+        assert!(app.world().get::<GainFrom>(dst).is_none(), "legality is enforced world-side too");
+    }
+
+    #[test]
+    fn connect_refuses_a_target_without_the_target_component() {
+        let mut app = wired_app();
+        let src = spawn_float(app.world_mut(), 1.0);
+        let not_a_target = app.world_mut().spawn(EditorPos(Vec2::ZERO)).id();
+
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::Connect { wire: "factor", src, dst: not_a_target },
+        );
+
+        assert!(app.world().get::<GainFrom>(not_a_target).is_none());
+    }
+
+    #[test]
+    fn disconnect_removes_the_wire_and_is_a_no_op_when_absent() {
+        let mut app = wired_app();
+        let src = spawn_float(app.world_mut(), 1.0);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+        apply_editor_command(app.world_mut(), &EditorCommand::Connect { wire: "factor", src, dst });
+
+        apply_editor_command(app.world_mut(), &EditorCommand::Disconnect { wire: "factor", dst });
+        assert!(app.world().get::<GainFrom>(dst).is_none());
+
+        apply_editor_command(app.world_mut(), &EditorCommand::Disconnect { wire: "factor", dst });
+    }
+
+    #[test]
+    fn a_connect_marks_the_topology_dirty_for_the_next_rebuild() {
+        // The ordering guarantee M6-1 rests on: apply_editor_commands runs
+        // before WatchSet, so the watch sees this frame's insert.
+        let (mut app, tx) = command_app();
+        crate::register_wire::<GainFrom>(&mut app);
+        let src = spawn_float(app.world_mut(), 1.0);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+        app.update();
+        app.update();
+
+        tx.send(EditorCommand::Connect { wire: "factor", src, dst }).unwrap();
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<crate::GraphOrder>().steps.len(),
+            1,
+            "the new edge reached the order in the same frame the command arrived",
+        );
     }
 }
