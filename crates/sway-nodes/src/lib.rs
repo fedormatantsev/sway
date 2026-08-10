@@ -4,12 +4,12 @@ mod beat;
 mod envelope;
 mod field_wire;
 mod lfo;
-mod material;
 mod math;
 mod mesh_asset;
 mod midi;
 mod osc;
 mod outputs;
+mod pbr_material;
 mod scene;
 mod spatial;
 mod transport;
@@ -20,12 +20,12 @@ mod wire_testing;
 pub use beat::*;
 pub use envelope::*;
 pub use lfo::*;
-pub use material::*;
 pub use math::*;
 pub use mesh_asset::*;
 pub use midi::*;
 pub use osc::*;
 pub use outputs::*;
+pub use pbr_material::*;
 pub use scene::*;
 pub use spatial::*;
 pub use transport::*;
@@ -69,6 +69,15 @@ impl bevy_app::Plugin for WireNodesPlugin {
             bevy_app::Update,
             load_mesh_assets.run_if(bevy_ecs::prelude::resource_exists::<bevy::prelude::AssetServer>),
         );
+
+        sway_graph::register_wire::<MaterialFrom>(app);
+        sway_graph::register_authorable::<PbrMaterial>(app, "PbrMaterial");
+        app.add_systems(
+            bevy_app::Update,
+            sync_pbr_materials.run_if(bevy_ecs::prelude::resource_exists::<
+                bevy::prelude::Assets<bevy::prelude::StandardMaterial>,
+            >),
+        );
     }
 }
 
@@ -96,8 +105,8 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "EditorPos", "FloatOut", "Lfo", "Math", "MeshAsset", "Remap", "Transform", "Vec3",
-                "Vec3Out"
+                "EditorPos", "FloatOut", "Lfo", "Math", "MeshAsset", "PbrMaterial", "Remap",
+                "Transform", "Vec3", "Vec3Out"
             ]
         );
     }
