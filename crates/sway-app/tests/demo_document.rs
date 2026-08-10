@@ -1,36 +1,30 @@
-//! The demo document's only automated coverage. Design spec §7 test 6 calls
-//! for verifying the demo document loads into the expected world shape; up
-//! to now nothing parsed or applied `assets/demo.sway.ron` at all, so a
-//! renamed authorable short name, a malformed payload, or a dropped
-//! `register_authorable`/`register_wire` call in `sway-nodes`'s
-//! `WireNodesPlugin` would leave the whole suite green and only surface when
-//! a human ran the app.
+//! The demo document's only non-visual coverage.
 //!
-//! This mirrors what `sway-app/src/main.rs` actually wires up for the demo
-//! (`sway_graph::WiresPlugin`, `sway_nodes::WireNodesPlugin`,
-//! `demo_assets::DemoAssetsPlugin`), then parses and applies the real asset
-//! file, and asserts the resulting world against the document's own
-//! comment-drawn diagram:
+//! Parses and applies the real `assets/demo.sway.ron`, then asserts the world
+//! against the document's own comment-drawn diagram. A renamed short name, a
+//! malformed payload, or a dropped `register_authorable`/`register_wire` call
+//! would otherwise leave the suite green and only surface when a human ran the
+//! app.
 //!
-//!   Lfo A ──amplitude──▶ Lfo B ──vec3.y──▶ vec3B ──translation──▶ cube B
-//!         └──vec3.y──▶ vec3A ──translation──▶ cube A
-//!   group ──parent──▶ cube A, cube B
+//!   lfoA ──amplitude──▶ lfoB
+//!   lfoA ──vec3.y────▶ vec3A ──translation──▶ cubeA ─┐
+//!   lfoB ──vec3.y────▶ vec3B ──translation──▶ cubeB ─┤─parent─▶ group
+//!   mat  ──material──▶ cubeA, cubeB
 
 use bevy::ecs::hierarchy::ChildOf;
-use bevy::prelude::{App, Entity};
-use sway_app::demo_assets::DemoAssetsPlugin;
+use bevy::prelude::*;
 use sway_graph::project::{DocId, to_document};
-use sway_nodes::{AmplitudeFrom, TranslationFrom, Vec3YFrom};
+use sway_nodes::{AmplitudeFrom, MaterialFrom, MaterialOut, TranslationFrom, Vec3YFrom};
 
 const DEMO_DOCUMENT: &str = include_str!("../assets/demo.sway.ron");
 
 fn demo_app() -> App {
     let mut app = App::new();
-    app.add_plugins((sway_graph::WiresPlugin, sway_nodes::WireNodesPlugin, DemoAssetsPlugin));
+    app.add_plugins((sway_graph::WiresPlugin, sway_nodes::WireNodesPlugin));
     app
 }
 
-fn entity_named(world: &mut bevy::ecs::world::World, id: &str) -> Entity {
+fn entity_named(world: &mut World, id: &str) -> Entity {
     world
         .query::<(Entity, &DocId)>()
         .iter(world)
@@ -46,7 +40,7 @@ fn demo_document_parses() {
 
 #[test]
 fn demo_document_loads_and_reconciles_cleanly() {
-    let document = sway_graph::project::parse(DEMO_DOCUMENT).expect("assets/demo.sway.ron parses");
+    let document = sway_graph::project::parse(DEMO_DOCUMENT).expect("parses");
     let mut app = demo_app();
 
     let diagnostics = sway_graph::project::apply(app.world_mut(), &document);
@@ -63,41 +57,70 @@ fn demo_document_loads_and_reconciles_cleanly() {
     assert_eq!(
         ids,
         vec![
+            "camera".to_string(),
             "cubeA".to_string(),
             "cubeB".to_string(),
             "group".to_string(),
             "lfoA".to_string(),
             "lfoB".to_string(),
+            "mat".to_string(),
+            "sun".to_string(),
             "vec3A".to_string(),
             "vec3B".to_string(),
         ],
-        "exactly the demo's 7 entities should carry a DocId"
+        "exactly the demo's 10 entities should carry a DocId"
     );
 
     let lfo_a = entity_named(world, "lfoA");
     let lfo_b = entity_named(world, "lfoB");
-    let group = entity_named(world, "group");
-    let cube_a = entity_named(world, "cubeA");
-    let cube_b = entity_named(world, "cubeB");
-
-    // Six wires: amplitude, two vec3.y, two translation, and two parent
-    // wires — matching the document.
-    assert_eq!(world.get::<AmplitudeFrom>(lfo_b).map(|w| w.0), Some(lfo_a));
     let vec3_a = entity_named(world, "vec3A");
     let vec3_b = entity_named(world, "vec3B");
+    let cube_a = entity_named(world, "cubeA");
+    let cube_b = entity_named(world, "cubeB");
+    let group = entity_named(world, "group");
+    let material = entity_named(world, "mat");
+    let camera = entity_named(world, "camera");
+    let sun = entity_named(world, "sun");
+
+    assert_eq!(world.get::<AmplitudeFrom>(lfo_b).map(|w| w.0), Some(lfo_a));
     assert_eq!(world.get::<Vec3YFrom>(vec3_a).map(|w| w.0), Some(lfo_a));
     assert_eq!(world.get::<Vec3YFrom>(vec3_b).map(|w| w.0), Some(lfo_b));
     assert_eq!(world.get::<TranslationFrom>(cube_a).map(|w| w.0), Some(vec3_a));
     assert_eq!(world.get::<TranslationFrom>(cube_b).map(|w| w.0), Some(vec3_b));
+    assert_eq!(world.get::<MaterialFrom>(cube_a).map(|w| w.0), Some(material));
+    assert_eq!(world.get::<MaterialFrom>(cube_b).map(|w| w.0), Some(material));
     assert_eq!(world.get::<ChildOf>(cube_a).map(|c| c.parent()), Some(group));
     assert_eq!(world.get::<ChildOf>(cube_b).map(|c| c.parent()), Some(group));
+
+    // D4: the document names one component per node and Bevy supplies the rest.
+    // None of these appear in the file.
+    assert!(world.get::<sway_nodes::FloatOut>(lfo_a).is_some(), "Lfo requires FloatOut");
+    assert!(world.get::<Mesh3d>(cube_a).is_some(), "MeshAsset requires Mesh3d");
+    assert!(world.get::<Visibility>(cube_a).is_some(), "MeshAsset requires Visibility");
+    assert!(world.get::<Transform>(cube_a).is_some(), "Mesh3d requires Transform");
+    assert!(world.get::<MaterialOut>(material).is_some(), "PbrMaterial requires MaterialOut");
+    assert!(world.get::<Camera3d>(camera).is_some(), "SceneCamera requires Camera3d");
+    assert!(world.get::<Transform>(sun).is_some(), "DirectionalLight requires Transform");
+}
+
+#[test]
+fn demo_document_survives_a_reload() {
+    // The hot-reload path, and the sharp case for Task 1's exemption: on the
+    // second apply the required companions are already present and still
+    // unnamed, which is exactly what the removal pass looks for.
+    let document = sway_graph::project::parse(DEMO_DOCUMENT).expect("parses");
+    let mut app = demo_app();
+    sway_graph::project::apply(app.world_mut(), &document);
+    let cube = entity_named(app.world_mut(), "cubeA");
+
+    sway_graph::project::apply(app.world_mut(), &document);
+
+    assert!(app.world().get::<Mesh3d>(cube).is_some(), "Mesh3d survived the reload");
+    assert!(app.world().get::<Transform>(cube).is_some(), "Transform survived the reload");
 }
 
 #[test]
 fn demo_document_round_trips_through_the_world() {
-    // Completeness against the demo's real component/wire set — the claim
-    // the fixture-only `document_to_world_to_document_is_stable` in
-    // `sway-graph` cannot make on its own.
     let document = sway_graph::project::parse(DEMO_DOCUMENT).expect("parses");
     let mut app = demo_app();
     sway_graph::project::apply(app.world_mut(), &document);

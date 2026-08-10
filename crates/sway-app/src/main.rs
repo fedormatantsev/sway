@@ -1,8 +1,5 @@
-use sway_app::demo_assets;
-
 mod midi_feed;
 mod presenter;
-mod scene;
 mod shell;
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
@@ -10,7 +7,6 @@ use bevy::math::UVec2;
 use bevy::prelude::*;
 use bevy::window::Monitor;
 use midi_feed::{MidiClockOffset, MidiRx, feed_midi};
-use scene::setup_scene;
 
 /// Provisional graph tick rate pending the measurements specified in spec §11.
 const TICK_HZ: f64 = 120.0;
@@ -213,22 +209,21 @@ fn main() {
             sway_graph::ProjectPlugin,
             sway_nodes::WireNodesPlugin,
             sway_nodes::MidiPlugin,
-            demo_assets::DemoAssetsPlugin,
         ))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
         .insert_resource(MidiRx(rx))
         .init_resource::<MidiClockOffset>()
-        .add_systems(Startup, load_project)
         .add_systems(PreUpdate, feed_midi)
         .add_systems(Update, (log_monitors, log_fps));
 
-        // Camera-collision hazard: `scene::setup_scene` (camera + light for
-        // the project-document demo) and each demo's own setup helper each spawn a
-        // camera, and Bevy renders every camera with the same (default)
-        // order to the same target -- the last one drawn wins and the rest
-        // are invisibly overdrawn. So exactly one of "the demo graph" or "a
-        // render spike demo" runs per process, never both, and `all` is
-        // wired to end up with exactly one active camera too:
+        // Camera-collision hazard: the project document now authors its own
+        // camera (M5), and each render-spike demo spawns one of its own, and
+        // Bevy renders every camera with the same (default) order to the same
+        // target -- the last one drawn wins and the rest are invisibly
+        // overdrawn. So the project document loads only when no demo is
+        // selected. Before M5 the document loaded unconditionally, which is why
+        // the sprite-depth spike found a stray cube drifting through its
+        // screenshots.
         //   - `point-cloud` spawns its own camera (required: it carries
         //     `NoIndirectDrawing`, which the point-cloud pipeline needs).
         //   - `sprites` spawns its own dedicated camera via
@@ -240,7 +235,7 @@ fn main() {
         //     second one.
         match demo {
             None => {
-                app.add_systems(Startup, setup_scene);
+                app.add_systems(Startup, load_project);
             }
             Some(Demo::PointCloud) => {
                 app.add_plugins(sway_runtime::PointCloudPlugin)
