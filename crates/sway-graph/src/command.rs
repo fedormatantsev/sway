@@ -11,10 +11,30 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use bevy_math::{Vec2, Vec3};
 use bevy_reflect::std_traits::ReflectDefault;
-use bevy_reflect::{PartialReflect, ReflectMut, ReflectRef};
+use bevy_reflect::{PartialReflect, ReflectMut, ReflectRef, TypeData};
 use crossbeam_channel::Receiver;
 
 use crate::ctx::EditorPos;
+
+/// Looks up one piece of `TypeData` (e.g. [`ReflectComponent`],
+/// [`ReflectDefault`]) for a document-registered component, by its
+/// `ComponentDocRegistry` name. `None` covers every way this can fail: the
+/// name isn't registered, or the registered type doesn't carry `T`.
+///
+/// `T` is returned by value (not a reference into the registry) because
+/// `AppTypeRegistry`'s read guard borrows the `TypeRegistryArc` clone made
+/// inside this function; that clone — and the guard — cannot outlive the
+/// call. `TypeData` impls are cheap to clone (function-pointer tables), so
+/// this costs nothing callers would have avoided by borrowing instead.
+fn reflect_data_for<T: TypeData + Clone>(world: &World, name: &str) -> Option<T> {
+    let type_id = world
+        .get_resource::<crate::ComponentDocRegistry>()?
+        .by_name(name)?
+        .type_id;
+    let type_registry = world.get_resource::<AppTypeRegistry>()?.clone();
+    let registry = type_registry.read();
+    registry.get(type_id)?.data::<T>().cloned()
+}
 
 /// One edited field's new value. Deliberately not `Box<dyn Reflect>`: the
 /// channel payload stays `Send` and plainly comparable, and the applier does
@@ -83,11 +103,15 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
             }
         }
         EditorCommand::Create { component, pos } => {
-            let Some(registry) = world.get_resource::<crate::ComponentDocRegistry>() else {
+            // An unregistered name, or one missing either piece of reflect
+            // data, is a no-op rather than a panic.
+            let Some(reflect_component) = reflect_data_for::<ReflectComponent>(world, component)
+            else {
                 return;
             };
-            let Some(type_id) = registry.by_name(component).map(|entry| entry.type_id) else {
-                return; // an unregistered name is a no-op, not a panic
+            let Some(reflect_default) = reflect_data_for::<ReflectDefault>(world, component)
+            else {
+                return;
             };
             let Some(type_registry) = world.get_resource::<AppTypeRegistry>().cloned() else {
                 return;
@@ -98,15 +122,6 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
                 // `AppTypeRegistry` is cloned above (it is an Arc) so the read
                 // guard does not borrow `world` while the world is mutated.
                 let registry = type_registry.read();
-                let Some(registration) = registry.get(type_id) else {
-                    return;
-                };
-                let (Some(reflect_component), Some(reflect_default)) = (
-                    registration.data::<ReflectComponent>(),
-                    registration.data::<ReflectDefault>(),
-                ) else {
-                    return;
-                };
                 let value = reflect_default.default();
                 let Ok(mut entity_mut) = world.get_entity_mut(entity) else {
                     return;
@@ -146,19 +161,7 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
             world.despawn(*entity);
         }
         EditorCommand::SetField { entity, component, field, value } => {
-            let Some(type_id) = world
-                .get_resource::<crate::ComponentDocRegistry>()
-                .and_then(|r| r.by_name(component))
-                .map(|entry| entry.type_id)
-            else {
-                return;
-            };
-            let Some(type_registry) = world.get_resource::<AppTypeRegistry>().cloned() else {
-                return;
-            };
-            let registry = type_registry.read();
-            let Some(reflect_component) =
-                registry.get(type_id).and_then(|r| r.data::<ReflectComponent>())
+            let Some(reflect_component) = reflect_data_for::<ReflectComponent>(world, component)
             else {
                 return;
             };
