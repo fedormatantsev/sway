@@ -1,3 +1,4 @@
+use bevy::prelude::{DirectionalLight, PointLight};
 use bevy_ecs::schedule::IntoScheduleConfigs;
 
 mod beat;
@@ -64,6 +65,14 @@ impl bevy_app::Plugin for WireNodesPlugin {
         sway_graph::register_authorable::<Math>(app, "Math");
         sway_graph::register_authorable::<Remap>(app, "Remap");
 
+        sway_graph::register_authorable::<SceneCamera>(app, "SceneCamera");
+        // Bevy's own types, registered directly: both already carry
+        // #[reflect(Component, Default)] and both already require Transform.
+        // #[require(EditorPos)] cannot be added to a foreign type, so a light
+        // with no authored EditorPos lands on the canvas's fallback grid.
+        sway_graph::register_authorable::<DirectionalLight>(app, "DirectionalLight");
+        sway_graph::register_authorable::<PointLight>(app, "PointLight");
+
         sway_graph::register_authorable::<MeshAsset>(app, "MeshAsset");
         app.add_systems(
             bevy_app::Update,
@@ -105,8 +114,19 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "EditorPos", "FloatOut", "Lfo", "Math", "MeshAsset", "PbrMaterial", "Remap",
-                "Transform", "Vec3", "Vec3Out"
+                "DirectionalLight",
+                "EditorPos",
+                "FloatOut",
+                "Lfo",
+                "Math",
+                "MeshAsset",
+                "PbrMaterial",
+                "PointLight",
+                "Remap",
+                "SceneCamera",
+                "Transform",
+                "Vec3",
+                "Vec3Out",
             ]
         );
     }
