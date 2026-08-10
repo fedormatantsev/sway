@@ -89,7 +89,7 @@ The spec listed three facts, two pre-confirmed and one open:
 3. **The open one:** whether `#[require]` accepts a generic type argument
    (`MeshMaterial3d<StandardMaterial>`), and whether a default (dangling)
    handle draws nothing rather than panicking. Both held:
-   `#[require(Mesh3d, Visibility, Mesh3d, MeshMaterial3d<StandardMaterial>,
+   `#[require(Transform, Visibility, Mesh3d, MeshMaterial3d<StandardMaterial>,
    EditorPos)]` compiles as written (`crates/sway-nodes/src/mesh_asset.rs`),
    and the by-eye run never showed a panic or a black/undefined-material
    frame at any point in the load sequence — a mesh with no material handle

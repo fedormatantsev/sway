@@ -44,7 +44,6 @@ field_wire!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::prelude::*;
     use crate::outputs::Vec3Out;
     use crate::wire_testing::assert_writes_only_on_change;
     use sway_graph::propagate_of;

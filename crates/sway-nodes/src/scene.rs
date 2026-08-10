@@ -16,7 +16,6 @@ pub struct SceneCamera;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::prelude::*;
 
     #[test]
     fn a_scene_camera_brings_a_working_camera_with_it() {

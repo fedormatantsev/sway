@@ -35,7 +35,6 @@ pub fn load_mesh_assets(
 mod tests {
     use super::*;
     use bevy::asset::AssetPlugin;
-    use bevy::prelude::*;
 
     /// `AssetPlugin` plus the one asset type, which is all the load system
     /// needs — no device, no renderer. The path never resolves to a real file

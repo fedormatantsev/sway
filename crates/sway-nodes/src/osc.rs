@@ -7,8 +7,9 @@
 
 use bevy::prelude::*;
 use bevy_ecs::change_detection::DetectChangesMut;
-use sway_graph::{EditorPos, TickCtx, Transport, TransportTime, Wire};
+use sway_graph::{EditorPos, TickCtx, Transport, TransportTime};
 
+use crate::field_wire::field_wire;
 use crate::lfo::{wave, Waveform};
 use crate::outputs::FloatOut;
 
@@ -51,29 +52,21 @@ pub fn lfo_behaviour(world: &mut World, entity: Entity, _ctx: &TickCtx) {
     }
 }
 
-#[derive(Component)]
-#[relationship(relationship_target = DrivesAmplitude)]
-pub struct AmplitudeFrom(#[entities] pub Entity);
-
-#[derive(Component)]
-#[relationship_target(relationship = AmplitudeFrom)]
-pub struct DrivesAmplitude(Vec<Entity>);
-
-impl Wire for AmplitudeFrom {
-    type Source = FloatOut;
-    type Target = Lfo;
-    const NAME: &'static str = "amplitude";
-
-    fn propagate(src: &FloatOut, dst: Mut<Lfo>) {
-        dst.map_unchanged(|lfo| &mut lfo.amplitude).set_if_neq(src.0);
-    }
-}
+field_wire!(
+    /// Drives `Lfo.amplitude`.
+    AmplitudeFrom / DrivesAmplitude,
+    FloatOut => Lfo,
+    "amplitude",
+    |t| &mut t.amplitude,
+    |s| s.0
+);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::spatial::TranslationFrom;
     use crate::value::{Vec3Value, Vec3YFrom};
+    use crate::wire_testing::assert_writes_only_on_change;
     use sway_graph::WiresPlugin;
 
     /// At beat 0 with `phase = 0.25`, a sine LFO's phase is exactly 0.25 and
@@ -93,6 +86,15 @@ mod tests {
 
     fn lfo(phase: f32, amplitude: f32) -> Lfo {
         Lfo { beats: 4.0, shape: Waveform::Sine, phase, amplitude }
+    }
+
+    #[test]
+    fn the_amplitude_wire_never_writes_an_equal_value() {
+        assert_writes_only_on_change::<AmplitudeFrom>(
+            FloatOut(1.0),
+            FloatOut(2.0),
+            Lfo::default(),
+        );
     }
 
     #[test]

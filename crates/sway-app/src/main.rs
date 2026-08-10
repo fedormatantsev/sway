@@ -13,8 +13,8 @@ const TICK_HZ: f64 = 120.0;
 
 /// Which M1 render spike (if any) to run instead of the project document. See
 /// `main`'s demo-dispatch match for how each variant is wired up, and its
-/// comment on the camera-collision hazard between these demos and
-/// `scene::setup_scene`.
+/// comment on the camera-collision hazard between these demos and the
+/// project document's own camera.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Demo {
     PointCloud,

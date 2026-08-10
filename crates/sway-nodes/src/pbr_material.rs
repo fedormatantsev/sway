@@ -59,12 +59,18 @@ pub fn sync_pbr_materials(
 ) {
     for (node, mut out) in &mut nodes {
         let desired = node.to_standard_material();
-        // Mutating in place is what makes sharing work: every mesh already
-        // holding this handle picks the edit up.
-        if let Some(mut existing) = assets.get_mut(&out.0) {
-            *existing = desired;
-        } else {
+        // The default handle is never "ours" — under PbrPlugin, Bevy seeds a
+        // real fallback material at Handle::default() before we ever run, so
+        // `assets.get_mut(&out.0)` would succeed on it too. Check the handle
+        // itself rather than asset presence, so the first tick always
+        // allocates a fresh asset instead of overwriting the engine's shared
+        // default. Mutating in place on subsequent edits is what makes
+        // sharing work: every mesh already holding this handle picks the
+        // edit up.
+        if out.0 == Handle::default() {
             out.set_if_neq(MaterialOut(assets.add(desired)));
+        } else if let Some(mut existing) = assets.get_mut(&out.0) {
+            *existing = desired;
         }
     }
 }
@@ -85,7 +91,6 @@ field_wire!(
 mod tests {
     use super::*;
     use bevy::asset::AssetPlugin;
-    use bevy::prelude::*;
     use crate::wire_testing::assert_writes_only_on_change;
     use sway_graph::propagate_of;
 
@@ -93,6 +98,14 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((bevy::app::TaskPoolPlugin::default(), AssetPlugin::default()));
         app.init_asset::<StandardMaterial>();
+        // PbrPlugin seeds Handle::default() with a real asset at startup (its
+        // fallback material) — every real app has this. Match it here so this
+        // test app can catch a `sync_pbr_materials` that only checks
+        // `assets.get_mut` and never actually calls `assets.add`.
+        app.world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .insert(&Handle::default(), StandardMaterial::default())
+            .expect("seeding the default handle succeeds");
         app.add_systems(Update, sync_pbr_materials);
         app
     }
@@ -142,6 +155,40 @@ mod tests {
                 .map(|m| m.metallic),
             Some(1.0)
         );
+    }
+
+    #[test]
+    fn two_material_nodes_get_two_distinct_assets() {
+        let mut app = material_app();
+        let a = app
+            .world_mut()
+            .spawn(PbrMaterial {
+                metallic: 0.1,
+                ..default()
+            })
+            .id();
+        let b = app
+            .world_mut()
+            .spawn(PbrMaterial {
+                metallic: 0.9,
+                ..default()
+            })
+            .id();
+
+        app.update();
+
+        let handle_a = app.world().get::<MaterialOut>(a).expect("required").0.clone();
+        let handle_b = app.world().get::<MaterialOut>(b).expect("required").0.clone();
+        assert_ne!(
+            handle_a,
+            Handle::default(),
+            "must allocate its own asset, not reuse the engine default"
+        );
+        assert_ne!(handle_b, Handle::default());
+        assert_ne!(handle_a, handle_b, "two material nodes must not share one asset");
+        let assets = app.world().resource::<Assets<StandardMaterial>>();
+        assert_eq!(assets.get(&handle_a).map(|m| m.metallic), Some(0.1));
+        assert_eq!(assets.get(&handle_b).map(|m| m.metallic), Some(0.9));
     }
 
     #[test]
