@@ -78,6 +78,7 @@ pub struct WorldSnapshot {
     pub diagnostics: GraphDiagnostics,
     pub transport: TransportView,
     pub inspector: InspectorView,
+    pub palette: Vec<&'static str>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -265,6 +266,15 @@ fn capture_transport(world: &World) -> TransportView {
     }
 }
 
+/// Every authorable component name, for the palette. Registration order, which
+/// is fixed at startup.
+fn capture_palette(world: &World) -> Vec<&'static str> {
+    world
+        .get_resource::<ComponentDocRegistry>()
+        .map(|registry| registry.entries.iter().map(|entry| entry.name).collect())
+        .unwrap_or_default()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum TreeGroup {
     Scene,
@@ -314,6 +324,7 @@ pub fn capture(world: &World) -> WorldSnapshot {
             .unwrap_or_default(),
         transport: capture_transport(world),
         inspector: InspectorView::default(),
+        palette: capture_palette(world),
     }
 }
 

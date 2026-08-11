@@ -13,6 +13,7 @@ pub mod canvas;
 pub mod external;
 pub mod inspector;
 pub mod node_box;
+pub mod palette;
 pub mod scene_tree;
 pub mod snapshot;
 pub mod transport_bar;
