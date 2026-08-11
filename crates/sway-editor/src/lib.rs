@@ -68,6 +68,19 @@ pub const VIEWPORT_TAG: WidgetTag<ViewportPlaceholder> = WidgetTag::named("sway-
 /// Reaches the transport readout from `EditorUi::apply_snapshot`.
 pub const TRANSPORT_BAR_TAG: WidgetTag<TransportBar> = WidgetTag::named("sway-transport-bar");
 
+/// A file operation the shell performs, asked for by the toolbar.
+///
+/// Lives here rather than in `sway-document` because it is a UI intent: the
+/// editor asks for a file to be opened without knowing what parsing one means.
+/// It carries no path -- see the deviation note on this task: only `sway-app`
+/// owns `rfd`, so a path does not exist until the shell has run a dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileRequest {
+    Open,
+    Save,
+    SaveAs,
+}
+
 /// Builds the root widget: a transport strip above four panes.
 ///
 /// ```text
@@ -245,6 +258,13 @@ impl EditorUi {
     /// The pending cursor request, if any. Cleared by reading it.
     pub fn take_cursor(&mut self) -> Option<CursorIcon> {
         self.cursor.take()
+    }
+
+    /// What the toolbar has asked the shell to do since the last call.
+    pub fn take_file_requests(&mut self) -> Vec<FileRequest> {
+        self.root.edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
+            TransportBar::take_file_requests(&mut bar)
+        })
     }
 
     /// The window's current DPI scale factor (physical pixels per logical

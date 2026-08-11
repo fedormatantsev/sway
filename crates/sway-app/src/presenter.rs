@@ -87,6 +87,11 @@ impl EditorPresenter {
         self.editor.take_cursor()
     }
 
+    /// What the toolbar has asked for. Drained by the shell each redraw.
+    pub fn take_file_requests(&mut self) -> Vec<sway_editor::FileRequest> {
+        self.editor.take_file_requests()
+    }
+
     /// Forwards one winit window event to the masonry widget tree. Most
     /// winit events don't translate into a masonry event at all (redraws,
     /// resizes, close requests are the host's job, not `RenderRoot`'s); see

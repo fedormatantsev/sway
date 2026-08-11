@@ -12,11 +12,16 @@
 //! through this shell, painted through vello, and composited alongside the
 //! Bevy viewport by `EditorPresenter` (see `presenter.rs`).
 
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 
 use bevy::app::App;
 use bevy::math::UVec2;
 use crossbeam_channel::Sender;
+use sway_editor::FileRequest;
 use sway_gpu::{Compositor, GpuContext, ViewportTexture, WindowSurface};
 use sway_graph::EditorCommand;
 use winit::application::ApplicationHandler;
@@ -26,6 +31,58 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::presenter::{EditorPresenter, ShowPresenter, EDITOR_VIEWPORT_SIZE};
+
+/// A file dialog in flight.
+///
+/// `rfd`'s async form returns a future the shell polls once per redraw; the
+/// blocking form would spin a nested `NSApplication` modal on the thread
+/// winit's event loop already owns (M6-8). Exactly one dialog is ever open:
+/// a second request while one is pending is dropped, which is also what a
+/// modal dialog would do.
+struct Dialog {
+    kind: DialogKind,
+    future: Pin<Box<dyn Future<Output = Option<rfd::FileHandle>>>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DialogKind {
+    Open,
+    Save,
+}
+
+impl Dialog {
+    fn open() -> Self {
+        Self {
+            kind: DialogKind::Open,
+            future: Box::pin(
+                rfd::AsyncFileDialog::new()
+                    .add_filter("sway project", &["ron"])
+                    .pick_file(),
+            ),
+        }
+    }
+
+    fn save() -> Self {
+        Self {
+            kind: DialogKind::Save,
+            future: Box::pin(
+                rfd::AsyncFileDialog::new()
+                    .add_filter("sway project", &["ron"])
+                    .set_file_name("untitled.sway.ron")
+                    .save_file(),
+            ),
+        }
+    }
+
+    /// One poll. `None` means still open; `Some(None)` means cancelled.
+    fn poll(&mut self) -> Poll<Option<PathBuf>> {
+        let mut cx = Context::from_waker(Waker::noop());
+        self.future
+            .as_mut()
+            .poll(&mut cx)
+            .map(|handle| handle.map(|h| h.path().to_path_buf()))
+    }
+}
 
 /// Which presenter this run uses, selected once at window creation
 /// (`ShellConfig::editor`) and never switched at runtime.
@@ -66,6 +123,8 @@ struct Running {
     compositor: Compositor,
     app: App,
     presenter: Presenter,
+    /// The file dialog in flight, if any. See `Dialog`'s docs.
+    pending_dialog: Option<Dialog>,
 }
 
 impl Running {
@@ -86,12 +145,78 @@ impl Running {
                 &mut self.compositor,
             ),
         }
+
+        // The toolbar's requests, then one poll of whatever dialog is open.
+        // Both only exist on the editor path; the show path has no toolbar.
+        if let Presenter::Editor(presenter) = &mut self.presenter {
+            let requests = presenter.take_file_requests();
+            for request in requests {
+                if self.pending_dialog.is_some() {
+                    // A modal dialog is already up; ignore the rest.
+                    break;
+                }
+                match request {
+                    FileRequest::Save => match self.current_path() {
+                        Some(path) => self.save(&path),
+                        // Never saved: Save means Save As.
+                        None => self.pending_dialog = Some(Dialog::save()),
+                    },
+                    FileRequest::SaveAs => self.pending_dialog = Some(Dialog::save()),
+                    FileRequest::Open => self.pending_dialog = Some(Dialog::open()),
+                }
+            }
+        }
+        self.poll_dialog();
+
         // Keeps the loop continuous: vsync (the surface is `Fifo`) paces us,
         // not this call. This also covers `begin_frame` returning `None`
         // (occluded/timeout, handled inside the presenter's `present`):
         // asking again is how the loop notices when the surface becomes
         // presentable.
         self.window.request_redraw();
+    }
+
+    /// The file the document currently lives in, if it has ever been saved.
+    fn current_path(&self) -> Option<PathBuf> {
+        self.app
+            .world()
+            .get_resource::<sway_document::CurrentDocument>()
+            .and_then(|current| current.path.clone())
+    }
+
+    /// Advances the open dialog, if any, and applies its result.
+    ///
+    /// A failure here is reported and dropped: a bad path or an unparseable
+    /// file must not take the editor down mid-session (global constraint --
+    /// panics are startup-only).
+    fn poll_dialog(&mut self) {
+        let Some(dialog) = &mut self.pending_dialog else {
+            return;
+        };
+        let Poll::Ready(picked) = dialog.poll() else {
+            return;
+        };
+        let kind = dialog.kind;
+        self.pending_dialog = None;
+
+        // `None` is a cancelled dialog, which is not an error.
+        let Some(path) = picked else {
+            return;
+        };
+        match kind {
+            DialogKind::Open => {
+                if let Err(error) = sway_document::open_from_path(self.app.world_mut(), &path) {
+                    eprintln!("open failed: {error}");
+                }
+            }
+            DialogKind::Save => self.save(&path),
+        }
+    }
+
+    fn save(&mut self, path: &Path) {
+        if let Err(error) = sway_document::save_to_path(self.app.world_mut(), path) {
+            eprintln!("save failed: {error}");
+        }
     }
 }
 
@@ -198,6 +323,7 @@ impl ApplicationHandler for Shell {
             compositor,
             app,
             presenter,
+            pending_dialog: None,
         });
     }
 

@@ -14,15 +14,16 @@
 
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
-    AccessCtx, ChildrenIds, LayoutCtx, MeasureCtx, PaintCtx, PropertiesRef, RegisterCtx, Widget,
-    WidgetMut, WidgetPod,
+    AccessCtx, ActionCtx, ChildrenIds, ErasedAction, LayoutCtx, MeasureCtx, PaintCtx,
+    PropertiesMut, PropertiesRef, RegisterCtx, Widget, WidgetId, WidgetMut, WidgetPod,
 };
 use masonry::imaging::Painter;
 use masonry::layout::{LenReq, Length};
-use masonry::widgets::Label;
+use masonry::widgets::{Button, ButtonPress, Label};
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
 
+use crate::FileRequest;
 use crate::snapshot::WorldSnapshot;
 
 /// Height of the strip, in logical pixels.
@@ -32,6 +33,8 @@ const PADDING: f64 = 12.0;
 /// Fixed column width per field, so the position does not jitter the layout
 /// four times a beat.
 const FIELD_WIDTH: f64 = 120.0;
+/// Fixed column width per file button.
+const BUTTON_WIDTH: f64 = 72.0;
 
 /// The transport readout.
 pub struct TransportBar {
@@ -39,6 +42,11 @@ pub struct TransportBar {
     fields: Vec<String>,
     generation: u64,
     playing: bool,
+    /// Open / Save / Save As, in that order. Built once; never rebuilt by a
+    /// snapshot.
+    buttons: [WidgetPod<Button>; 3],
+    /// What the toolbar has asked for since the shell last drained it.
+    requests: Vec<FileRequest>,
 }
 
 impl Default for TransportBar {
@@ -54,6 +62,12 @@ impl TransportBar {
             fields: Vec::new(),
             generation: 0,
             playing: false,
+            buttons: [
+                WidgetPod::new(Button::with_text("Open")),
+                WidgetPod::new(Button::with_text("Save")),
+                WidgetPod::new(Button::with_text("Save As")),
+            ],
+            requests: Vec::new(),
         }
     }
 
@@ -65,6 +79,18 @@ impl TransportBar {
     /// How many times the fields have actually been rebuilt.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub fn open_button_id(&self) -> WidgetId {
+        self.buttons[0].id()
+    }
+
+    pub fn save_button_id(&self) -> WidgetId {
+        self.buttons[1].id()
+    }
+
+    pub fn save_as_button_id(&self) -> WidgetId {
+        self.buttons[2].id()
     }
 }
 
@@ -109,14 +135,43 @@ impl TransportBar {
         this.ctx.children_changed();
         this.ctx.request_layout();
     }
+
+    /// Drains what the toolbar has asked for. Called once per frame by the
+    /// shell, through `EditorUi::take_file_requests`.
+    pub fn take_file_requests(this: &mut WidgetMut<'_, Self>) -> Vec<FileRequest> {
+        std::mem::take(&mut this.widget.requests)
+    }
 }
 
 impl Widget for TransportBar {
     type Action = ();
 
+    fn on_action(
+        &mut self,
+        ctx: &mut ActionCtx<'_>,
+        _props: &mut PropertiesMut<'_>,
+        action: &ErasedAction,
+        source: WidgetId,
+    ) {
+        if action.downcast_ref::<ButtonPress>().is_none() {
+            return;
+        }
+        let request = match self.buttons.iter().position(|b| b.id() == source) {
+            Some(0) => FileRequest::Open,
+            Some(1) => FileRequest::Save,
+            Some(2) => FileRequest::SaveAs,
+            _ => return,
+        };
+        self.requests.push(request);
+        ctx.set_handled();
+    }
+
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
         for label in &mut self.labels {
             ctx.register_child(label);
+        }
+        for button in &mut self.buttons {
+            ctx.register_child(button);
         }
     }
 
@@ -132,9 +187,11 @@ impl Widget for TransportBar {
             (_, LenReq::FitContent(space)) => space,
             (_, LenReq::MinContent) => Length::ZERO,
             (Axis::Vertical, LenReq::MaxContent) => Length::const_px(TRANSPORT_BAR_HEIGHT),
-            (Axis::Horizontal, LenReq::MaxContent) => {
-                Length::const_px(PADDING + self.labels.len() as f64 * FIELD_WIDTH)
-            }
+            (Axis::Horizontal, LenReq::MaxContent) => Length::const_px(
+                PADDING
+                    + self.labels.len() as f64 * FIELD_WIDTH
+                    + self.buttons.len() as f64 * BUTTON_WIDTH,
+            ),
         }
     }
 
@@ -143,6 +200,12 @@ impl Widget for TransportBar {
             let x = PADDING + index as f64 * FIELD_WIDTH;
             ctx.run_layout(label, Size::new(FIELD_WIDTH, TRANSPORT_BAR_HEIGHT));
             ctx.place_child(label, Point::new(x, 0.0));
+        }
+        let buttons_start = PADDING + self.labels.len() as f64 * FIELD_WIDTH;
+        for (index, button) in self.buttons.iter_mut().enumerate() {
+            let x = buttons_start + index as f64 * BUTTON_WIDTH;
+            ctx.run_layout(button, Size::new(BUTTON_WIDTH, TRANSPORT_BAR_HEIGHT));
+            ctx.place_child(button, Point::new(x, 0.0));
         }
         ctx.set_clip_path(size.to_rect());
     }
@@ -171,7 +234,11 @@ impl Widget for TransportBar {
     fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, _node: &mut Node) {}
 
     fn children_ids(&self) -> ChildrenIds {
-        self.labels.iter().map(|label| label.id()).collect()
+        self.labels
+            .iter()
+            .map(|label| label.id())
+            .chain(self.buttons.iter().map(|button| button.id()))
+            .collect()
     }
 }
 
@@ -195,8 +262,18 @@ mod tests {
     }
 
     fn harness_with(snap: WorldSnapshot) -> TestHarness<TransportBar> {
-        let mut harness =
-            TestHarness::create(DefaultProperties::default(), TransportBar::new().prepare());
+        // Wider than `TestHarnessParams::DEFAULT_SIZE` (400px): three
+        // `FIELD_WIDTH` columns plus three `BUTTON_WIDTH` buttons plus
+        // `PADDING` need 588px, and a strip clipped narrower than its own
+        // content is also unclickable in the harness -- `find_widget_under_pointer`
+        // rejects a point outside the root's own clip path before it ever
+        // looks at a child. The real editor window is always wider than
+        // this; only the click tests below need the room.
+        let mut harness = TestHarness::create_with_size(
+            DefaultProperties::default(),
+            TransportBar::new().prepare(),
+            (700, 100),
+        );
         harness.edit_root_widget(|mut bar| {
             TransportBar::apply_snapshot(&mut bar, &snap);
         });
@@ -236,5 +313,41 @@ mod tests {
             TransportBar::apply_snapshot(&mut bar, &snap);
         });
         assert_eq!(harness.root_widget().generation(), before);
+    }
+
+    #[test]
+    fn the_save_button_emits_a_save_request() {
+        use crate::FileRequest;
+        let mut harness = harness_with(snapshot(false, 120.0, "001.1.1", true));
+        let save_id = harness.root_widget().save_button_id();
+
+        harness.mouse_click_on(save_id, Some(masonry::core::PointerButton::Primary));
+
+        harness.edit_root_widget(|mut bar| {
+            assert_eq!(
+                TransportBar::take_file_requests(&mut bar),
+                vec![FileRequest::Save],
+            );
+        });
+    }
+
+    #[test]
+    fn taking_the_requests_drains_them() {
+        use crate::FileRequest;
+        let mut harness = harness_with(snapshot(false, 120.0, "001.1.1", true));
+        let open_id = harness.root_widget().open_button_id();
+
+        harness.mouse_click_on(open_id, Some(masonry::core::PointerButton::Primary));
+
+        harness.edit_root_widget(|mut bar| {
+            assert_eq!(
+                TransportBar::take_file_requests(&mut bar),
+                vec![FileRequest::Open],
+            );
+            assert!(
+                TransportBar::take_file_requests(&mut bar).is_empty(),
+                "the shell must not act on the same request twice",
+            );
+        });
     }
 }
