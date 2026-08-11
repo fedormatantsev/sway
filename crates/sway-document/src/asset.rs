@@ -127,7 +127,13 @@ impl Plugin for ProjectPlugin {
             .init_resource::<ProjectDiagnostics>()
             .add_systems(
                 PreUpdate,
-                (note_project_changes, note_load_failures, apply_pending_project).chain(),
+                (
+                    note_project_changes,
+                    note_load_failures,
+                    apply_pending_project,
+                    crate::claim::claim_editor_entities,
+                )
+                    .chain(),
             );
     }
 }
