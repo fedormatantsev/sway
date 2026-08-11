@@ -12,6 +12,7 @@ pub mod claim;
 pub mod diagnostics;
 pub mod doc;
 pub mod emit;
+pub mod file;
 
 pub use apply::apply;
 pub use asset::{ProjectAsset, ProjectHandle, ProjectLoader, ProjectPlugin};
@@ -19,3 +20,4 @@ pub use claim::claim_editor_entities;
 pub use diagnostics::{DocId, ItemError, ProjectDiagnostics};
 pub use doc::{EntityDoc, FORMAT_VERSION, ParseError, ProjectDoc, parse};
 pub use emit::{to_document, to_ron};
+pub use file::{CurrentDocument, LastApplied, open_from_path, save_to_path};

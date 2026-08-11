@@ -104,11 +104,16 @@ fn apply_pending_project(world: &mut World) {
         return;
     };
 
+    if crate::file::should_skip(world, &doc) {
+        return;
+    }
+
     let mut diagnostics = apply(world, &doc);
     // A successful apply clears the previous parse error: the file is
     // readable again.
     diagnostics.parse = None;
     world.insert_resource(diagnostics);
+    world.insert_resource(crate::file::LastApplied(Some(doc)));
 }
 
 /// Loading, watching and applying the project document.
@@ -125,6 +130,8 @@ impl Plugin for ProjectPlugin {
             .init_resource::<ProjectHandle>()
             .init_resource::<PendingProject>()
             .init_resource::<ProjectDiagnostics>()
+            .init_resource::<crate::file::CurrentDocument>()
+            .init_resource::<crate::file::LastApplied>()
             .add_systems(
                 PreUpdate,
                 (
