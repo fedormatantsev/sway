@@ -245,6 +245,24 @@ updated to match.
 
 ## What is not answered
 
+- **Whether `Inspector::commit`'s unconditional `SetField` send actually
+  respects "never write an equal value" was never independently
+  re-verified.** Phase 3 review (Task 8) flagged that `Inspector::commit`
+  sends `SetField` on any parseable value, even one unchanged from what's
+  already there, and noted this is "fine as long as the `SetField` consumer
+  (`apply_editor_command` in `sway-graph`, outside this diff) does the
+  compare-before-write the constraint requires" — explicitly deferring the
+  check to "a later phase gate to spot-check." No later phase review in the
+  ledger revisits it; this is a genuine process gap, not just a hypothetical
+  one. (A direct read of `apply_editor_command`'s `SetField` arm —
+  `crates/sway-graph/src/command.rs:163-217`, from Task 4/`bc1aa1a` —
+  shows it does reach the field immutably first and returns as a no-op when
+  `existing.reflect_partial_eq(replacement.as_ref()) == Some(true)`, i.e.
+  the compare-before-write guard is present in the code as it stands today.
+  That single read is not the same thing as the phase-gate spot-check Phase
+  3 asked for and no review ever formally closed the ledger item, so it's
+  recorded here as still open on the process side even though the code
+  looks correct on inspection.)
 - **The disconnect gesture's own press side has no real-dispatch test**
   (Phase 6 review, deferred minor): `NodeBox::socket_at_local`'s
   inlet-ordinal loop is only exercised via `socket_pressed_for_test`, not a

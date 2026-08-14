@@ -378,13 +378,15 @@ whatever arrived last. Restore-to-authored-on-disconnect is out of MVP.
 
 There is no authored value distinct from the live value: the component *is* the
 value, and `to_document(world)` serializes what the world holds. **Every
-field is editable**, wire-driven or not — the inspector and (from M7) the
-gizmo do not refuse driven fields, and nothing renders inert (M6-5;
+field is editable**, wire-driven or not — the inspector does not refuse a
+driven field, and nothing renders inert (M6-5;
 `docs/superpowers/specs/2026-08-10-m6-editor-write-half-design.md`). Editing a
 driven field holds only until the next tick, when the wire writes over it
 again. A save still bakes the instantaneous driven value into the file (a wire
 targets a field path, but a component is emitted whole); harmless, since the
 first tick after load overwrites it, and no machinery is built against it.
+Whether a future gizmo (M7) follows the same rule is open, not settled here —
+M6-5 leaves it for M7 to decide.
 
 Continuously driven transforms should write a
 previous/next pair (`DrivenTransform`) and let a per-frame system lerp by
