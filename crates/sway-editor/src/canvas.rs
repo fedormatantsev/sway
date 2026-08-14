@@ -34,7 +34,7 @@ use masonry::layout::{LenReq, Length};
 use peniko::Color;
 use sway_graph::EditorCommand;
 
-use crate::node_box::{self, NodeBox, NodeBoxAction};
+use crate::node_box::{self, NodeBox, NodeBoxAction, SOCKET_HIT_RADIUS};
 use crate::palette::Palette;
 use crate::snapshot::{InletView, NodeId, WorldSnapshot};
 
@@ -61,6 +61,21 @@ struct NodeSlot {
     /// slot is created and owned by the widget thereafter -- see
     /// `apply_snapshot`.
     pos: Point,
+    /// The `EditorPos` this slot last *observed* in a snapshot (regardless
+    /// of whether `apply_snapshot` acted on it). Comparing the newest
+    /// snapshot's `EditorPos` against this -- not against `pos` -- is what
+    /// tells "the world hasn't said anything new since last time" (an
+    /// unrelated snapshot arriving mid-drag, before `DragEnded`'s
+    /// `MoveNode` has even been sent, must not clobber `pos`, which is
+    /// already ahead of both) apart from "the world's answer changed since
+    /// it was last observed" -- either an echo of this canvas's own
+    /// completed drag (adopting it is then a no-op: `pos` already matches),
+    /// or `sway-document`'s `reconcile_entities` reusing this node's
+    /// `Entity` across an in-session `Open` and reloading a *different*
+    /// document's `EditorPos` into it without this slot ever being torn
+    /// down (Important #4, final review) -- in which case adopting it is
+    /// exactly the fix.
+    known_world_pos: Point,
     label: String,
     /// The world entity behind this node. A `NodeId` can outlive the entity
     /// it names across a recompile, so this is refreshed from the snapshot on
@@ -103,11 +118,6 @@ struct EdgeDrag {
     /// the rubber band.
     cursor: Point,
 }
-
-/// How close a probe must be to a socket to count as hitting it, in
-/// canvas-space pixels. Deliberately larger than the 4px dot `NodeBox` draws:
-/// an exact-radius target is unhittable in practice.
-const SOCKET_HIT_RADIUS: f64 = node_box::SOCKET_RADIUS * 2.5;
 
 /// One painted edge, resolved to node keys rather than snapshot indices so it
 /// survives a reordering.
@@ -640,6 +650,27 @@ impl GraphCanvas {
             let inlet_counts: Vec<u16> = vec![1; view.inlets.len()];
             match this.widget.slots.get_mut(&view.id) {
                 Some(slot) => {
+                    // Important #4 (final review): normally an existing box
+                    // owns its position from here on (design §5) -- a drag
+                    // updates `slot.pos` locally, well ahead of what the
+                    // world holds until `DragEnded` sends `MoveNode`, and an
+                    // unrelated snapshot arriving mid-drag (or before that
+                    // `MoveNode`'s effect has been observed back) must not
+                    // clobber it. But when the snapshot's `EditorPos` has
+                    // moved from what was last *observed* here, something
+                    // changed on the world side since last time -- either an
+                    // echo of this canvas's own completed drag (adopting it
+                    // is then a no-op, `pos` already matches) or
+                    // `reconcile_entities` reusing this node's `Entity`
+                    // across an in-session `Open` and reloading a different
+                    // document's `EditorPos` into it without this slot ever
+                    // being torn down, which must be adopted.
+                    if let Some(pos) = view.pos {
+                        if pos != slot.known_world_pos {
+                            slot.pos = pos;
+                        }
+                        slot.known_world_pos = pos;
+                    }
                     if slot.label != view.name {
                         view.name.clone_into(&mut slot.label);
                         let mut child = this.ctx.get_mut(&mut slot.pod);
@@ -682,6 +713,7 @@ impl GraphCanvas {
                         NodeSlot {
                             pod,
                             pos,
+                            known_world_pos: pos,
                             label: view.name.clone(),
                             entity: view.entity,
                             inlets: inlet_counts,
@@ -1388,6 +1420,26 @@ mod tests {
         assert_eq!(harness.root_widget().selected_node(), Some(NodeId(0)));
     }
 
+    /// `to_canvas` (used when the palette creates a node at the click
+    /// position) is `to_visual`'s exact inverse -- covered above only
+    /// indirectly (`press_under_zoom_reaches_the_scaled_node`, zoom but no
+    /// pan) and `picking_from_the_palette_creates_at_the_canvas_position`
+    /// (default pan/zoom). Neither exercises both at once.
+    #[test]
+    fn to_canvas_is_the_exact_inverse_of_to_visual_under_pan_and_zoom() {
+        let mut harness = harness_with(snapshot(vec![], vec![]));
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::set_zoom(&mut canvas, 2.0);
+            GraphCanvas::set_pan(&mut canvas, Vec2::new(30.0, 15.0));
+        });
+
+        let canvas_point = Point::new(123.0, 45.0);
+        let visual_point = harness.root_widget().to_visual(canvas_point);
+        assert_ne!(visual_point, canvas_point, "pan/zoom must actually be in effect");
+
+        assert_eq!(harness.root_widget().to_canvas(visual_point), canvas_point);
+    }
+
     #[test]
     fn press_outside_any_node_clears_selection() {
         let mut harness = harness_with(snapshot(
@@ -1522,9 +1574,10 @@ mod tests {
         assert!(harness.root_widget().widget_id_of(NodeId(1)).is_some());
     }
 
-    /// Design §5: `EditorPos` is a *seed*, read when a node box first appears
-    /// and never again. Without this, the next frame's snapshot would snap a
-    /// dragged node straight back to its authored position.
+    /// Design §5: `EditorPos` is a *seed* an existing box otherwise owns --
+    /// a snapshot that repeats the same `EditorPos` this canvas already
+    /// observed (i.e. nothing changed on the world side) must not snap a
+    /// dragged-but-not-yet-`MoveNode`-echoed node back to it.
     #[test]
     fn a_dragged_node_is_not_snapped_back_by_the_next_snapshot() {
         let snap = snapshot(vec![node(0, "a", Some(Point::new(100.0, 100.0)))], vec![]);
@@ -1542,6 +1595,41 @@ mod tests {
         });
 
         assert_eq!(harness.root_widget().position_of(NodeId(0)), Some(dragged));
+    }
+
+    /// Important #4 (final review): `sway-document`'s `open_from_path` ->
+    /// `reconcile_entities` reuses the same `Entity` (and therefore the same
+    /// `NodeId`, `NodeId::of` being entity-index-derived) for any `DocId`
+    /// present in both the old and the newly opened document -- so an
+    /// in-session `Open` leaves this slot right where it was, with the
+    /// *previous* document's position, while the world now holds the
+    /// *newly loaded* document's `EditorPos`. Unlike the drag case above
+    /// (a same-frame, not-yet-echoed local move that must survive an
+    /// unrelated snapshot), this is the world's answer to "where is this
+    /// entity" actually changing between two snapshots with no drag in
+    /// between at all -- and must be adopted.
+    #[test]
+    fn reopening_a_document_moves_a_reused_entitys_slot_to_the_new_position() {
+        let first = snapshot(vec![node(0, "a", Some(Point::new(100.0, 100.0)))], vec![]);
+        let mut harness = harness_with(first);
+        assert_eq!(
+            harness.root_widget().position_of(NodeId(0)),
+            Some(Point::new(100.0, 100.0)),
+        );
+
+        // Same NodeId/Entity (as `reconcile_entities` produces for a DocId
+        // surviving the reopen), different EditorPos (the newly loaded
+        // document's) -- not a drag.
+        let reopened = snapshot(vec![node(0, "a", Some(Point::new(400.0, 300.0)))], vec![]);
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::apply_snapshot(&mut canvas, &reopened);
+        });
+
+        assert_eq!(
+            harness.root_widget().position_of(NodeId(0)),
+            Some(Point::new(400.0, 300.0)),
+            "the slot must pick up the reopened document's position, not keep the stale one",
+        );
     }
 
     /// A node with no `EditorPos` lands on the fallback grid, and two such

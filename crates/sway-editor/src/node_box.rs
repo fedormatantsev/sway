@@ -74,6 +74,13 @@ const LABEL_INSET: f64 = 10.0;
 /// number.
 pub(crate) const SOCKET_RADIUS: f64 = 4.0;
 
+/// How close a probe must be to a socket to count as hitting it, in local
+/// pixels. Deliberately larger than the dot itself -- an exact-radius target
+/// is unhittable in practice. `pub(crate)` so `GraphCanvas`'s own hit test
+/// (`canvas.rs`'s socket-drag/connect probing) uses the same number instead
+/// of a second, independently-drifting `* 2.5` literal.
+pub(crate) const SOCKET_HIT_RADIUS: f64 = SOCKET_RADIUS * 2.5;
+
 /// What the pointer is currently doing to this node box, between a `Down`
 /// that started a gesture and the `Up`/`Cancel` that ends it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -221,12 +228,12 @@ impl NodeBox {
         let inlet_fields = self.inlets.len() as u16;
         if self.outlets > 0 {
             let outlet = outlet_socket_local(inlet_fields, self.outlets, inlet_fields);
-            if outlet.distance(local) <= SOCKET_RADIUS * 2.5 {
+            if outlet.distance(local) <= SOCKET_HIT_RADIUS {
                 return Some(SocketKind::Outlet);
             }
         }
         for ordinal in 0..inlet_fields {
-            if inlet_socket_local(&self.inlets, ordinal, 0).distance(local) <= SOCKET_RADIUS * 2.5 {
+            if inlet_socket_local(&self.inlets, ordinal, 0).distance(local) <= SOCKET_HIT_RADIUS {
                 return Some(SocketKind::Inlet(ordinal));
             }
         }

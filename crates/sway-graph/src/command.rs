@@ -176,10 +176,14 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
             let Some(reflected) = reflect_component.reflect(entity_ref) else {
                 return;
             };
-            let ReflectRef::Struct(target) = reflected.reflect_ref() else {
-                return;
+            let existing = match reflected.reflect_ref() {
+                ReflectRef::Struct(target) => target.field(field),
+                ReflectRef::TupleStruct(target) => {
+                    field.parse::<usize>().ok().and_then(|index| target.field(index))
+                }
+                _ => return,
             };
-            let Some(existing) = target.field(field) else {
+            let Some(existing) = existing else {
                 return;
             };
 
@@ -222,10 +226,14 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
             let Some(mut reflected) = reflect_component.reflect_mut(entity_mut) else {
                 return;
             };
-            let ReflectMut::Struct(target) = reflected.reflect_mut() else {
-                return;
+            let existing = match reflected.reflect_mut() {
+                ReflectMut::Struct(target) => target.field_mut(field),
+                ReflectMut::TupleStruct(target) => {
+                    field.parse::<usize>().ok().and_then(|index| target.field_mut(index))
+                }
+                _ => return,
             };
-            let Some(existing) = target.field_mut(field) else {
+            let Some(existing) = existing else {
                 return;
             };
             // A failed apply here would mean the equal-value check above
@@ -512,6 +520,60 @@ mod tests {
         apply_editor_command(app.world_mut(), &EditorCommand::SetField {
             entity, component: "Knobs", field: "nope".to_string(), value: FieldValue::Float(1.0),
         });
+    }
+
+    // Mirrors `sway_nodes::FloatOut(pub f32)`: a tuple-struct authorable
+    // component. `sway-graph` cannot depend on `sway-nodes` (crate
+    // boundary), so this is a local stand-in with the same shape.
+    #[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
+    #[reflect(Component, Default, PartialEq)]
+    struct FloatOut(pub f32);
+
+    fn float_out_app() -> App {
+        let mut app = registry_app();
+        crate::register_authorable::<FloatOut>(&mut app, "FloatOut");
+        app
+    }
+
+    #[test]
+    fn set_field_writes_through_a_tuple_struct_field() {
+        // Important #1: the inspector names tuple-struct fields by index
+        // ("0", "1", ...); the applier must resolve those through
+        // `ReflectRef::TupleStruct`/`ReflectMut::TupleStruct`, not only
+        // `Struct`.
+        let mut app = float_out_app();
+        let entity = app.world_mut().spawn(FloatOut(0.0)).id();
+
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::SetField {
+                entity,
+                component: "FloatOut",
+                field: "0".to_string(),
+                value: FieldValue::Float(0.75),
+            },
+        );
+
+        assert_eq!(app.world().get::<FloatOut>(entity).map(|f| f.0), Some(0.75));
+    }
+
+    #[test]
+    fn writing_an_equal_tuple_struct_value_does_not_mark_the_component_changed() {
+        let mut app = float_out_app();
+        let entity = app.world_mut().spawn(FloatOut(0.5)).id();
+        app.update();
+
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::SetField {
+                entity,
+                component: "FloatOut",
+                field: "0".to_string(),
+                value: FieldValue::Float(0.5),
+            },
+        );
+
+        assert!(!app.world().entity(entity).get_ref::<FloatOut>().unwrap().is_changed());
     }
 
     use crate::test_wires::{GainFrom, spawn_float, spawn_gain};
