@@ -17,13 +17,15 @@
 use std::collections::{HashMap, HashSet};
 
 use bevy_ecs::entity::Entity;
+use bevy_math::Vec2 as WorldVec2;
 use crossbeam_channel::Sender;
 use masonry::accesskit::{Node, Role};
+use masonry::core::keyboard::{Key, NamedKey};
 use masonry::core::{
-    AccessCtx, ActionCtx, ChildrenIds, ErasedAction, EventCtx, LayoutCtx, MeasureCtx, Modifiers,
-    NoAction, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent, PointerScrollEvent,
-    PointerState, PointerUpdate, PropertiesMut, PropertiesRef, RegisterCtx, Widget, WidgetId,
-    WidgetMut, WidgetPod,
+    AccessCtx, ActionCtx, ChildrenIds, ErasedAction, EventCtx, LayerType, LayoutCtx, MeasureCtx,
+    Modifiers, NewWidget, NoAction, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent,
+    PointerScrollEvent, PointerState, PointerUpdate, PropertiesMut, PropertiesRef, RegisterCtx,
+    TextEvent, Widget, WidgetId, WidgetMut, WidgetPod,
 };
 use masonry::dpi::PhysicalPosition;
 use masonry::imaging::Painter;
@@ -33,6 +35,7 @@ use peniko::Color;
 use sway_graph::EditorCommand;
 
 use crate::node_box::{self, NodeBox, NodeBoxAction};
+use crate::palette::{Palette, PaletteAction};
 use crate::snapshot::{NodeId, WorldSnapshot};
 
 /// Converts a [`PointerState`]'s position to a window-space (logical pixels)
@@ -111,9 +114,14 @@ pub struct GraphCanvas {
     /// A middle-drag pan in progress (brief step 4): the last-seen
     /// window-space (logical) pointer position. `None` when not panning.
     panning: Option<Point>,
-    /// Unused until Task 13 wires up create/delete/move/rewire.
-    #[allow(dead_code)]
+    /// Where edits go. The canvas produces data; `sway-graph` applies it.
     commands: Sender<EditorCommand>,
+    /// Every authorable component name, from the last snapshot — what the
+    /// palette is built from.
+    palette: Vec<&'static str>,
+    /// The open palette layer, if any, and the canvas-space position it was
+    /// opened at (which is where a pick creates the node).
+    palette_layer: Option<(WidgetId, Point)>,
 }
 
 // --- MARK: BUILDERS
@@ -129,6 +137,8 @@ impl GraphCanvas {
             selected: None,
             panning: None,
             commands,
+            palette: Vec::new(),
+            palette_layer: None,
         }
     }
 }
@@ -248,6 +258,18 @@ impl Widget for GraphCanvas {
                 self.panning = Some(window_point(state));
                 ctx.set_handled();
             }
+            PointerEvent::Down(PointerButtonEvent {
+                button: Some(PointerButton::Secondary),
+                state,
+                ..
+            }) => {
+                let local = ctx.local_position(state.position);
+                let canvas_pos = self.to_canvas(local);
+                let palette = NewWidget::new(Palette::new(self.palette.clone()));
+                self.palette_layer = Some((palette.id(), canvas_pos));
+                ctx.create_layer(LayerType::Other, palette, ctx.to_window(local));
+                ctx.set_handled();
+            }
             PointerEvent::Down(..) => {
                 // masonry hit-tests children before the parent (deepest hit
                 // wins -- see `find_widget_under_pointer`), and every
@@ -322,6 +344,20 @@ impl Widget for GraphCanvas {
         action: &ErasedAction,
         source: WidgetId,
     ) {
+        if let Some(PaletteAction::Picked(component)) = action.downcast_ref::<PaletteAction>() {
+            // The position the palette was *opened* at, not where the pick
+            // landed: the node belongs where the user pointed, not where the
+            // list happened to place that row.
+            if let Some((layer_id, pos)) = self.palette_layer.take() {
+                let _ = self.commands.send(EditorCommand::Create {
+                    component,
+                    pos: WorldVec2::new(pos.x as f32, pos.y as f32),
+                });
+                ctx.remove_layer(layer_id);
+            }
+            ctx.set_handled();
+            return;
+        }
         let Some(id) = self
             .nodes
             .iter()
@@ -342,8 +378,37 @@ impl Widget for GraphCanvas {
                 self.retransform_one_from_action(ctx, id);
                 ctx.request_paint_only();
             }
+            NodeBoxAction::DragEnded => {
+                if let Some(slot) = self.slots.get(&id) {
+                    let _ = self.commands.send(EditorCommand::MoveNode {
+                        entity: slot.entity,
+                        pos: WorldVec2::new(slot.pos.x as f32, slot.pos.y as f32),
+                    });
+                }
+            }
         }
         ctx.set_handled();
+    }
+
+    fn on_text_event(
+        &mut self,
+        ctx: &mut EventCtx<'_>,
+        _props: &mut PropertiesMut<'_>,
+        event: &TextEvent,
+    ) {
+        let TextEvent::Keyboard(key_event) = event else {
+            return;
+        };
+        if !key_event.state.is_down() {
+            return;
+        }
+        if matches!(
+            key_event.key,
+            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace)
+        ) {
+            self.delete_selected();
+            ctx.set_handled();
+        }
     }
 
     fn accessibility_role(&self) -> Role {
@@ -380,6 +445,8 @@ impl GraphCanvas {
     /// worth preserving -- but each edge's observed value range is carried
     /// across by `(from, to, wire)` so auto-ranging does not restart.
     pub fn apply_snapshot(this: &mut WidgetMut<'_, Self>, snap: &WorldSnapshot) {
+        this.widget.palette.clone_from(&snap.palette);
+
         let mut ranges: HashMap<(NodeId, NodeId, &'static str), (f32, f32)> = HashMap::new();
         for edge in &this.widget.edges {
             if let Some(range) = edge.range {
@@ -681,6 +748,46 @@ impl GraphCanvas {
     }
 }
 
+impl GraphCanvas {
+    /// Maps a point in this widget's local space to canvas space — the
+    /// inverse of `to_visual`.
+    fn to_canvas(&self, local: Point) -> Point {
+        ((local.to_vec2() - self.pan) / self.zoom).to_point()
+    }
+
+    /// Sends `Delete` for the selected node, if there is one. The canvas does
+    /// not remove the node itself: the world is the truth, and the next
+    /// snapshot is what takes the box away.
+    fn delete_selected(&mut self) {
+        let Some(entity) = self.selected.and_then(|id| self.entity_of(id)) else {
+            return;
+        };
+        let _ = self.commands.send(EditorCommand::Delete { entity });
+    }
+
+    /// The open palette layer's id, for tests.
+    pub fn palette_layer_id(&self) -> Option<WidgetId> {
+        self.palette_layer.map(|(id, _)| id)
+    }
+
+    /// Test seam for the palette pick, which otherwise needs a live layer.
+    pub fn palette_picked_for_test(
+        this: &mut WidgetMut<'_, Self>,
+        component: &'static str,
+        pos: Point,
+    ) {
+        let _ = this.widget.commands.send(EditorCommand::Create {
+            component,
+            pos: WorldVec2::new(pos.x as f32, pos.y as f32),
+        });
+    }
+
+    /// Test seam for the Delete key.
+    pub fn delete_selected_for_test(this: &mut WidgetMut<'_, Self>) {
+        this.widget.delete_selected();
+    }
+}
+
 /// Base colour per wire name, brightened and thickened by activity.
 fn edge_style(edge: &EdgeSlot) -> (Color, f64) {
     let base = edge_color(edge.wire);
@@ -719,9 +826,11 @@ mod tests {
     use crate::node_box::NodeBox;
     use crate::snapshot::{EdgeView, NodeId, NodeView, WorldSnapshot};
     use bevy_ecs::entity::Entity;
+    use bevy_math::Vec2 as WorldVec2;
     use masonry::core::{DefaultProperties, PointerButton, Widget};
     use masonry_core::kurbo::{Point, Vec2};
     use masonry_testing::TestHarness;
+    use sway_graph::EditorCommand;
 
     fn node(id: u32, name: &str, pos: Option<Point>) -> NodeView {
         NodeView {
@@ -763,6 +872,113 @@ mod tests {
             GraphCanvas::apply_snapshot(&mut canvas, &snap);
         });
         harness
+    }
+
+    fn harness_and_rx(
+        snap: WorldSnapshot,
+    ) -> (TestHarness<GraphCanvas>, crossbeam_channel::Receiver<EditorCommand>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut harness =
+            TestHarness::create(DefaultProperties::default(), GraphCanvas::new(tx).prepare());
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::apply_snapshot(&mut canvas, &snap);
+        });
+        (harness, rx)
+    }
+
+    #[test]
+    fn picking_from_the_palette_creates_at_the_canvas_position() {
+        let (mut harness, rx) = harness_and_rx(snapshot(vec![], vec![]));
+
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::palette_picked_for_test(&mut canvas, "Lfo", Point::new(120.0, 60.0));
+        });
+
+        let commands: Vec<_> = rx.try_iter().collect();
+        assert_eq!(commands.len(), 1);
+        assert!(
+            matches!(
+                &commands[0],
+                EditorCommand::Create { component: "Lfo", pos }
+                    if *pos == WorldVec2::new(120.0, 60.0)
+            ),
+            "got {:?}",
+            commands[0],
+        );
+    }
+
+    #[test]
+    fn a_right_click_opens_the_palette_at_the_pointer() {
+        let mut snap = snapshot(vec![], vec![]);
+        snap.palette = vec!["Lfo", "Remap"];
+        let (mut harness, _rx) = harness_and_rx(snap);
+
+        harness.mouse_move(Point::new(200.0, 150.0));
+        harness.mouse_button_press(Some(PointerButton::Secondary));
+
+        // The harness services NewLayer/RemoveLayer signals itself (see
+        // `masonry_testing::TestHarness::process_signals`), so a layer that was
+        // asked for is a layer that exists.
+        assert!(
+            harness.root_widget().palette_layer_id().is_some(),
+            "a secondary press opens the palette",
+        );
+    }
+
+    #[test]
+    fn the_delete_key_deletes_the_selected_node() {
+        let entity = Entity::from_raw_u32(4).expect("valid entity id");
+        let (mut harness, rx) = harness_and_rx(snapshot(
+            vec![NodeView { entity, ..node(4, "a", Some(Point::new(10.0, 10.0))) }],
+            vec![],
+        ));
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::set_selected(&mut canvas, Some(NodeId(4)));
+            GraphCanvas::delete_selected_for_test(&mut canvas);
+        });
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![EditorCommand::Delete { entity }],
+        );
+    }
+
+    #[test]
+    fn deleting_with_nothing_selected_sends_nothing() {
+        let (mut harness, rx) = harness_and_rx(snapshot(vec![], vec![]));
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::delete_selected_for_test(&mut canvas);
+        });
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn ending_a_drag_reports_the_nodes_new_canvas_position() {
+        // MoveNode is what carries a drag into EditorPos and therefore into
+        // the saved document. Before M6 a dragged position lived only in the
+        // widget and was lost on exit.
+        let entity = Entity::from_raw_u32(4).expect("valid entity id");
+        let (mut harness, rx) = harness_and_rx(snapshot(
+            vec![NodeView { entity, ..node(4, "a", Some(Point::new(100.0, 100.0))) }],
+            vec![],
+        ));
+
+        harness.mouse_move(Point::new(150.0, 130.0));
+        harness.mouse_button_press(Some(PointerButton::Primary));
+        harness.mouse_move(Point::new(200.0, 180.0));
+        harness.mouse_button_release(Some(PointerButton::Primary));
+
+        let moved = harness.root_widget().position_of(NodeId(4)).unwrap();
+        let commands: Vec<_> = rx.try_iter().collect();
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                EditorCommand::MoveNode { entity: e, pos }
+                    if *e == entity
+                        && *pos == WorldVec2::new(moved.x as f32, moved.y as f32)
+            )),
+            "the released position must be the one sent; got {commands:?}",
+        );
     }
 
     /// The claim spec §2.8 makes for masonry, reduced to an assertion.

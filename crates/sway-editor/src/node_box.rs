@@ -89,6 +89,10 @@ pub enum NodeBoxAction {
     Selected,
     /// The pointer moved by this delta while dragging the node.
     DraggedBy(masonry_core::kurbo::Vec2),
+    /// The drag finished. The canvas writes the node's settled position back
+    /// to the world; a press with no movement reports this too, and the
+    /// world-side equal-value guard makes that a no-op.
+    DragEnded,
 }
 
 /// A node box in the graph canvas: a rounded rectangle with a border and a
@@ -369,6 +373,9 @@ impl Widget for NodeBox {
                 ctx.set_handled();
             }
             PointerEvent::Up(..) => {
+                if matches!(self.gesture, Gesture::Dragging { .. }) {
+                    ctx.submit_action::<Self::Action>(NodeBoxAction::DragEnded);
+                }
                 self.gesture = Gesture::None;
                 ctx.set_handled();
             }
