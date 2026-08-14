@@ -56,9 +56,9 @@ Rust-side scene setup remains.
 ### M6 — Editor write half (L)
 
 Palette from `ComponentDocRegistry`; create; delete (reparent children first);
-reflect-driven inspector editing with wire-driven fields inert; drag-to-connect
-and disconnect with legality from the wire registry; Open / Save / Save As.
-Extracts `sway-document`.
+reflect-driven inspector editing, every field editable including wire-driven
+ones (D2 dropped, M6-5); drag-to-connect and disconnect with legality from the
+wire registry; Open / Save / Save As. Extracts `sway-document`.
 
 *Exit:* a node is created, wired, edited, saved and reopened without leaving the
 editor.
@@ -110,8 +110,9 @@ and reachable through `--demo`, not developed and not cleaned up.
 - Show hardening: device hotplug, preflight, output configuration, watchdog,
   black-frame fallback.
 - Variadic inlets (`Merge` / `Sum`) — compose binary `Math` instead.
-- Restore authored value on disconnect — superseded by D2 (driven fields are
-  read-only in the editor).
+- Restore authored value on disconnect — there is no authored-value shadow to
+  restore from; on disconnect a field keeps whatever the wire last wrote (D2
+  superseded by M6-5, which drops the read-only rule D2 was justified by).
 - GPU-resident geometry operators / compute cook path.
 - Live graph patching, presets/snapshots, video decode, audio reactivity (FFT),
   multi-output, NDI/Spout, timeline sequencing.

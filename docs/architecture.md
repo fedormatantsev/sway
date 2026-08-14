@@ -377,11 +377,12 @@ A connected wire overwrites the field each tick; on disconnect the field keeps
 whatever arrived last. Restore-to-authored-on-disconnect is out of MVP.
 
 There is no authored value distinct from the live value: the component *is* the
-value, and `to_document(world)` serializes what the world holds. The editor
-therefore treats **wire-driven fields as read-only** — the gizmo and the
-inspector refuse to edit them, and they render inert. Without that rule, saving
-after a gizmo drag would record whatever phase the driving LFO happened to be
-at. A save still bakes the instantaneous driven value into the file (a wire
+value, and `to_document(world)` serializes what the world holds. **Every
+field is editable**, wire-driven or not — the inspector and (from M7) the
+gizmo do not refuse driven fields, and nothing renders inert (M6-5;
+`docs/superpowers/specs/2026-08-10-m6-editor-write-half-design.md`). Editing a
+driven field holds only until the next tick, when the wire writes over it
+again. A save still bakes the instantaneous driven value into the file (a wire
 targets a field path, but a component is emitted whole); harmless, since the
 first tick after load overwrites it, and no machinery is built against it.
 
@@ -461,8 +462,9 @@ need a separate schema crate.
 **Out of MVP**
 
 - Variadic inlets (`Merge` / `Sum`).
-- Restore authored value on disconnect (see §7 — wire-driven fields are
-  read-only in the editor instead).
+- Restore authored value on disconnect (see §7 — on disconnect a field simply
+  keeps whatever value the wire last wrote; there is no authored-value shadow
+  to restore from).
 - Geometry operators and the geometry cook path (§6).
 - GPU-resident geometry operators / compute cook path.
 

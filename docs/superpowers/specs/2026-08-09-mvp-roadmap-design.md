@@ -81,6 +81,13 @@ hardening moves out of the MVP.
 
 ### D2 — Driven fields are read-only in the editor
 
+**Superseded by M6-5** (`2026-08-10-m6-editor-write-half-design.md`): M6 does
+not implement this. Every field, driven or not, is editable; the rationale
+below was already conceded by this document's own "driven fields churn in the
+file... harmless" — the file was never the problem, and the cost of building
+detection machinery just to buy inspector/gizmo polish wasn't worth it. Kept
+below for the historical record.
+
 Once the editor writes, an authored value and a live value stop being the same
 thing: gizmo-dragging a cube whose `translation.y` is LFO-driven, then saving,
 would otherwise record whatever phase the LFO was at.
