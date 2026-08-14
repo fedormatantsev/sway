@@ -29,14 +29,14 @@ use masonry::core::{
 };
 use masonry::dpi::PhysicalPosition;
 use masonry::imaging::Painter;
-use masonry_core::kurbo::{Affine, Axis, BezPath, Point, Size, Stroke, Vec2};
+use masonry_core::kurbo::{Affine, Axis, BezPath, Circle, Point, Size, Stroke, Vec2};
 use masonry::layout::{LenReq, Length};
 use peniko::Color;
 use sway_graph::EditorCommand;
 
 use crate::node_box::{self, NodeBox, NodeBoxAction};
 use crate::palette::Palette;
-use crate::snapshot::{NodeId, WorldSnapshot};
+use crate::snapshot::{InletView, NodeId, WorldSnapshot};
 
 /// Converts a [`PointerState`]'s position to a window-space (logical pixels)
 /// [`Point`]. Same helper as `node_box::window_point`, duplicated rather than
@@ -74,6 +74,10 @@ struct NodeSlot {
     /// `label`.
     inlets: Vec<u16>,
     outlets: u16,
+    /// The snapshot's inlet views for this node — wire names, connectedness
+    /// and legality. Mirrored for the same reason `inlets` is: `paint` and
+    /// `on_action` cannot read a live child's state.
+    inlet_views: Vec<InletView>,
 }
 
 /// Which socket on a node. An outlet needs no ordinal — there is at most one
@@ -323,6 +327,36 @@ impl Widget for GraphCanvas {
         }
     }
 
+    /// Draws the legality overlay while an edge drag is in progress. Runs
+    /// after children, so the marks sit on top of the node boxes; the edges in
+    /// `paint` deliberately sit underneath them.
+    fn post_paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        let Some(drag) = &self.drag else { return };
+        let Some(src) = self.entity_of(drag.from.node) else { return };
+
+        for id in &self.nodes {
+            let Some(slot) = self.slots.get(id) else { continue };
+            for (ordinal, inlet) in slot.inlet_views.iter().enumerate() {
+                let legal = inlet.accepts_from.contains(&src);
+                let local = node_box::inlet_socket_local(&slot.inlets, ordinal as u16, 0);
+                let centre = self.to_visual(slot.pos + local.to_vec2());
+                let colour = if legal {
+                    Color::from_rgb8(120, 220, 140)
+                } else {
+                    Color::from_rgb8(70, 72, 80)
+                };
+                painter
+                    .fill(Circle::new(centre, node_box::SOCKET_RADIUS * 1.6 * self.zoom), colour)
+                    .draw();
+            }
+        }
+    }
+
     fn on_pointer_event(
         &mut self,
         ctx: &mut EventCtx<'_>,
@@ -472,7 +506,10 @@ impl Widget for GraphCanvas {
                     });
                 }
             }
-            NodeBoxAction::SocketPressed(kind) => self.socket_pressed(ctx, id, kind),
+            NodeBoxAction::SocketPressed(kind) => {
+                self.socket_pressed(id, kind);
+                ctx.request_paint_only();
+            }
             NodeBoxAction::ConnectDragged(local) => {
                 if let Some(slot) = self.slots.get(&id) {
                     let cursor = slot.pos + local.to_vec2();
@@ -611,8 +648,9 @@ impl GraphCanvas {
                     // Socket counts change when a `Vec` inlet is resized
                     // (e.g. a `Group`'s `children`) -- not on every snapshot,
                     // so this is gated the same way `label` is.
-                    if slot.inlets != inlet_counts || slot.outlets != view.outlets {
+                    if slot.inlet_views != view.inlets || slot.outlets != view.outlets {
                         slot.inlets = inlet_counts.clone();
+                        slot.inlet_views = view.inlets.clone();
                         slot.outlets = view.outlets;
                         let mut child = this.ctx.get_mut(&mut slot.pod);
                         NodeBox::set_sockets(&mut child, inlet_counts.clone(), view.outlets);
@@ -648,6 +686,7 @@ impl GraphCanvas {
                             entity: view.entity,
                             inlets: inlet_counts,
                             outlets: view.outlets,
+                            inlet_views: view.inlets.clone(),
                         },
                     );
                     this.ctx.children_changed();
@@ -846,20 +885,49 @@ impl GraphCanvas {
         }
     }
 
-    /// A socket was pressed. An outlet starts an edge drag; an inlet is
-    /// Task 15's disconnect gesture, and does nothing yet.
-    fn socket_pressed(&mut self, _ctx: &mut ActionCtx<'_>, node: NodeId, kind: SocketKind) {
-        if kind != SocketKind::Outlet {
-            return;
+    /// A socket was pressed. An outlet starts an edge drag; a *connected*
+    /// inlet is the disconnect gesture.
+    fn socket_pressed(&mut self, node: NodeId, kind: SocketKind) {
+        match kind {
+            SocketKind::Outlet => {
+                let cursor = self.slots.get(&node).map(|slot| slot.pos).unwrap_or_default();
+                self.drag = Some(EdgeDrag { from: SocketRef { node, kind }, cursor });
+            }
+            SocketKind::Inlet(ordinal) => {
+                let Some(slot) = self.slots.get(&node) else { return };
+                let Some(inlet) = slot.inlet_views.get(ordinal as usize) else { return };
+                if !inlet.connected {
+                    return;
+                }
+                let _ = self.commands.send(EditorCommand::Disconnect {
+                    wire: inlet.wire,
+                    dst: slot.entity,
+                });
+            }
         }
-        let cursor = self.slots.get(&node).map(|slot| slot.pos).unwrap_or_default();
-        self.drag = Some(EdgeDrag { from: SocketRef { node, kind }, cursor });
     }
 
-    /// The edge drag ended at this canvas-space point. Task 15 turns a landing
-    /// on a legal inlet into a `Connect`; for now every release just cancels.
-    fn connect_released(&mut self, _point: Point) {
-        self.drag = None;
+    /// The edge drag ended at this canvas-space point. A landing on an inlet
+    /// that accepts the drag's origin connects; anything else cancels.
+    fn connect_released(&mut self, point: Point) {
+        let Some(drag) = self.drag.take() else { return };
+        let Some(src) = self.entity_of(drag.from.node) else { return };
+        let Some(SocketRef { node, kind: SocketKind::Inlet(ordinal) }) = self.socket_at(point)
+        else {
+            return; // released over empty canvas or over an outlet
+        };
+        let Some(slot) = self.slots.get(&node) else { return };
+        let Some(inlet) = slot.inlet_views.get(ordinal as usize) else { return };
+        // Legality is re-checked here even though `paint` only highlighted
+        // legal inlets: the highlight is a hint, this is the rule.
+        if !inlet.accepts_from.contains(&src) {
+            return;
+        }
+        let _ = self.commands.send(EditorCommand::Connect {
+            wire: inlet.wire,
+            src,
+            dst: slot.entity,
+        });
     }
 
     /// `EventCtx` version of re-applying pan/zoom/position to every node
@@ -956,15 +1024,7 @@ impl GraphCanvas {
 
     /// Test seam for a socket press.
     pub fn socket_pressed_for_test(this: &mut WidgetMut<'_, Self>, socket: SocketRef) {
-        let cursor = this
-            .widget
-            .slots
-            .get(&socket.node)
-            .map(|slot| slot.pos)
-            .unwrap_or_default();
-        if socket.kind == SocketKind::Outlet {
-            this.widget.drag = Some(EdgeDrag { from: socket, cursor });
-        }
+        this.widget.socket_pressed(socket.node, socket.kind);
     }
 
     /// Test seam for the release.
@@ -1531,8 +1591,8 @@ mod tests {
         use crate::snapshot::InletView;
         let view = NodeView {
             inlets: vec![
-                InletView { wire: "amount", connected: true },
-                InletView { wire: "parent", connected: false },
+                InletView { wire: "amount", connected: true, accepts_from: Vec::new() },
+                InletView { wire: "parent", connected: false, accepts_from: Vec::new() },
             ],
             outlets: 1,
             ..node(0, "Recv", None)
@@ -1553,8 +1613,8 @@ mod tests {
         use crate::snapshot::InletView;
         NodeView {
             inlets: vec![
-                InletView { wire: "amount", connected: false },
-                InletView { wire: "parent", connected: false },
+                InletView { wire: "amount", connected: false, accepts_from: Vec::new() },
+                InletView { wire: "parent", connected: false, accepts_from: Vec::new() },
             ],
             outlets: 1,
             ..node(0, "n", Some(pos))
@@ -1715,6 +1775,149 @@ mod tests {
         assert!(
             harness.root_widget().edge_drag_origin().is_none(),
             "a real Cancel mid-drag must clear GraphCanvas's drag state too",
+        );
+    }
+
+    /// A source node and a target node whose `amount` inlet accepts it.
+    fn connectable() -> (WorldSnapshot, Entity, Entity) {
+        use crate::snapshot::InletView;
+        let src = Entity::from_raw_u32(1).expect("valid entity id");
+        let dst = Entity::from_raw_u32(2).expect("valid entity id");
+        let source = NodeView {
+            entity: src,
+            outlets: 1,
+            ..node(1, "src", Some(Point::new(0.0, 0.0)))
+        };
+        let target = NodeView {
+            entity: dst,
+            inlets: vec![InletView {
+                wire: "amount",
+                connected: false,
+                accepts_from: vec![src],
+            }],
+            outlets: 0,
+            ..node(2, "dst", Some(Point::new(400.0, 0.0)))
+        };
+        (snapshot(vec![source, target], vec![]), src, dst)
+    }
+
+    /// The canvas-space position of the `dst` node's first inlet socket.
+    fn first_inlet_point(origin: Point) -> Point {
+        origin + node_box::inlet_socket_local(&[1], 0, 0).to_vec2()
+    }
+
+    #[test]
+    fn releasing_on_a_legal_inlet_sends_connect() {
+        let (snap, src, dst) = connectable();
+        let (mut harness, rx) = harness_and_rx(snap);
+
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::socket_pressed_for_test(
+                &mut canvas,
+                SocketRef { node: NodeId(1), kind: SocketKind::Outlet },
+            );
+            GraphCanvas::connect_released_for_test(
+                &mut canvas,
+                first_inlet_point(Point::new(400.0, 0.0)),
+            );
+        });
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![EditorCommand::Connect { wire: "amount", src, dst }],
+        );
+    }
+
+    #[test]
+    fn releasing_on_an_illegal_inlet_sends_nothing() {
+        let (mut snap, _src, _dst) = connectable();
+        snap.nodes[1].inlets[0].accepts_from.clear();
+        let (mut harness, rx) = harness_and_rx(snap);
+
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::socket_pressed_for_test(
+                &mut canvas,
+                SocketRef { node: NodeId(1), kind: SocketKind::Outlet },
+            );
+            GraphCanvas::connect_released_for_test(
+                &mut canvas,
+                first_inlet_point(Point::new(400.0, 0.0)),
+            );
+        });
+
+        assert_eq!(rx.try_iter().count(), 0);
+        assert!(
+            harness.root_widget().edge_drag_origin().is_none(),
+            "an illegal release still ends the drag",
+        );
+    }
+
+    #[test]
+    fn pressing_a_connected_inlet_sends_disconnect() {
+        let (mut snap, _src, dst) = connectable();
+        snap.nodes[1].inlets[0].connected = true;
+        let (mut harness, rx) = harness_and_rx(snap);
+
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::socket_pressed_for_test(
+                &mut canvas,
+                SocketRef { node: NodeId(2), kind: SocketKind::Inlet(0) },
+            );
+        });
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![EditorCommand::Disconnect { wire: "amount", dst }],
+        );
+    }
+
+    #[test]
+    fn pressing_an_unconnected_inlet_sends_nothing() {
+        let (snap, _src, _dst) = connectable();
+        let (mut harness, rx) = harness_and_rx(snap);
+
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::socket_pressed_for_test(
+                &mut canvas,
+                SocketRef { node: NodeId(2), kind: SocketKind::Inlet(0) },
+            );
+        });
+
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    /// Unlike the four tests above -- which drive the gesture through
+    /// `socket_pressed_for_test`/`connect_released_for_test`, both of which
+    /// already call straight into the real `socket_pressed`/`connect_released`
+    /// methods rather than reimplementing them -- this drives an actual press
+    /// on the source's outlet, an actual move, and an actual release on the
+    /// target's inlet through the harness, with no `_for_test` seam anywhere
+    /// in the path. It proves the whole real chain together: `NodeBox`'s own
+    /// gesture tracking and pointer capture, its `ConnectReleased` action,
+    /// `GraphCanvas::on_action`'s translation of that local point into a
+    /// canvas-space point, and `connect_released`'s own `socket_at`/legality
+    /// check -- not just each piece in isolation.
+    #[test]
+    fn a_real_press_drag_release_on_a_legal_inlet_connects_with_no_bypass() {
+        let (snap, src, dst) = connectable();
+        let (mut harness, rx) = harness_and_rx(snap);
+
+        // The outlet dot sits exactly on the box's own right edge
+        // (`outlet_socket_local`'s x is `SIZE.width`), which is the hit-test
+        // rect's exclusive boundary (`kurbo::Rect::contains` is right/bottom-
+        // exclusive) -- see `a_real_press_on_an_outlet_starts_a_drag_with_no_bypass`
+        // above for the same one-pixel adjustment.
+        let origin = Point::new(0.0, 0.0);
+        let outlet_local = node_box::outlet_socket_local(0, 1, 0) - Vec2::new(1.0, 0.0);
+        harness.mouse_move(origin + outlet_local.to_vec2());
+        harness.mouse_button_press(Some(PointerButton::Primary));
+
+        harness.mouse_move(first_inlet_point(Point::new(400.0, 0.0)));
+        harness.mouse_button_release(Some(PointerButton::Primary));
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![EditorCommand::Connect { wire: "amount", src, dst }],
         );
     }
 }

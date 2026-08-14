@@ -24,10 +24,12 @@ impl NodeId {
 }
 
 /// One inlet socket: a registered wire type this entity could consume.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct InletView {
     pub wire: &'static str,
     pub connected: bool,
+    /// Entities this inlet could legally accept a wire from, this frame.
+    pub accepts_from: Vec<Entity>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -360,7 +362,12 @@ fn canvas_entities(world: &World) -> Vec<Entity> {
 
 /// The inlet sockets of one entity, in `WireRegistry` order — which is
 /// registration order, fixed at startup, so a socket's ordinal is stable.
-fn inlets_of(world: &World, registry: &WireRegistry, entity: Entity) -> Vec<InletView> {
+fn inlets_of(
+    world: &World,
+    registry: &WireRegistry,
+    canvas: &[Entity],
+    entity: Entity,
+) -> Vec<InletView> {
     registry
         .entries
         .iter()
@@ -368,6 +375,14 @@ fn inlets_of(world: &World, registry: &WireRegistry, entity: Entity) -> Vec<Inle
         .map(|entry| InletView {
             wire: entry.name,
             connected: (entry.read)(world, entity).is_some(),
+            // Excluding `entity` itself keeps a self-edge from ever being
+            // offered; Bevy would drop it anyway (tests/relationship_semantics.rs),
+            // but the editor should not paint it as legal.
+            accepts_from: canvas
+                .iter()
+                .copied()
+                .filter(|candidate| *candidate != entity && (entry.has_source)(world, *candidate))
+                .collect(),
         })
         .collect()
 }
@@ -376,8 +391,10 @@ fn capture_nodes(world: &World) -> Vec<NodeView> {
     let Some(registry) = world.get_resource::<WireRegistry>() else {
         return Vec::new();
     };
-    canvas_entities(world)
-        .into_iter()
+    let canvas = canvas_entities(world);
+    canvas
+        .iter()
+        .copied()
         .map(|entity| NodeView {
             entity,
             id: NodeId::of(entity),
@@ -388,7 +405,7 @@ fn capture_nodes(world: &World) -> Vec<NodeView> {
             pos: world
                 .get::<EditorPos>(entity)
                 .map(|pos| Point::new(pos.0.x as f64, pos.0.y as f64)),
-            inlets: inlets_of(world, registry, entity),
+            inlets: inlets_of(world, registry, &canvas, entity),
             outlets: registry
                 .entries
                 .iter()
@@ -411,7 +428,7 @@ fn capture_edges(world: &World) -> Vec<EdgeView> {
             Step::Propagate { src, dst, wire, .. } => {
                 // The inlet ordinal, so the edge lands on its own socket
                 // rather than always on socket 0 (spec M6-6).
-                let to_field = inlets_of(world, registry, dst)
+                let to_field = inlets_of(world, registry, &[], dst)
                     .iter()
                     .position(|inlet| inlet.wire == wire)
                     .unwrap_or(0) as u16;
@@ -819,5 +836,41 @@ mod tests {
             }
             other => panic!("expected an enum kind, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_inlet_accepts_only_entities_with_the_wires_source_component() {
+        let mut app = app();
+        let emit = spawn_emit(app.world_mut(), 1, None);
+        let recv = spawn_recv(app.world_mut(), 2, None);
+        let unrelated = spawn_spatial(app.world_mut(), 3, None);
+        recompile(&mut app);
+
+        let snapshot = capture(app.world());
+        let node = snapshot.nodes.iter().find(|n| n.entity == recv).unwrap();
+        let amount = node.inlets.iter().find(|i| i.wire == "amount").unwrap();
+
+        assert!(amount.accepts_from.contains(&emit), "Emit carries FloatOut");
+        assert!(
+            !amount.accepts_from.contains(&unrelated),
+            "a Transform-only entity cannot source an amount wire",
+        );
+    }
+
+    #[test]
+    fn an_inlet_never_offers_the_node_itself() {
+        // Bevy drops a self-relationship anyway (tests/relationship_semantics.rs),
+        // but the editor must not paint one as legal in the first place.
+        let mut app = app();
+        let both = spawn_double_target(app.world_mut(), None);
+        // Give it a source too, so it would otherwise qualify for its own inlet.
+        app.world_mut().entity_mut(both).insert(bevy_transform::components::Transform::default());
+        recompile(&mut app);
+
+        let snapshot = capture(app.world());
+        let node = snapshot.nodes.iter().find(|n| n.entity == both).unwrap();
+        let parent = node.inlets.iter().find(|i| i.wire == "parent").unwrap();
+
+        assert!(!parent.accepts_from.contains(&both));
     }
 }
