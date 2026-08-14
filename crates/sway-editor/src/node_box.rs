@@ -110,6 +110,13 @@ pub enum NodeBoxAction {
     ConnectDragged(Point),
     /// The socket drag ended here.
     ConnectReleased(Point),
+    /// A socket drag was cancelled (`PointerEvent::Cancel` -- the window lost
+    /// input focus, or an OS-level gesture cancellation) rather than
+    /// released. Distinct from `ConnectReleased` rather than reusing it at
+    /// some synthetic point: `GraphCanvas::connect_released` is what Task 15
+    /// teaches to turn a landing on a legal inlet into a `Connect`, and a
+    /// cancellation must never be mistaken for a landing there.
+    ConnectCanceled,
 }
 
 /// A node box in the graph canvas: a rounded rectangle with a border and a
@@ -446,6 +453,14 @@ impl Widget for NodeBox {
                 ctx.set_handled();
             }
             PointerEvent::Cancel(..) => {
+                // `NodeBox` captures the pointer on `Down`, so every
+                // follow-up event during a socket drag -- including this one
+                // -- routes here, never to `GraphCanvas`. Without reporting
+                // it, `GraphCanvas.drag` (and the rubber-band paint) would be
+                // left dangling with no `Up` ever coming to clear it.
+                if matches!(self.gesture, Gesture::Connecting) {
+                    ctx.submit_action::<Self::Action>(NodeBoxAction::ConnectCanceled);
+                }
                 self.gesture = Gesture::None;
             }
             _ => {}

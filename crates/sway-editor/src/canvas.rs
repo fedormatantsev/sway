@@ -489,6 +489,14 @@ impl Widget for GraphCanvas {
                 }
                 ctx.request_paint_only();
             }
+            NodeBoxAction::ConnectCanceled => {
+                // Not routed through `connect_released`: that method is what
+                // Task 15 teaches to turn a landing on a legal inlet into a
+                // `Connect`, and a cancellation carries no landing point to
+                // misinterpret as one -- it must always just drop the drag.
+                self.drag = None;
+                ctx.request_paint_only();
+            }
         }
         ctx.set_handled();
     }
@@ -1673,6 +1681,40 @@ mod tests {
         assert!(
             harness.root_widget().edge_drag_origin().is_none(),
             "a real release over empty canvas must cancel the drag",
+        );
+    }
+
+    /// task-14-review-1.md, Important: `NodeBox` captures the pointer on
+    /// `Down`, so every follow-up event during a socket drag -- including a
+    /// `Cancel` (window losing input focus mid-drag, an OS-level gesture
+    /// cancellation) -- routes to `NodeBox`, never to `GraphCanvas`. Before
+    /// this fix, `NodeBox`'s `Cancel` arm only reset its own `gesture` and
+    /// submitted no action, so `GraphCanvas.drag` (and the rubber-band
+    /// paint) stayed set indefinitely -- `ConnectReleased` from a real `Up`
+    /// was the *only* path that ever cleared it. Drives a real `Down` (to
+    /// start the drag, same as the no-bypass test above) followed by a real
+    /// `PointerEvent::Cancel`, with no `_for_test` bypass.
+    #[test]
+    fn a_real_cancel_during_a_socket_drag_clears_it() {
+        use masonry::core::PointerEvent;
+        use masonry_testing::PRIMARY_MOUSE;
+
+        let origin = Point::new(40.0, 25.0);
+        let mut harness = harness_with(snapshot(vec![socket_node(origin)], vec![]));
+
+        let outlet_local = node_box::outlet_socket_local(2, 1, 2) - Vec2::new(1.0, 0.0);
+        harness.mouse_move(origin + outlet_local.to_vec2());
+        harness.mouse_button_press(Some(PointerButton::Primary));
+        assert!(
+            harness.root_widget().edge_drag_origin().is_some(),
+            "the press must have started the drag",
+        );
+
+        harness.process_pointer_event(PointerEvent::Cancel(PRIMARY_MOUSE));
+
+        assert!(
+            harness.root_widget().edge_drag_origin().is_none(),
+            "a real Cancel mid-drag must clear GraphCanvas's drag state too",
         );
     }
 }
