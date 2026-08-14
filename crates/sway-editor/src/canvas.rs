@@ -76,6 +76,35 @@ struct NodeSlot {
     outlets: u16,
 }
 
+/// Which socket on a node. An outlet needs no ordinal — there is at most one
+/// (M6-6) — while an inlet's ordinal is its wire's position in the node's
+/// inlet list, which is `WireRegistry` order and fixed at startup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SocketKind {
+    Outlet,
+    Inlet(u16),
+}
+
+/// One socket, addressed across the whole canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SocketRef {
+    pub node: NodeId,
+    pub kind: SocketKind,
+}
+
+/// An edge drag in progress.
+struct EdgeDrag {
+    from: SocketRef,
+    /// Where the pointer is now, in canvas space. Painted as the loose end of
+    /// the rubber band.
+    cursor: Point,
+}
+
+/// How close a probe must be to a socket to count as hitting it, in
+/// canvas-space pixels. Deliberately larger than the 4px dot `NodeBox` draws:
+/// an exact-radius target is unhittable in practice.
+const SOCKET_HIT_RADIUS: f64 = node_box::SOCKET_RADIUS * 2.5;
+
 /// One painted edge, resolved to node keys rather than snapshot indices so it
 /// survives a reordering.
 struct EdgeSlot {
@@ -122,6 +151,8 @@ pub struct GraphCanvas {
     /// The open palette layer, if any, and the canvas-space position it was
     /// opened at (which is where a pick creates the node).
     palette_layer: Option<(WidgetId, Point)>,
+    /// An edge drag in progress (a press on an outlet socket), if any.
+    drag: Option<EdgeDrag>,
 }
 
 // --- MARK: BUILDERS
@@ -139,7 +170,48 @@ impl GraphCanvas {
             commands,
             palette: Vec::new(),
             palette_layer: None,
+            drag: None,
         }
+    }
+}
+
+impl GraphCanvas {
+    /// The socket at a canvas-space point, if any.
+    ///
+    /// Uses the same `inlet_socket_local`/`outlet_socket_local` math `paint`
+    /// does, against the same mirrored `NodeSlot` counts, so what is hittable
+    /// is exactly what is drawn.
+    pub fn socket_at(&self, point: Point) -> Option<SocketRef> {
+        for id in &self.nodes {
+            let Some(slot) = self.slots.get(id) else {
+                continue;
+            };
+            let local = point - slot.pos.to_vec2();
+
+            if slot.outlets > 0 {
+                let outlet = node_box::outlet_socket_local(
+                    slot.inlets.len() as u16,
+                    slot.outlets,
+                    slot.inlets.len() as u16,
+                );
+                if outlet.distance(local) <= SOCKET_HIT_RADIUS {
+                    return Some(SocketRef { node: *id, kind: SocketKind::Outlet });
+                }
+            }
+
+            for ordinal in 0..slot.inlets.len() as u16 {
+                let inlet = node_box::inlet_socket_local(&slot.inlets, ordinal, 0);
+                if inlet.distance(local) <= SOCKET_HIT_RADIUS {
+                    return Some(SocketRef { node: *id, kind: SocketKind::Inlet(ordinal) });
+                }
+            }
+        }
+        None
+    }
+
+    /// The socket an edge drag started from, if one is in progress.
+    pub fn edge_drag_origin(&self) -> Option<SocketRef> {
+        self.drag.as_ref().map(|drag| drag.from)
     }
 }
 
@@ -235,6 +307,19 @@ impl Widget for GraphCanvas {
             let to = self.to_visual(to_slot.pos + to_local.to_vec2());
             let (brush, width) = edge_style(edge);
             self.paint_edge(painter, from, to, brush, width);
+        }
+
+        if let Some(drag) = &self.drag
+            && let Some(slot) = self.slots.get(&drag.from.node)
+        {
+            let from_local = node_box::outlet_socket_local(
+                slot.inlets.len() as u16,
+                slot.outlets,
+                slot.inlets.len() as u16,
+            );
+            let from = self.to_visual(slot.pos + from_local.to_vec2());
+            let to = self.to_visual(drag.cursor);
+            self.paint_edge(painter, from, to, Color::from_rgb8(220, 220, 230), 2.0);
         }
     }
 
@@ -386,6 +471,23 @@ impl Widget for GraphCanvas {
                         pos: WorldVec2::new(slot.pos.x as f32, slot.pos.y as f32),
                     });
                 }
+            }
+            NodeBoxAction::SocketPressed(kind) => self.socket_pressed(ctx, id, kind),
+            NodeBoxAction::ConnectDragged(local) => {
+                if let Some(slot) = self.slots.get(&id) {
+                    let cursor = slot.pos + local.to_vec2();
+                    if let Some(drag) = &mut self.drag {
+                        drag.cursor = cursor;
+                    }
+                }
+                ctx.request_paint_only();
+            }
+            NodeBoxAction::ConnectReleased(local) => {
+                let point = self.slots.get(&id).map(|slot| slot.pos + local.to_vec2());
+                if let Some(point) = point {
+                    self.connect_released(point);
+                }
+                ctx.request_paint_only();
             }
         }
         ctx.set_handled();
@@ -736,6 +838,22 @@ impl GraphCanvas {
         }
     }
 
+    /// A socket was pressed. An outlet starts an edge drag; an inlet is
+    /// Task 15's disconnect gesture, and does nothing yet.
+    fn socket_pressed(&mut self, _ctx: &mut ActionCtx<'_>, node: NodeId, kind: SocketKind) {
+        if kind != SocketKind::Outlet {
+            return;
+        }
+        let cursor = self.slots.get(&node).map(|slot| slot.pos).unwrap_or_default();
+        self.drag = Some(EdgeDrag { from: SocketRef { node, kind }, cursor });
+    }
+
+    /// The edge drag ended at this canvas-space point. Task 15 turns a landing
+    /// on a legal inlet into a `Connect`; for now every release just cancels.
+    fn connect_released(&mut self, _point: Point) {
+        self.drag = None;
+    }
+
     /// `EventCtx` version of re-applying pan/zoom/position to every node
     /// (scroll-driven pan/zoom affects all of them at once).
     fn retransform_all_from_event(&mut self, ctx: &mut EventCtx<'_>) {
@@ -827,6 +945,24 @@ impl GraphCanvas {
     pub fn delete_selected_for_test(this: &mut WidgetMut<'_, Self>) {
         this.widget.delete_selected();
     }
+
+    /// Test seam for a socket press.
+    pub fn socket_pressed_for_test(this: &mut WidgetMut<'_, Self>, socket: SocketRef) {
+        let cursor = this
+            .widget
+            .slots
+            .get(&socket.node)
+            .map(|slot| slot.pos)
+            .unwrap_or_default();
+        if socket.kind == SocketKind::Outlet {
+            this.widget.drag = Some(EdgeDrag { from: socket, cursor });
+        }
+    }
+
+    /// Test seam for the release.
+    pub fn connect_released_for_test(this: &mut WidgetMut<'_, Self>, point: Point) {
+        this.widget.connect_released(point);
+    }
 }
 
 /// Base colour per wire name, brightened and thickened by activity.
@@ -863,14 +999,14 @@ fn normalised(edge: &EdgeSlot) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::GraphCanvas;
-    use crate::node_box::NodeBox;
+    use super::{GraphCanvas, SocketKind, SocketRef};
+    use crate::node_box::{self, NodeBox};
     use crate::snapshot::{EdgeView, NodeId, NodeView, WorldSnapshot};
     use bevy_ecs::entity::Entity;
     use bevy_math::Vec2 as WorldVec2;
     use masonry::core::keyboard::{Code, Key, KeyboardEvent, NamedKey};
     use masonry::core::{DefaultProperties, PointerButton, TextEvent, Widget};
-    use masonry_core::kurbo::{Point, Vec2};
+    use masonry_core::kurbo::{self, Point, Vec2};
     use masonry_testing::TestHarness;
     use sway_graph::EditorCommand;
 
@@ -1401,5 +1537,142 @@ mod tests {
             assert_eq!(node_box.widget.inlet_socket_count(), 2);
             assert_eq!(node_box.widget.outlet_socket_count(), 1);
         });
+    }
+
+    /// A node at a known canvas position with two inlets and one outlet, so
+    /// every socket has a distinct, computable position.
+    fn socket_node(pos: Point) -> NodeView {
+        use crate::snapshot::InletView;
+        NodeView {
+            inlets: vec![
+                InletView { wire: "amount", connected: false },
+                InletView { wire: "parent", connected: false },
+            ],
+            outlets: 1,
+            ..node(0, "n", Some(pos))
+        }
+    }
+
+    #[test]
+    fn a_point_on_the_outlet_socket_hits_it() {
+        let origin = Point::new(40.0, 25.0);
+        let (harness, _rx) = harness_and_rx(snapshot(vec![socket_node(origin)], vec![]));
+
+        // `outlet_socket_local(inlet_field_count, outlets, field)` is the same
+        // math `paint` uses, so the probe cannot drift from what is drawn.
+        let local = node_box::outlet_socket_local(2, 1, 2);
+        let probe = origin + local.to_vec2();
+
+        assert_eq!(
+            harness.root_widget().socket_at(probe),
+            Some(SocketRef { node: NodeId(0), kind: SocketKind::Outlet }),
+        );
+    }
+
+    #[test]
+    fn each_inlet_socket_reports_its_own_ordinal() {
+        // Two inlets must not both resolve to ordinal 0 — the same class of
+        // defect as the hardcoded to_field M6-6 fixes.
+        let origin = Point::new(40.0, 25.0);
+        let (harness, _rx) = harness_and_rx(snapshot(vec![socket_node(origin)], vec![]));
+
+        let first = origin + node_box::inlet_socket_local(&[1, 1], 0, 0).to_vec2();
+        let second = origin + node_box::inlet_socket_local(&[1, 1], 1, 0).to_vec2();
+        assert_ne!(first, second, "the two sockets must be at different heights");
+
+        assert_eq!(
+            harness.root_widget().socket_at(first),
+            Some(SocketRef { node: NodeId(0), kind: SocketKind::Inlet(0) }),
+        );
+        assert_eq!(
+            harness.root_widget().socket_at(second),
+            Some(SocketRef { node: NodeId(0), kind: SocketKind::Inlet(1) }),
+        );
+    }
+
+    #[test]
+    fn a_point_between_sockets_hits_nothing() {
+        let origin = Point::new(40.0, 25.0);
+        let (harness, _rx) = harness_and_rx(snapshot(vec![socket_node(origin)], vec![]));
+
+        // The middle of the box: no socket is anywhere near it.
+        let middle = origin + kurbo::Vec2::new(node_box::SIZE.width / 2.0, node_box::SIZE.height / 2.0);
+        assert_eq!(harness.root_widget().socket_at(middle), None);
+    }
+
+    #[test]
+    fn a_point_far_from_every_node_hits_nothing() {
+        let (harness, _rx) = harness_and_rx(snapshot(vec![socket_node(Point::ZERO)], vec![]));
+        assert_eq!(harness.root_widget().socket_at(Point::new(-500.0, -500.0)), None);
+    }
+
+    #[test]
+    fn pressing_an_outlet_starts_a_drag_and_releasing_clears_it() {
+        let origin = Point::new(40.0, 25.0);
+        let (mut harness, _rx) = harness_and_rx(snapshot(vec![socket_node(origin)], vec![]));
+
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::socket_pressed_for_test(
+                &mut canvas,
+                SocketRef { node: NodeId(0), kind: SocketKind::Outlet },
+            );
+        });
+        assert!(harness.root_widget().edge_drag_origin().is_some());
+
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::connect_released_for_test(&mut canvas, Point::new(-500.0, -500.0));
+        });
+        assert!(
+            harness.root_widget().edge_drag_origin().is_none(),
+            "releasing over empty canvas cancels the drag",
+        );
+    }
+
+    /// Unlike `pressing_an_outlet_starts_a_drag_and_releasing_clears_it`
+    /// above, which drives the drag through `socket_pressed_for_test`/
+    /// `connect_released_for_test`, this drives a real press and release at
+    /// the outlet's actual window position through the harness, with no
+    /// bypass -- proving `NodeBox::on_pointer_event` really does hit-test its
+    /// own sockets on `Down` (`socket_at_local`) before falling through to
+    /// the node-drag gesture, and that the resulting `SocketPressed`/
+    /// `ConnectReleased` really do bubble to `GraphCanvas::on_action` -- the
+    /// same child-to-parent action mechanism Phase 5 already proved for
+    /// `Selected`/`DraggedBy`/`DragEnded` (see
+    /// `a_real_click_then_delete_key_deletes_the_selected_node` and
+    /// `ending_a_drag_reports_the_nodes_new_canvas_position`), now exercised
+    /// for the three variants this task adds.
+    #[test]
+    fn a_real_press_on_an_outlet_starts_a_drag_with_no_bypass() {
+        let origin = Point::new(40.0, 25.0);
+        let mut harness = harness_with(snapshot(vec![socket_node(origin)], vec![]));
+
+        // Identity pan/zoom, so window space equals canvas space directly.
+        // The outlet dot sits exactly on the box's own right edge
+        // (`outlet_socket_local`'s x is `SIZE.width`), which is the
+        // hit-test rect's exclusive boundary (`kurbo::Rect::contains` is
+        // right/bottom-exclusive) -- a point exactly there never reaches
+        // `NodeBox` at all, real dot or not. One pixel inside is still well
+        // within `SOCKET_HIT_RADIUS` (10px) and is where a real click near
+        // the dot actually lands.
+        let outlet_local = node_box::outlet_socket_local(2, 1, 2) - Vec2::new(1.0, 0.0);
+        harness.mouse_move(origin + outlet_local.to_vec2());
+        harness.mouse_button_press(Some(PointerButton::Primary));
+
+        assert_eq!(
+            harness.root_widget().edge_drag_origin(),
+            Some(SocketRef { node: NodeId(0), kind: SocketKind::Outlet }),
+            "a real press on the outlet's own screen position must start the drag",
+        );
+        // A socket press must not also select the node -- `Selected` is the
+        // other branch of the same `Down` arm, taken only when the press
+        // missed every socket.
+        assert_eq!(harness.root_widget().selected_node(), None);
+
+        harness.mouse_move(Point::new(-500.0, -500.0));
+        harness.mouse_button_release(Some(PointerButton::Primary));
+        assert!(
+            harness.root_widget().edge_drag_origin().is_none(),
+            "a real release over empty canvas must cancel the drag",
+        );
     }
 }

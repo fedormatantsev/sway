@@ -25,13 +25,20 @@
 //! `source: WidgetId` to find which child fired). `GraphCanvas::on_action`
 //! does the same thing here.
 //!
-//! Reported deltas/positions are all in raw window-space (logical pixels),
-//! deliberately *not* run through `ctx.local_position` -- see the task 7
-//! report for why: this widget's own transform changes mid-drag (it encodes
-//! the node's canvas position, which the drag is busy updating), so reading
-//! a delta back out of that same transform via `local_position` would double
-//! count each step. Window space is stable, so `GraphCanvas` (which alone
-//! knows `pan`/`zoom`) converts once, centrally.
+//! Dragging/dragged-node deltas and positions (`DraggedBy`) are raw
+//! window-space (logical pixels), deliberately *not* run through
+//! `ctx.local_position` -- see the task 7 report for why: this widget's own
+//! transform changes mid-drag (it encodes the node's canvas position, which
+//! the drag is busy updating), so reading a delta back out of that same
+//! transform via `local_position` would double count each step. Window space
+//! is stable, so `GraphCanvas` (which alone knows `pan`/`zoom`) converts
+//! once, centrally.
+//!
+//! Socket positions (`SocketPressed`/`ConnectDragged`/`ConnectReleased`) are
+//! the opposite: this box's own transform is *not* changing mid-gesture (only
+//! the node being dragged repositions itself), so `ctx.local_position`
+//! already divides out pan/zoom safely, and is reported in this box's own
+//! local space -- `GraphCanvas` adds `slot.pos` to get canvas space.
 
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
@@ -44,6 +51,8 @@ use masonry::layout::{LenReq, Length};
 use masonry::widgets::Label;
 use masonry_core::kurbo::{Affine, Axis, Circle, Point, RoundedRect, Size, Stroke};
 use peniko::Color;
+
+use crate::canvas::SocketKind;
 
 /// Fixed footprint of every node box, in canvas-space logical pixels.
 ///
@@ -60,8 +69,10 @@ const CORNER_RADIUS: f64 = 8.0;
 /// Inset of the label from the box's top-left corner, in logical pixels.
 const LABEL_INSET: f64 = 10.0;
 
-/// Radius of a drawn socket dot, in logical pixels.
-const SOCKET_RADIUS: f64 = 4.0;
+/// Radius of a drawn socket dot, in logical pixels. `pub(crate)` so
+/// `GraphCanvas`'s own hit test (`SOCKET_HIT_RADIUS`) agrees with this on one
+/// number.
+pub(crate) const SOCKET_RADIUS: f64 = 4.0;
 
 /// What the pointer is currently doing to this node box, between a `Down`
 /// that started a gesture and the `Up`/`Cancel` that ends it.
@@ -74,15 +85,13 @@ enum Gesture {
     /// than a delta-since-`Down` (see the module doc for why this can't be
     /// derived from `ctx.local_position` instead).
     Dragging { last_window: Point },
+    /// Dragging an edge out of one of this box's sockets.
+    Connecting,
 }
 
 /// The action a [`NodeBox`] reports to its parent [`GraphCanvas`] through
 /// [`EventCtx::submit_action`]/[`Widget::on_action`]. Deltas are window-space
 /// (logical pixels); see the module doc.
-///
-/// Drag-to-connect is deliberately absent. It appended to a local `Vec` of
-/// edges, inventing connections that exist in no graph -- harmless against
-/// placeholder boxes, a lie against real ones. Topology editing arrives at M7.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NodeBoxAction {
     /// This node was pressed: the canvas should select it.
@@ -93,6 +102,14 @@ pub enum NodeBoxAction {
     /// to the world; a press with no movement reports this too, and the
     /// world-side equal-value guard makes that a no-op.
     DragEnded,
+    /// A press landed on one of this box's sockets. Positions in the two
+    /// variants below are in this box's own local space; the canvas adds the
+    /// box's canvas position to get canvas space (see the task preamble).
+    SocketPressed(SocketKind),
+    /// The pointer moved while dragging from a socket.
+    ConnectDragged(Point),
+    /// The socket drag ended here.
+    ConnectReleased(Point),
 }
 
 /// A node box in the graph canvas: a rounded rectangle with a border and a
@@ -189,6 +206,24 @@ impl NodeBox {
     /// ordinal among just the outlets.
     pub fn outlet_socket_pos(&self, field: u16) -> Point {
         outlet_socket_local(self.inlets.len() as u16, self.outlets, field)
+    }
+
+    /// Which of this box's sockets a local-space point is on, if any. Same
+    /// radius and same geometry the canvas uses.
+    fn socket_at_local(&self, local: Point) -> Option<SocketKind> {
+        let inlet_fields = self.inlets.len() as u16;
+        if self.outlets > 0 {
+            let outlet = outlet_socket_local(inlet_fields, self.outlets, inlet_fields);
+            if outlet.distance(local) <= SOCKET_RADIUS * 2.5 {
+                return Some(SocketKind::Outlet);
+            }
+        }
+        for ordinal in 0..inlet_fields {
+            if inlet_socket_local(&self.inlets, ordinal, 0).distance(local) <= SOCKET_RADIUS * 2.5 {
+                return Some(SocketKind::Inlet(ordinal));
+            }
+        }
+        None
     }
 }
 
@@ -361,28 +396,51 @@ impl Widget for NodeBox {
                 // sees directly (it captures the pointer below), so the key
                 // has to reach `GraphCanvas` by bubbling from *this* widget's
                 // focus instead. `NodeBox` leaves text events unhandled, so
-                // that bubbling reaches its real parent, `GraphCanvas`.
+                // that bubbling reaches its real parent, `GraphCanvas`. Every
+                // primary press claims focus this way, socket or not -- there
+                // is no reason a socket-drag press should leave the box
+                // unfocused when a body press wouldn't.
                 ctx.request_focus();
                 ctx.capture_pointer();
-                self.gesture = Gesture::Dragging { last_window: window_point(state) };
-                ctx.submit_action::<Self::Action>(NodeBoxAction::Selected);
+                let local = ctx.local_position(state.position);
+                if let Some(kind) = self.socket_at_local(local) {
+                    self.gesture = Gesture::Connecting;
+                    ctx.submit_action::<Self::Action>(NodeBoxAction::SocketPressed(kind));
+                } else {
+                    self.gesture = Gesture::Dragging { last_window: window_point(state) };
+                    ctx.submit_action::<Self::Action>(NodeBoxAction::Selected);
+                }
                 // Stop this from also bubbling to `GraphCanvas::on_pointer_event`,
                 // which treats an unhandled `Down` as "background click, clear
                 // selection" -- see that method's doc comment.
                 ctx.set_handled();
             }
             PointerEvent::Move(PointerUpdate { current, .. }) if ctx.is_active() => {
-                let window = window_point(current);
-                if let Gesture::Dragging { last_window } = &mut self.gesture {
-                    let delta = window - *last_window;
-                    *last_window = window;
-                    ctx.submit_action::<Self::Action>(NodeBoxAction::DraggedBy(delta));
+                match &mut self.gesture {
+                    Gesture::Dragging { last_window } => {
+                        let window = window_point(current);
+                        let delta = window - *last_window;
+                        *last_window = window;
+                        ctx.submit_action::<Self::Action>(NodeBoxAction::DraggedBy(delta));
+                    }
+                    Gesture::Connecting => {
+                        let local = ctx.local_position(current.position);
+                        ctx.submit_action::<Self::Action>(NodeBoxAction::ConnectDragged(local));
+                    }
+                    Gesture::None => {}
                 }
                 ctx.set_handled();
             }
-            PointerEvent::Up(..) => {
-                if matches!(self.gesture, Gesture::Dragging { .. }) {
-                    ctx.submit_action::<Self::Action>(NodeBoxAction::DragEnded);
+            PointerEvent::Up(PointerButtonEvent { state, .. }) => {
+                match self.gesture {
+                    Gesture::Dragging { .. } => {
+                        ctx.submit_action::<Self::Action>(NodeBoxAction::DragEnded);
+                    }
+                    Gesture::Connecting => {
+                        let local = ctx.local_position(state.position);
+                        ctx.submit_action::<Self::Action>(NodeBoxAction::ConnectReleased(local));
+                    }
+                    Gesture::None => {}
                 }
                 self.gesture = Gesture::None;
                 ctx.set_handled();
