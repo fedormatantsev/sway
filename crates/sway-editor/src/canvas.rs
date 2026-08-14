@@ -801,6 +801,16 @@ impl GraphCanvas {
         }
     }
 
+    /// Clears `palette_layer` after the palette dismisses itself (a press
+    /// outside its border box, or a `Cancel`). Called by
+    /// `Palette::capture_pointer_event` via `ctx.mutate_later(creator, ...)`
+    /// -- see `palette.rs`'s module doc for why that indirection is needed.
+    /// Without this, `palette_layer` would keep the removed layer's stale id
+    /// and canvas position until the next right-click overwrote it.
+    pub fn dismiss_palette(this: &mut WidgetMut<'_, Self>) {
+        this.widget.palette_layer = None;
+    }
+
     /// Test seam for the palette pick, which otherwise needs a live layer.
     pub fn palette_picked_for_test(
         this: &mut WidgetMut<'_, Self>,
@@ -954,6 +964,35 @@ mod tests {
         assert!(
             harness.root_widget().palette_layer_id().is_some(),
             "a secondary press opens the palette",
+        );
+    }
+
+    /// Review finding (phase-5-review.md, Important #1): `Palette`'s dismiss
+    /// branch (a press outside its border box, or a `Cancel`) removed the
+    /// layer but never told `GraphCanvas`, leaving `palette_layer` stale --
+    /// `Some((old_layer_id, old_pos))` -- until the next right-click
+    /// silently overwrote it. `GraphCanvas::dismiss_palette`, reached via
+    /// `Palette::capture_pointer_event`'s `ctx.mutate_later(creator, ...)`,
+    /// is what closes that gap.
+    #[test]
+    fn dismissing_the_palette_by_clicking_outside_clears_the_layer_bookkeeping() {
+        let mut snap = snapshot(vec![], vec![]);
+        snap.palette = vec!["Lfo", "Remap"];
+        let (mut harness, _rx) = harness_and_rx(snap);
+
+        harness.mouse_move(Point::new(200.0, 150.0));
+        harness.mouse_button_press(Some(PointerButton::Secondary));
+        assert!(harness.root_widget().palette_layer_id().is_some(), "the palette opened");
+
+        // A press far from where the palette opened lands outside its
+        // border box, which is exactly what `Palette::capture_pointer_event`
+        // dismisses on.
+        harness.mouse_move(Point::new(5.0, 5.0));
+        harness.mouse_button_press(Some(PointerButton::Primary));
+
+        assert!(
+            harness.root_widget().palette_layer_id().is_none(),
+            "dismissing the palette must clear GraphCanvas's own bookkeeping too",
         );
     }
 

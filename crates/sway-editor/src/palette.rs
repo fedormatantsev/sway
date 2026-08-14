@@ -122,6 +122,16 @@ impl Palette {
         self.rows.get(idx).map(|(_, pod)| pod.id())
     }
 
+    /// The filter box's `TextArea` id -- the one that actually receives
+    /// keyboard focus and text events, per `TextInput`'s own docs. Reached by
+    /// `EditorUi::drain_signals` once this palette's layer has actually been
+    /// added to the tree, so it can be focused immediately (see that call
+    /// site's doc comment for why the focus request can't happen any
+    /// earlier).
+    pub fn input_area_id(&self) -> WidgetId {
+        self.input_area
+    }
+
     fn rebuild_rows(&mut self) {
         self.rows = self
             .visible()
@@ -285,6 +295,18 @@ impl Layer for Palette {
         };
         if dismiss {
             ctx.remove_layer(ctx.widget_id());
+            // `SelectorMenu` clears its opener's bookkeeping on dismiss the
+            // same way it does on pick (see its `capture_pointer_event`);
+            // without this, `GraphCanvas::palette_layer` keeps the removed
+            // layer's id and canvas position until the next right-click
+            // silently overwrites it, and `palette_layer_id()` misreports
+            // the palette as still open in the meantime.
+            if let Some(creator) = self.creator {
+                ctx.mutate_later(creator, move |mut target| {
+                    let mut canvas = target.downcast::<crate::canvas::GraphCanvas>();
+                    crate::canvas::GraphCanvas::dismiss_palette(&mut canvas);
+                });
+            }
         }
     }
 }

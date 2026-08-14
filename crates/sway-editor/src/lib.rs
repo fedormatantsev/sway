@@ -48,6 +48,7 @@ use winit::dpi::PhysicalSize;
 use crate::canvas::GraphCanvas;
 use crate::external::ViewportPlaceholder;
 use crate::inspector::Inspector;
+use crate::palette::Palette;
 use crate::scene_tree::SceneTree;
 use crate::snapshot::{NodeId, WorldSnapshot};
 use crate::transport_bar::{TRANSPORT_BAR_HEIGHT, TransportBar};
@@ -242,7 +243,33 @@ impl EditorUi {
         for signal in drained {
             match signal {
                 RenderRootSignal::NewLayer(_layer_type, root, pos) => {
+                    let layer_id = root.id();
                     self.root.add_layer(root, pos);
+                    // A freshly opened `Palette` should be ready to type
+                    // into immediately (Task 13 brief step 6: "right-click
+                    // the canvas, type `lfo` in the filter"). This can't
+                    // happen from `GraphCanvas`'s own `Secondary` pointer
+                    // handler via `ctx.request_focus`/`set_focus`: masonry
+                    // validates a requested focus target against the widget
+                    // arena on the very same rewrite pass
+                    // (`run_update_focus_pass`'s `is_still_interactive`
+                    // check), and `ctx.create_layer` only *emits* this
+                    // signal -- the layer's widgets, including the filter's
+                    // `TextArea`, don't exist until `add_layer` just above
+                    // actually adds them. This is therefore the first point
+                    // they can be found and focused; `RenderRoot::focus_on`
+                    // is the host-level operation for exactly that (it
+                    // re-validates the target itself). Written generically
+                    // (downcast-and-skip if it isn't a `Palette`) since
+                    // nothing else in this app creates a layer today.
+                    if let Some(input_id) = self
+                        .root
+                        .get_widget(layer_id)
+                        .and_then(|widget| widget.downcast::<Palette>())
+                        .map(|palette| palette.input_area_id())
+                    {
+                        self.root.focus_on(Some(input_id));
+                    }
                 }
                 RenderRootSignal::RemoveLayer(root_id) => {
                     self.root.remove_layer(root_id);
@@ -668,6 +695,44 @@ mod tests {
         ui.drain_signals();
 
         assert!(!ui.root.has_widget(popup_id));
+    }
+
+    /// Review finding (phase-5-review.md, Important #2): nothing ever
+    /// requested keyboard focus for the palette's filter box when it
+    /// opened, so Task 13's own verify-by-eye script ("right-click the
+    /// canvas, type `lfo` in the filter") required an extra click on the
+    /// box first. The fix lives in `drain_signals`'s `NewLayer` arm rather
+    /// than in `GraphCanvas` or `Palette` themselves -- see that call
+    /// site's doc comment for why it can't happen any earlier -- so this
+    /// drives the same signal-based path
+    /// `a_new_layer_signal_puts_the_widget_in_the_tree` does, with a real
+    /// `Palette` instead of a `Label`, and checks the real production
+    /// mechanism (`RenderRoot::focused_widget`), not a bypass.
+    #[test]
+    fn opening_a_palette_layer_focuses_its_filter_box() {
+        use crate::palette::Palette;
+        use masonry_core::core::LayerType;
+
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
+        ui.redraw();
+
+        let palette = Palette::new(vec!["Lfo", "Remap"]);
+        let input_id = palette.input_area_id();
+        let palette = NewWidget::new(palette);
+
+        ui.signals.borrow_mut().push(RenderRootSignal::NewLayer(
+            LayerType::Other,
+            palette.erased(),
+            KurboPoint::new(10.0, 10.0),
+        ));
+        ui.drain_signals();
+
+        assert_eq!(
+            ui.root.focused_widget(),
+            Some(input_id),
+            "opening a palette must focus its filter box so typing works immediately",
+        );
     }
 
     #[test]
