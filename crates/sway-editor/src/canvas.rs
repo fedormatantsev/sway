@@ -35,7 +35,7 @@ use peniko::Color;
 use sway_graph::EditorCommand;
 
 use crate::node_box::{self, NodeBox, NodeBoxAction};
-use crate::palette::{Palette, PaletteAction};
+use crate::palette::Palette;
 use crate::snapshot::{NodeId, WorldSnapshot};
 
 /// Converts a [`PointerState`]'s position to a window-space (logical pixels)
@@ -265,7 +265,9 @@ impl Widget for GraphCanvas {
             }) => {
                 let local = ctx.local_position(state.position);
                 let canvas_pos = self.to_canvas(local);
-                let palette = NewWidget::new(Palette::new(self.palette.clone()));
+                let palette = NewWidget::new(
+                    Palette::new(self.palette.clone()).with_creator(ctx.widget_id()),
+                );
                 self.palette_layer = Some((palette.id(), canvas_pos));
                 ctx.create_layer(LayerType::Other, palette, ctx.to_window(local));
                 ctx.set_handled();
@@ -278,6 +280,14 @@ impl Widget for GraphCanvas {
                 // the middle button). So a `Down` reaching *this* widget's
                 // own handler for the primary button means the press landed
                 // outside every node: a background click.
+                //
+                // Also claims keyboard focus: a background click is the only
+                // press `GraphCanvas` itself ever sees directly (a click on a
+                // node is claimed and focused by `NodeBox` instead, and
+                // `on_text_event` below still receives Delete/Backspace via
+                // bubbling in that case, since `NodeBox` leaves text events
+                // unhandled).
+                ctx.request_focus();
                 self.clear_selection(ctx);
                 ctx.set_handled();
             }
@@ -344,20 +354,11 @@ impl Widget for GraphCanvas {
         action: &ErasedAction,
         source: WidgetId,
     ) {
-        if let Some(PaletteAction::Picked(component)) = action.downcast_ref::<PaletteAction>() {
-            // The position the palette was *opened* at, not where the pick
-            // landed: the node belongs where the user pointed, not where the
-            // list happened to place that row.
-            if let Some((layer_id, pos)) = self.palette_layer.take() {
-                let _ = self.commands.send(EditorCommand::Create {
-                    component,
-                    pos: WorldVec2::new(pos.x as f32, pos.y as f32),
-                });
-                ctx.remove_layer(layer_id);
-            }
-            ctx.set_handled();
-            return;
-        }
+        // `Palette` never reaches this method: `ctx.create_layer` makes it a
+        // *sibling* of `GraphCanvas` under masonry's internal `LayerStack`,
+        // not a descendant, so a pick cannot bubble here as an action --
+        // see `finish_palette_pick` and `palette.rs`'s module doc for the
+        // `mutate_later`-based path that actually carries it back.
         let Some(id) = self
             .nodes
             .iter()
@@ -409,6 +410,19 @@ impl Widget for GraphCanvas {
             self.delete_selected();
             ctx.set_handled();
         }
+    }
+
+    /// Declares that `GraphCanvas` is a widget that wants keyboard focus, per
+    /// this method's own contract ("if true, pressing Tab can focus this
+    /// widget"). `on_text_event` (Delete/Backspace) depends on
+    /// `ctx.request_focus()` (see the pointer-down handler above) actually
+    /// making this the focused widget, and every other focus-requesting
+    /// widget in masonry (`Button`, `Switch`, `Split`'s drag bar, ...)
+    /// overrides this alongside its own `request_focus` call, so this does
+    /// too, rather than relying on undocumented behaviour of the current
+    /// pinned revision.
+    fn accepts_focus(&self) -> bool {
+        true
     }
 
     fn accessibility_role(&self) -> Role {
@@ -770,6 +784,23 @@ impl GraphCanvas {
         self.palette_layer.map(|(id, _)| id)
     }
 
+    /// Finishes a real palette pick. Called by `Palette::on_action` via
+    /// `ctx.mutate_later(creator, ...)` -- see `palette.rs`'s module doc for
+    /// why that indirection exists instead of an ordinary bubbled action.
+    ///
+    /// Sends `Create` at the position the palette was *opened* at, not where
+    /// the pick landed: the node belongs where the user pointed, not where
+    /// the list happened to place that row.
+    pub fn finish_palette_pick(this: &mut WidgetMut<'_, Self>, component: &'static str) {
+        if let Some((layer_id, pos)) = this.widget.palette_layer.take() {
+            let _ = this.widget.commands.send(EditorCommand::Create {
+                component,
+                pos: WorldVec2::new(pos.x as f32, pos.y as f32),
+            });
+            this.ctx.remove_layer(layer_id);
+        }
+    }
+
     /// Test seam for the palette pick, which otherwise needs a live layer.
     pub fn palette_picked_for_test(
         this: &mut WidgetMut<'_, Self>,
@@ -827,7 +858,8 @@ mod tests {
     use crate::snapshot::{EdgeView, NodeId, NodeView, WorldSnapshot};
     use bevy_ecs::entity::Entity;
     use bevy_math::Vec2 as WorldVec2;
-    use masonry::core::{DefaultProperties, PointerButton, Widget};
+    use masonry::core::keyboard::{Code, Key, KeyboardEvent, NamedKey};
+    use masonry::core::{DefaultProperties, PointerButton, TextEvent, Widget};
     use masonry_core::kurbo::{Point, Vec2};
     use masonry_testing::TestHarness;
     use sway_graph::EditorCommand;
@@ -925,6 +957,65 @@ mod tests {
         );
     }
 
+    /// Review finding (task-13-review-1.md, Critical #1): `ctx.create_layer`
+    /// makes `Palette` a *sibling* of `GraphCanvas` under masonry's internal
+    /// `LayerStack`, not its descendant, so `PaletteAction::Picked`'s normal
+    /// `submit_action` bubbling dead-ends at `LayerStack` and never reaches
+    /// `GraphCanvas::on_action` -- a real right-click-then-pick did nothing.
+    /// Unlike `picking_from_the_palette_creates_at_the_canvas_position`
+    /// above, this drives the actual right-click and the actual row click
+    /// through the harness, with no `palette_picked_for_test` bypass, so it
+    /// exercises the real `Palette::with_creator` / `ctx.mutate_later` /
+    /// `GraphCanvas::finish_palette_pick` path end to end.
+    #[test]
+    fn a_real_palette_pick_creates_the_node_with_no_bypass() {
+        let mut snap = snapshot(vec![], vec![]);
+        snap.palette = vec!["Lfo", "Remap"];
+        let (mut harness, rx) = harness_and_rx(snap);
+
+        harness.mouse_move(Point::new(200.0, 150.0));
+        harness.mouse_button_press(Some(PointerButton::Secondary));
+        let layer_id = harness
+            .root_widget()
+            .palette_layer_id()
+            .expect("the secondary press opened the palette");
+        let row_id = harness
+            .edit_widget_with_id(layer_id, |mut widget| {
+                widget.downcast::<crate::palette::Palette>().widget.row_id(0)
+            })
+            .expect("Lfo is the first row in registry order");
+
+        // `mouse_click_on`/`mouse_move_to` only hit-test `get_layer_root(0)`
+        // (masonry_testing's own doc comments on those methods), so they
+        // cannot reach a widget inside the `Palette` overlay layer -- real
+        // pointer dispatch (what the running app uses, `get_pointer_target`
+        // in masonry_core's event pass) hit-tests every layer. This computes
+        // the row's actual window-space centre and drives `mouse_move`/
+        // `mouse_button_press` directly instead of going through those two
+        // convenience methods.
+        let center = {
+            let row = harness.get_widget_with_id(row_id);
+            row.ctx().window_transform() * row.ctx().border_box().center()
+        };
+        harness.mouse_move(center);
+        harness.mouse_button_press(Some(PointerButton::Primary));
+        harness.mouse_button_release(Some(PointerButton::Primary));
+
+        let commands: Vec<_> = rx.try_iter().collect();
+        assert!(
+            matches!(
+                commands.as_slice(),
+                [EditorCommand::Create { component: "Lfo", pos }]
+                    if *pos == WorldVec2::new(200.0, 150.0)
+            ),
+            "got {commands:?}",
+        );
+        assert!(
+            harness.root_widget().palette_layer_id().is_none(),
+            "the pick closes the palette",
+        );
+    }
+
     #[test]
     fn the_delete_key_deletes_the_selected_node() {
         let entity = Entity::from_raw_u32(4).expect("valid entity id");
@@ -936,6 +1027,52 @@ mod tests {
             GraphCanvas::set_selected(&mut canvas, Some(NodeId(4)));
             GraphCanvas::delete_selected_for_test(&mut canvas);
         });
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![EditorCommand::Delete { entity }],
+        );
+    }
+
+    /// Review finding (task-13-review-1.md, Critical #2): nothing ever
+    /// called `ctx.request_focus()`, so masonry's text-event pass (which
+    /// only ever targets `focused_widget`/`focus_fallback`, both `None`
+    /// forever) never reached `GraphCanvas::on_text_event` -- a real
+    /// selection followed by a real Delete press did nothing. Unlike
+    /// `the_delete_key_deletes_the_selected_node` above, this drives a real
+    /// click (which is what actually selects a node in the running app,
+    /// through `NodeBox`, not `GraphCanvas::set_selected`) and a real
+    /// `TextEvent::Keyboard` Delete press through the harness, with no
+    /// `delete_selected_for_test` bypass -- proving the click grants focus
+    /// (via `NodeBox::accepts_focus`/`ctx.request_focus()`) and that the key
+    /// then reaches `GraphCanvas` by bubbling, since `NodeBox` leaves text
+    /// events unhandled.
+    #[test]
+    fn a_real_click_then_delete_key_deletes_the_selected_node() {
+        let entity = Entity::from_raw_u32(4).expect("valid entity id");
+        let (mut harness, rx) = harness_and_rx(snapshot(
+            vec![NodeView { entity, ..node(4, "a", Some(Point::new(10.0, 10.0))) }],
+            vec![],
+        ));
+
+        harness.mouse_move(Point::new(20.0, 20.0));
+        harness.mouse_button_press(Some(PointerButton::Primary));
+        harness.mouse_button_release(Some(PointerButton::Primary));
+        assert_eq!(
+            harness.root_widget().selected_node(),
+            Some(NodeId(4)),
+            "the click must have selected the node",
+        );
+        // The click's `Up` also reports `DragEnded` even without movement
+        // (`NodeBoxAction::DragEnded`'s own doc comment), which sends a
+        // same-position `MoveNode` -- irrelevant to what this test checks,
+        // so it's drained here rather than folded into the assertion below.
+        rx.try_iter().for_each(drop);
+
+        harness.process_text_event(TextEvent::Keyboard(KeyboardEvent::key_down(
+            Key::Named(NamedKey::Delete),
+            Code::Delete,
+        )));
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),

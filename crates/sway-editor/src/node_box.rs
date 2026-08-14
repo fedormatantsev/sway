@@ -355,6 +355,14 @@ impl Widget for NodeBox {
                     // `GraphCanvas::on_pointer_event`.
                     return;
                 }
+                // Claims keyboard focus (matching masonry's own `Button`/
+                // `Split`'s drag bar): `GraphCanvas` owns the Delete/Backspace
+                // handler, but this press is what `GraphCanvas` itself never
+                // sees directly (it captures the pointer below), so the key
+                // has to reach `GraphCanvas` by bubbling from *this* widget's
+                // focus instead. `NodeBox` leaves text events unhandled, so
+                // that bubbling reaches its real parent, `GraphCanvas`.
+                ctx.request_focus();
                 ctx.capture_pointer();
                 self.gesture = Gesture::Dragging { last_window: window_point(state) };
                 ctx.submit_action::<Self::Action>(NodeBoxAction::Selected);
@@ -439,6 +447,13 @@ impl Widget for NodeBox {
     // the trait's own default, so Task 7's hit-testing test has something
     // concrete to point at on this widget.
     fn accepts_pointer_interaction(&self) -> bool {
+        true
+    }
+
+    /// Required for `ctx.request_focus()` (above) to actually grant this
+    /// widget focus -- see that call site's doc comment for why the Delete
+    /// key needs it to.
+    fn accepts_focus(&self) -> bool {
         true
     }
 }

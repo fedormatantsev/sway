@@ -5,9 +5,20 @@
 //! itself on a press outside its own border box, which is the behaviour every
 //! popup in the pinned checkout has and the one users expect.
 //!
-//! Knows nothing about the world. It is handed a list of names by
-//! `WorldSnapshot.palette` and reports the one that was picked; `GraphCanvas`
-//! turns that into an `EditorCommand::Create` (Task 13).
+//! It is handed a list of names by `WorldSnapshot.palette` and reports the
+//! one that was picked; `GraphCanvas` turns that into an
+//! `EditorCommand::Create` (Task 13). Reporting back is the other half of
+//! the `SelectorMenu` model: `ctx.create_layer` (masonry_core) makes `Palette`
+//! a *sibling* of the widget that opened it under masonry's internal
+//! `LayerStack`, not that widget's descendant, so `EventCtx::submit_action`'s
+//! ordinary parent-bubbling dead-ends at `LayerStack` and never reaches back.
+//! `SelectorMenu` solves this by storing its opener's `WidgetId` and using
+//! `ctx.mutate_later` (which targets a `WidgetId` directly, regardless of
+//! tree position) instead of `submit_action`; `with_creator` below is that
+//! same fix, and is what makes `GraphCanvas::finish_palette_pick` reachable
+//! from a real pick. A `Palette` built without a creator (this module's own
+//! tests) keeps reporting through `PaletteAction::Picked` for standalone
+//! testability.
 
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
@@ -48,6 +59,9 @@ pub struct Palette {
     /// Paired rather than re-derived, so a click can never be resolved against
     /// a filter that changed in between.
     rows: Vec<(&'static str, WidgetPod<Button>)>,
+    /// The `GraphCanvas` this palette reports its pick back to, if any. See
+    /// the module doc for why a plain `submit_action` can't reach it.
+    creator: Option<WidgetId>,
 }
 
 // --- MARK: BUILDERS
@@ -61,9 +75,17 @@ impl Palette {
             input: WidgetPod::new(input),
             input_area,
             rows: Vec::new(),
+            creator: None,
         };
         palette.rebuild_rows();
         palette
+    }
+
+    /// Sets the widget a pick is reported back to via `ctx.mutate_later`
+    /// instead of `PaletteAction::Picked`. See the module doc.
+    pub fn with_creator(mut self, creator: WidgetId) -> Self {
+        self.creator = Some(creator);
+        self
     }
 }
 
@@ -147,7 +169,19 @@ impl Widget for Palette {
         if action.downcast_ref::<ButtonPress>().is_some()
             && let Some((name, _)) = self.rows.iter().find(|(_, pod)| pod.id() == source)
         {
-            ctx.submit_action::<Self::Action>(PaletteAction::Picked(name));
+            let name = *name;
+            match self.creator {
+                // `mutate_later` targets `creator` by `WidgetId` directly, so
+                // this reaches `GraphCanvas` even though it is not an
+                // ancestor of this layer -- see the module doc.
+                Some(creator) => {
+                    ctx.mutate_later(creator, move |mut target| {
+                        let mut canvas = target.downcast::<crate::canvas::GraphCanvas>();
+                        crate::canvas::GraphCanvas::finish_palette_pick(&mut canvas, name);
+                    });
+                }
+                None => ctx.submit_action::<Self::Action>(PaletteAction::Picked(name)),
+            }
             ctx.set_handled();
             return;
         }
