@@ -10,6 +10,7 @@ pub mod run;
 #[cfg(any(test, feature = "test-wires"))]
 pub mod test_wires;
 pub mod transport;
+pub mod viewport_input;
 pub mod watch;
 pub mod wire;
 
@@ -24,5 +25,9 @@ pub use registry_wires::{
 };
 pub use run::{WireTickCount, WiresPlugin, graph_tick};
 pub use transport::{MusicalTime, Transport, TransportState, TransportTime};
+pub use viewport_input::{
+    ViewportButton, ViewportInput, ViewportInputRx, ViewportKey, ViewportModifiers,
+    normalize_viewport_pos,
+};
 pub use watch::{Authoring, WatchSet};
 pub use wire::{PropagateFn, Wire, propagate_of};
