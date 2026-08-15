@@ -10,13 +10,13 @@
 //! draws with it.
 
 pub mod canvas;
-pub mod external;
 pub mod inspector;
 pub mod node_box;
 pub mod palette;
 pub mod scene_tree;
 pub mod snapshot;
 pub mod transport_bar;
+pub mod viewport;
 
 #[cfg(test)]
 mod test_graph;
@@ -46,12 +46,12 @@ use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use winit::dpi::PhysicalSize;
 
 use crate::canvas::GraphCanvas;
-use crate::external::ViewportPlaceholder;
 use crate::inspector::Inspector;
 use crate::palette::Palette;
 use crate::scene_tree::SceneTree;
 use crate::snapshot::{NodeId, WorldSnapshot};
 use crate::transport_bar::{TRANSPORT_BAR_HEIGHT, TransportBar};
+use crate::viewport::Viewport;
 
 /// Reaches the hierarchy pane from `EditorUi::apply_snapshot`.
 pub const SCENE_TREE_TAG: WidgetTag<SceneTree> = WidgetTag::named("sway-scene-tree");
@@ -66,7 +66,7 @@ pub const GRAPH_CANVAS_TAG: WidgetTag<GraphCanvas> = WidgetTag::named("sway-grap
 /// doc comment for why that reading (the naive one, and the one this crate
 /// shipped with through Task 7) is wrong for any `External` widget nested
 /// under an offsetting ancestor, which the graph canvas's own `Split` is.
-pub const VIEWPORT_TAG: WidgetTag<ViewportPlaceholder> = WidgetTag::named("sway-viewport");
+pub const VIEWPORT_TAG: WidgetTag<Viewport> = WidgetTag::named("sway-viewport");
 /// Reaches the transport readout from `EditorUi::apply_snapshot`.
 pub const TRANSPORT_BAR_TAG: WidgetTag<TransportBar> = WidgetTag::named("sway-transport-bar");
 
@@ -125,7 +125,8 @@ fn graph_root(commands: Sender<EditorCommand>) -> NewWidget<dyn Widget> {
         .solid_bar(true)
         .prepare();
 
-    let viewport = ViewportPlaceholder::new().prepare().with_tag(VIEWPORT_TAG);
+    // Task 3 threads the real sender
+    let viewport = Viewport::new(crossbeam_channel::unbounded().0).prepare().with_tag(VIEWPORT_TAG);
     let canvas = GraphCanvas::new(commands).prepare().with_tag(GRAPH_CANVAS_TAG);
 
     let right = Split::new(viewport, canvas)
