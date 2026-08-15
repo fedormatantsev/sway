@@ -100,12 +100,15 @@ in every `VisualLayerPlan`, the full-content-box clip — and adds:
   destructive.
 - `accepts_focus` returns `true`, and a primary `Down` calls
   `ctx.request_focus()`, which is what makes W/E/R reach `on_text_event` at all.
-- A queue of `ViewportInput`, drained by `EditorUi::take_viewport_input()`.
+- A `Sender<ViewportInput>`, handed in at construction and sent to directly
+  from the event handlers — exactly what `GraphCanvas` already does with its
+  `Sender<EditorCommand>`. No queue, and no drain plumbed through
+  `EditorPresenter` and the shell.
 
-The widget holds no interaction state beyond that queue: no drag anchor, no
-"is orbiting" flag. Those live on the world side, because that is where the
-gesture is resolved. The widget does call `ctx.capture_pointer()` on `Down` so
-a drag that leaves the rectangle keeps delivering `Move`.
+The widget holds no interaction state at all: no drag anchor, no "is orbiting"
+flag. Those live on the world side, because that is where the gesture is
+resolved. The widget does call `ctx.capture_pointer()` on `Down` so a drag that
+leaves the rectangle keeps delivering `Move`.
 
 **Known risk, carried from M6 explicitly.** Tasks 13 and 14 of M6 each found a
 defect where brief-literal masonry wiring compiled, passed its own tests, and
@@ -209,13 +212,22 @@ Select { entity: Option<Entity> },
 gizmo all read it; the tree, the canvas and the picker all write it through the
 command channel. `sync_selection` is deleted.
 
-**The one-frame lag is handled explicitly, not ignored.** A command sent during
-frame *n* is applied at the start of frame *n+1* and appears in the snapshot
-captured for frame *n+2*. `EditorUi` therefore holds
-`pending_selection: Option<Option<Entity>>`, set when it forwards a `Select`,
-and ignores the snapshot's selection until the snapshot agrees — then clears it.
-Without this the clicked row would visibly revert for one frame, which is
-exactly the bug being fixed.
+**Widgets stop owning selection entirely.** `SceneTree::selected` and
+`GraphCanvas::selected` become pure render state, pushed from the snapshot
+every frame by `EditorUi::apply_snapshot` (both setters already early-return
+when unchanged). A click no longer sets them; it only sends
+`EditorCommand::Select`, so `SceneTree` gains the `Sender<EditorCommand>` the
+canvas and the inspector already hold. The highlight therefore appears about
+two frames after the click — the command lands in the next `app.update()`, and
+the snapshot that reports it is captured the frame after — which is 16–33 ms
+and imperceptible for a selection highlight.
+
+This is what removes the flicker rather than papering over it: widget state
+becomes a pure function of the snapshot, so there is no second opinion left to
+revert to. It also collapses the presenter's two-step capture — `capture` reads
+`Selection` itself and fills `inspector` in the same pass, so
+`EditorPresenter::apply_snapshot` no longer has to ask the widget tree who is
+selected before it can inspect anything.
 
 `Selection` is a `sway-graph` resource rather than a `sway-runtime` one because
 `sway-editor`'s snapshot code reads it and must not depend on `bevy_render`, and
@@ -319,9 +331,9 @@ per pointer-move on the channel.
 
 ### Input forwarding
 
-`Viewport` queues; `EditorUi::take_viewport_input` drains; `EditorPresenter`
-pushes onto the channel inside `present`, next to where it already drains
-`take_file_requests`; `PreUpdate` consumes. Pointer events outside the
+`Viewport` sends on its own channel the moment an event arrives; `main.rs`
+creates that channel beside the `EditorCommand` one and inserts
+`ViewportInputRx` under `--editor`; a `PreUpdate` system consumes. Pointer events outside the
 viewport's rectangle never reach the widget at all — masonry's hit-testing is
 the gate, and no rect maths is duplicated on the world side.
 
@@ -362,10 +374,11 @@ Per architecture §9 — no pixel-diff tests; rendering is verified by eye.
   through the cube's centre selects it, a ray past it clears the selection,
   `ViewportCamera` leaves exactly one camera active in both positions, and an
   `EditorCamera` appears in neither `capture_nodes` nor `to_document`.
-- **Snapshot and sync:** the tree and the canvas both render selection from the
-  snapshot; a `Select` command's one-frame lag does not flicker
-  (`pending_selection`); and the previously-flickering case — a tree row whose
-  entity has no canvas node — holds.
+- **Snapshot and sync:** `capture` reports the world's `Selection` and inspects
+  it in one pass; the tree and the canvas both render selection from the
+  snapshot and neither sets its own on click; and the previously-flickering
+  case — a tree row whose entity has no canvas node — stays selected across
+  repeated snapshots.
 - **By eye, walked by the human partner:** the exit criterion below. GUI
   click/drag automation is established as unreliable in this sandbox (M6 Tasks
   8, 11, 13), so this is run live, not by an agent.
