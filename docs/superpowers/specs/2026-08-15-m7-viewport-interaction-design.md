@@ -38,13 +38,13 @@ this milestone: the widget under the pointer cannot cast a ray, cannot see a
 ```rust
 // sway-graph, beside command.rs
 pub enum ViewportInput {
-    /// Viewport-local logical pixels, origin at the viewport's top-left.
+    /// Normalized to the viewport rect: [0,1]², origin top-left.
     Down   { button: ViewportButton, pos: Vec2, modifiers: ViewportModifiers },
     Move   { pos: Vec2, modifiers: ViewportModifiers },
     Up     { button: ViewportButton, pos: Vec2 },
     Cancel,
-    /// Positive `y` dollies in. Already normalised to logical pixels by the
-    /// widget, the same way `GraphCanvas` normalises its own scroll.
+    /// Positive `y` dollies in. Reduced to logical pixels by the widget, the
+    /// same way `GraphCanvas` reduces its own scroll; `pos` is normalized.
     Scroll { delta: Vec2, pos: Vec2, modifiers: ViewportModifiers },
     /// A pinch magnification delta, from a trackpad.
     Pinch  { delta: f32 },
@@ -76,10 +76,15 @@ hand-rolling `SystemState` for params Bevy would otherwise supply. Two channels
 drained by two systems in `PreUpdate`, commands first, costs nothing and keeps
 both systems ordinary.
 
-**Positions are viewport-local logical pixels.** The widget knows its own
-rectangle; the world side knows the viewport texture's size in physical pixels
-and the scale factor. Sending window-space coordinates would force the world
-side to learn the pane layout.
+**Positions are normalized to the viewport rectangle** — `[0,1]²`, origin at
+the top-left. Not logical window pixels, and not physical ones. The reason is
+`Camera::viewport_to_ndc`, which divides by `logical_viewport_rect()`: for a
+`RenderTarget::TextureView` that rect is the texture's own size, which is
+physical pixels, while masonry's widget coordinates are logical. On a Retina
+display those differ by a factor of two, and every ray in this milestone would
+be wrong by it. Normalizing at the boundary makes the world side
+`pos * camera.logical_viewport_size()` with no scale factor anywhere, and makes
+drag sensitivity resolution-independent for free.
 
 Rejected: defining the enum in `sway-editor` and having `sway-app` translate it
 into a twin type in `sway-runtime`. It keeps a viewport concept out of
@@ -147,7 +152,8 @@ pub fn orbit_transform(cam: &EditorCamera) -> Transform;
 ```
 
 - **Alt + primary drag** orbits: `yaw -= dx * SENSITIVITY`, `pitch` likewise and
-  clamped.
+  clamped. `dx`/`dy` are normalized-viewport deltas (M7-1), so a full-width drag
+  sweeps the same angle at any window size or DPI.
 - **Alt + secondary drag** pans: the pivot moves along the camera's own right
   and up axes, scaled by `distance` so panning feels the same at every zoom.
 - **Scroll and pinch** dolly: `distance *= exp(-delta * RATE)`, clamped to a
@@ -179,6 +185,11 @@ A system writes `Camera::is_active` from it: `EditorCamera` active iff `Editor`,
 every `SceneCamera` active iff `Scene`. `retarget_cameras` is left alone.
 A show build has no `EditorCamera` and no `EditorViewportPlugin`, so nothing
 touches `is_active` and the scene camera renders exactly as it does today.
+
+**The query is scoped to those two markers, never "every camera".** The gizmo
+renderer spawns an overlay camera of its own (M7-8); deactivating it would take
+the gizmo off the screen. `retarget_cameras` still points it at the viewport
+texture, which is what it needs.
 
 The toggle is a transport-bar button, matching M6's Open / Save / Save As
 toolbar, and travels as a `FileRequest`-shaped UI intent — a new
@@ -252,10 +263,14 @@ rather than by building the hand-rolled fallback:
 `bevy_winit` — disabled in this app. Only the ray-cast `SystemParam` is used.
 
 The ray comes from whichever camera `ViewportCamera` has active, via
-`Camera::viewport_to_world`, with the viewport-local position scaled from
-logical to the camera's viewport pixels. The nearest hit is the selection; a
-miss clears it. No ancestor walk: `MeshAsset` puts `Mesh3d` on the node entity
-itself, so the hit entity *is* the node.
+`Camera::viewport_to_world(gt, pos * camera.logical_viewport_size())` — the
+normalized position of M7-1 needs no other conversion. The nearest hit is the
+selection; a miss clears it. No ancestor walk: `MeshAsset` puts `Mesh3d` on the
+node entity itself, so the hit entity *is* the node.
+
+The cast passes a `MeshRayCastSettings::with_filter` that rejects the gizmo's
+own handle meshes (M7-8), which are `Mesh3d` entities like any other and sit
+directly under the cursor whenever a gizmo is up.
 
 The hand-rolled ray-vs-AABB fallback the roadmap held in reserve is not built.
 The gizmo needs ray-vs-*handle* maths, which is analytic and unrelated.
@@ -281,51 +296,89 @@ rejected in favour of consistency with M6-5.
 This retires "driven axes render inert" from the roadmap and from
 `2026-07-25-sway-design.md`, and closes architecture §7's open note.
 
-### M7-8 — The gizmo is drawn with `Gizmos`, hit-tested analytically
+### M7-8 — Bevy's transform gizmo is reused for everything except its input
 
-`bevy_gizmos_render` is on by default (via `3d_bevy_render`), so handles are
-drawn in immediate mode. Nothing is spawned: no handle entities to appear in
-the scene tree, to be picked by `MeshRayCast`, to be claimed by
-`sway-document`, or to be torn down.
+`bevy_gizmos-0.19.0/src/transform_gizmo.rs` is a complete interactive TRS
+gizmo, and `bevy_gizmos_render`'s companion renderer is **already in this app**:
+`GizmoPlugin::build` adds `TransformGizmoRenderPlugin` unconditionally when
+`PbrPlugin` is present, and its systems are gated on
+`resource_exists::<TransformGizmoSettings>`. Reading both crates splits cleanly
+along exactly the line this app cares about:
 
-```rust
-// sway-runtime
-#[derive(Resource, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GizmoMode { #[default] Translate, Rotate, Scale }
-```
+| Half | Reusable here? |
+|---|---|
+| `TransformGizmoSettings`, `TransformGizmoState`, `TransformGizmoFocus`, `TransformGizmoCamera`, `TransformGizmoMode` / `Space` / `Axis` | Yes — all `pub`, no window |
+| `intersect_plane`, `translation_plane_normal`, `axis_direction`, `point_to_segment_dist`, `point_to_ring_screen_dist`, `gizmo_rotation`, `effective_space` | Yes — all `pub` free functions |
+| `TransformGizmoRenderPlugin` — handle meshes, hover highlight, screen-constant scale, overlay camera | Yes — no `Window` dependency anywhere in it |
+| `transform_gizmo_hover`, `transform_gizmo_drag` | **No** — private, and both take `Single<&Window, With<PrimaryWindow>>` plus `ButtonInput<MouseButton>` |
 
-W, E and R switch modes while the viewport holds focus. Always world space —
-no local/world toggle, because the roadmap never asked for one and it doubles
-the handle maths.
+So M7 reuses everything but the input half — which is the half that had to be
+ours regardless, because the cursor arrives over a channel rather than from a
+window. `TransformGizmoPlugin` is **not** added, and no fake `Window` entity is
+spawned. `EditorViewportPlugin` instead does:
 
-The gizmo draws at the selection's `GlobalTransform` translation, sized
-proportionally to its distance from the active camera so it holds a constant
-screen size. Hit-testing is analytic and lives in pure functions:
+- `init_resource::<TransformGizmoSettings>()` and
+  `init_resource::<TransformGizmoState>()`, which is what switches the renderer
+  on. It must happen at plugin-build time, because `spawn_gizmo_meshes` runs in
+  `Startup` behind that run condition.
+- Adds and removes `TransformGizmoFocus` as `Selection` changes, and keeps
+  `TransformGizmoCamera` on whichever camera `ViewportCamera` has active —
+  required, not optional, because this world has more than one camera.
+- Runs two systems of our own, `viewport_gizmo_hover` and
+  `viewport_gizmo_drag`, reading `ViewportEvents` and writing
+  `TransformGizmoState` (`hovered_axis`, `active`, `axis`, `start_transform`,
+  `drag_start_world`, `gizmo_origin`) so the renderer highlights and the drag
+  resolves. They are the private systems reimplemented against the public
+  helpers, with our normalized viewport coordinates in place of
+  `window.cursor_position()`.
 
-- **Translate and scale** — distance between the picking ray and each axis
-  segment, in world units, compared against the same distance-scaled threshold
-  the drawing uses.
-- **Rotate** — intersect the ray with each axis's plane through the gizmo
-  origin, then compare the hit's distance from the origin against the ring
-  radius.
+Settings are left at their defaults except `space: World` and `confine_cursor:
+false` (nothing here owns a cursor to confine). Snapping stays off — `snap_value`
+is private, and snapping is out of scope anyway.
 
-Dragging resolves in the same geometry: translate and scale project the ray
-onto the axis line (translate adds the delta, scale multiplies by the ratio);
-rotate measures the angle swept about the axis and pre-multiplies
-`Quat::from_axis_angle`. Rotation is written as a quaternion straight into
-`Transform`, so no euler bookkeeping is needed — `RotationFrom`'s euler-degrees
-convention concerns the wire, not the gizmo.
+**Three consequences of the renderer being mesh-based, each handled explicitly:**
 
-**Parented entities are handled, not deferred.** The gizmo displays at
-`GlobalTransform` and writes local `Transform`, converting the world-space
-delta through the parent's inverse `GlobalTransform` affine. The demo document's
-own cube is parented, so an unconverted version would be visibly wrong on the
-first by-eye run.
+1. The handles are real entities carrying `Transform` and `Mesh3d`.
+   `capture_tree` walks every `Transform` entity, so it filters
+   `TransformGizmoRoot` / `TransformGizmoMeshMarker` out; and the pick ray-cast
+   passes a `MeshRayCastSettings::with_filter` that rejects them, or clicking a
+   handle would select the handle.
+2. The renderer spawns its own overlay camera (`order: 1`, render layer 15) to
+   draw handles over the scene. `retarget_cameras` correctly points it at the
+   viewport texture, but M7-4's `is_active` toggle must be scoped to
+   `EditorCamera` and `SceneCamera` only — deactivating the overlay camera
+   would delete the gizmo from the screen.
+3. That overlay camera is spawned with a default `clear_color`, while its own
+   source comment says it draws "without clearing the color buffer". Which is
+   true depends on Bevy's per-target first-camera-clears rule, so it is on the
+   verify list below; if it does clear, the fix is one `ClearColorConfig::None`
+   written onto the spawned camera.
 
-The gizmo writes `Transform` directly from its own system rather than routing
-through `EditorCommand::SetField`. It is already a world system holding the
-query it needs, and a per-frame drag would otherwise put one reflect round trip
-per pointer-move on the channel.
+Rotation is written as a quaternion straight into `Transform` —
+`RotationFrom`'s euler-degrees convention concerns the wire, not the gizmo.
+Bevy's drag maths writes local `Transform` while reading `GlobalTransform`, so
+parented entities are handled by the code being reused rather than by ours; the
+demo document's cube is parented, which is what would have exposed a
+hand-rolled version that forgot it.
+
+The gizmo writes `Transform` directly rather than routing through
+`EditorCommand::SetField`: it is already a world system holding the query it
+needs, and a per-frame drag would otherwise put one reflect round trip per
+pointer-move on the channel.
+
+Rejected: adding `TransformGizmoPlugin` with a headless `Window` +
+`PrimaryWindow` + `CursorOptions` entity and synthesized
+`ButtonInput<MouseButton>`. It is viable — `extract_windows` requires
+`RawHandleWrapper`, so a handle-less window is invisible to the render app —
+and it would buy snapping and view-plane handles for free. It was rejected
+because a fake window is a load-bearing lie in an app whose whole shape (M1b)
+is that Bevy owns no window, and because the two systems it saves are the two
+we most want to control.
+
+Also rejected: hand-rolling the gizmo with immediate-mode `Gizmos`, which was
+this spec's first draft. Reading the pinned crates made it redundant — it would
+have reimplemented public, tested geometry to avoid mesh entities that two
+one-line filters handle.
 
 ## The four capabilities
 
@@ -351,18 +404,19 @@ there is one selection.
 
 ### The gizmo
 
-Translate / rotate / scale, world space, W/E/R, drawn with `Gizmos`, writing
-local `Transform` through the parent's inverse where one exists.
+Translate / rotate / scale, world space, W/E/R — Bevy's own gizmo meshes and
+geometry, driven by two input systems of ours instead of its two window-coupled
+ones.
 
 ## Testing
 
 Per architecture §9 — no pixel-diff tests; rendering is verified by eye.
 
 - **Pure maths, unit tested in `sway-runtime` with no app at all:**
-  `orbit_transform`, the orbit/pan/dolly state updates, ray-vs-axis-segment
-  distance, ray-vs-plane ring hits, axis projection for a translate drag, the
-  scale ratio, the swept angle for a rotate drag, and the parent-inverse delta
-  conversion.
+  `orbit_transform` and the orbit/pan/dolly state updates. The gizmo's geometry
+  is Bevy's and already tested upstream, so what gets tested here is our use of
+  it: which axis a given cursor position resolves to, and that a drag along an
+  axis moves the transform along that axis and no other.
 - **Widget behaviour, through real masonry dispatch:** a primary `Down` inside
   the viewport queues a `Down` with viewport-local coordinates; Alt is carried
   through; a `Down` requests focus and a subsequent `W` arrives as
@@ -371,9 +425,11 @@ Per architecture §9 — no pixel-diff tests; rendering is verified by eye.
   side; and the viewport still appears as an `External` layer in the plan after
   the interaction changes.
 - **Headless Bevy:** a cube plus a camera in a real `build_app` world — a ray
-  through the cube's centre selects it, a ray past it clears the selection,
-  `ViewportCamera` leaves exactly one camera active in both positions, and an
-  `EditorCamera` appears in neither `capture_nodes` nor `to_document`.
+  through the cube's centre selects it, a ray past it clears the selection, a
+  ray through a gizmo handle selects neither, `ViewportCamera` leaves exactly
+  one *scene* camera active in both positions while leaving the gizmo's overlay
+  camera alone, and an `EditorCamera` appears in neither `capture_nodes`,
+  `capture_tree` nor `to_document` — nor do the gizmo's handle meshes.
 - **Snapshot and sync:** `capture` reports the world's `Selection` and inspects
   it in one pass; the tree and the canvas both render selection from the
   snapshot and neither sets its own on click; and the previously-flickering
@@ -389,14 +445,19 @@ M5 and M6 both lost time to APIs assumed rather than read. Three assumptions
 here are load-bearing and each is checked against the pinned checkout in the
 plan's first task of the phase that needs it:
 
-1. **`Camera::viewport_to_world`'s coordinate convention** — logical or
-   physical pixels, and which corner is the origin. Everything about picking
-   and gizmo hit-testing is wrong by a scale factor if this is guessed.
-2. **`Gizmos` in a headless, manual-`RenderPlugin` app** — that `GizmoPlugin`
-   is present in `DefaultPlugins` as configured here and that its lines reach
-   the viewport texture. This is a render-path assumption in an app whose
-   render path is unusual.
-3. **`Camera::is_active` versus `retarget_cameras`** — that an inactive camera
+1. **`logical_viewport_size()` for a `RenderTarget::TextureView`** — M7-1 reads
+   `viewport_to_ndc` as dividing by `logical_viewport_rect()`, which for a
+   manual texture view should be the texture's own size. Everything about
+   picking and gizmo hit-testing is wrong by the DPI factor if this is guessed.
+2. **The gizmo renderer switching on from resources alone** — that
+   `init_resource::<TransformGizmoSettings>()` plus
+   `init_resource::<TransformGizmoState>()`, with no `TransformGizmoPlugin`, is
+   enough for `spawn_gizmo_meshes` to run and handles to appear on a focused
+   entity in this headless, manual-`RenderPlugin` app.
+3. **The overlay camera's clear behaviour** — whether Bevy's per-target
+   first-camera-clears rule means the `order: 1` overlay camera leaves the
+   scene beneath it intact, as its own comment claims (M7-8, consequence 3).
+4. **`Camera::is_active` versus `retarget_cameras`** — that an inactive camera
    neither renders nor clears the shared target.
 
 ## Phasing
@@ -414,8 +475,10 @@ Each phase leaves the app working and is independently reviewable.
    through the world; the flicker is gone.
 4. **Picking** — the ray cast and its wiring into `Select`. Exit: clicking a
    cube in the viewport selects it in all three views.
-5. **Gizmo** — modes, drawing, hit-testing, dragging, the parent-inverse write.
-   Exit: the exit criterion.
+5. **Gizmo** — the two resources and the focus/camera markers that turn Bevy's
+   renderer on, mode keys, then `viewport_gizmo_hover` and
+   `viewport_gizmo_drag`, plus the two filters that keep handle meshes out of
+   the tree and out of picking. Exit: the exit criterion.
 6. **Documents** — the amendments below, and the findings report.
 
 ## Out of scope for M7
@@ -423,6 +486,9 @@ Each phase leaves the app working and is independently reviewable.
 - Multi-select, box-select in the viewport, and selection of anything without a
   mesh (a camera or a light is selected from the tree, as today).
 - Snapping, numeric entry during a drag, and a local/world space toggle.
+  `TransformGizmoSettings` exposes all three, and M7 leaves them at their
+  defaults — using them would mean reimplementing the private `snap_value` and
+  adding UI this milestone has no room for.
 - "Frame selected", camera bookmarks, and any persistence of the editor
   camera's pose.
 - Undo. Nothing in the editor has it yet, and a gizmo does not change that.
