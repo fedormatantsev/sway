@@ -24,8 +24,9 @@ use masonry::core::keyboard::{Key, NamedKey};
 use masonry::core::{
     AccessCtx, ActionCtx, ChildrenIds, ErasedAction, EventCtx, LayerType, LayoutCtx, MeasureCtx,
     Modifiers, NewWidget, NoAction, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent,
-    PointerScrollEvent, PointerState, PointerUpdate, PropertiesMut, PropertiesRef, RegisterCtx,
-    TextEvent, Widget, WidgetId, WidgetMut, WidgetPod,
+    PointerGesture, PointerGestureEvent, PointerScrollEvent, PointerState, PointerUpdate,
+    PropertiesMut, PropertiesRef, RegisterCtx, ScrollDelta, TextEvent, Widget, WidgetId, WidgetMut,
+    WidgetPod,
 };
 use masonry::dpi::PhysicalPosition;
 use masonry::imaging::Painter;
@@ -426,11 +427,11 @@ impl Widget for GraphCanvas {
                 let window = window_point(current);
                 if let Some(anchor) = &mut self.panning {
                     // Unlike node dragging (`delta / zoom`, canvas space),
-                    // panning moves the viewport itself: the raw window-space
-                    // delta is exactly how far the whole canvas should shift.
+                    // panning moves the viewport: drag right, content goes
+                    // left (the pointer holds a point in the view).
                     let delta = window - *anchor;
                     *anchor = window;
-                    self.pan += delta;
+                    self.pan -= delta;
                 }
                 self.retransform_all_from_event(ctx);
                 ctx.set_handled();
@@ -456,19 +457,27 @@ impl Widget for GraphCanvas {
                 );
                 let logical = physical.to_logical(scale);
                 let pixels = Vec2::new(logical.x, logical.y);
-                if state.modifiers.contains(Modifiers::CONTROL) {
-                    // Zoom about the cursor (brief step 4's formula, R1
-                    // controller dispatch ruling doesn't apply here --
-                    // that's about edge hit-testing, not this).
-                    let logical = state.logical_position();
-                    let cursor = Vec2::new(logical.x, logical.y);
-                    let old_zoom = self.zoom;
-                    let new_zoom = (old_zoom * (1.0 - pixels.y * 0.002)).clamp(0.1, 8.0);
-                    self.pan = cursor - (cursor - self.pan) * (new_zoom / old_zoom);
-                    self.zoom = new_zoom;
+                let cursor = ctx.local_position(state.position).to_vec2();
+                // Mouse wheel (`LineDelta`) and Ctrl/Cmd+scroll zoom about
+                // the cursor. Trackpad two-finger `PixelDelta` pans.
+                let zoom = matches!(delta, ScrollDelta::LineDelta(..))
+                    || state.modifiers.contains(Modifiers::CONTROL)
+                    || state.modifiers.contains(Modifiers::META);
+                if zoom {
+                    self.zoom_about(cursor, 1.0 - pixels.y * 0.002);
                 } else {
-                    self.pan -= pixels;
+                    self.pan += pixels;
                 }
+                self.retransform_all_from_event(ctx);
+                ctx.set_handled();
+            }
+            PointerEvent::Gesture(PointerGestureEvent {
+                gesture: PointerGesture::Pinch(delta),
+                state,
+                ..
+            }) => {
+                let cursor = ctx.local_position(state.position).to_vec2();
+                self.zoom_about(cursor, 1.0 + f64::from(*delta));
                 self.retransform_all_from_event(ctx);
                 ctx.set_handled();
             }
@@ -847,6 +856,12 @@ impl GraphCanvas {
     pub fn pan(&self) -> Vec2 {
         self.pan
     }
+
+    /// Returns the current zoom factor. Read-only test/inspection accessor,
+    /// mirroring `pan`.
+    pub fn zoom(&self) -> f64 {
+        self.zoom
+    }
 }
 
 // --- MARK: HELPERS
@@ -875,6 +890,15 @@ impl GraphCanvas {
         path.move_to(from);
         path.curve_to(Point::new(from.x + dx, from.y), Point::new(to.x - dx, to.y), to);
         painter.stroke(&path, &Stroke::new(width), brush).draw();
+    }
+
+    /// Multiplies zoom by `factor`, keeping the canvas-local `cursor` point
+    /// visually fixed. Clamped to the same 0.1..8 range as scroll zoom.
+    fn zoom_about(&mut self, cursor: Vec2, factor: f64) {
+        let old_zoom = self.zoom;
+        let new_zoom = (old_zoom * factor).clamp(0.1, 8.0);
+        self.pan = cursor - (cursor - self.pan) * (new_zoom / old_zoom);
+        self.zoom = new_zoom;
     }
 
     /// Maps a canvas-space point to the window frame `GraphCanvas::paint`
@@ -1468,7 +1492,7 @@ mod tests {
         harness.mouse_move(Point::new(80.0, 65.0));
         harness.mouse_button_release(Some(PointerButton::Auxiliary));
 
-        assert_eq!(harness.root_widget().pan(), Vec2::new(30.0, 15.0));
+        assert_eq!(harness.root_widget().pan(), Vec2::new(-30.0, -15.0));
     }
 
     /// A middle-drag that starts *over* a node must still pan the canvas,
@@ -1485,7 +1509,7 @@ mod tests {
         harness.mouse_move(Point::new(170.0, 150.0));
         harness.mouse_button_release(Some(PointerButton::Auxiliary));
 
-        assert_eq!(harness.root_widget().pan(), Vec2::new(20.0, 20.0));
+        assert_eq!(harness.root_widget().pan(), Vec2::new(-20.0, -20.0));
         assert_eq!(harness.root_widget().selected_node(), None);
     }
 
@@ -1511,12 +1535,53 @@ mod tests {
             state,
         }));
 
-        assert_eq!(harness.root_widget().pan(), Vec2::new(-20.0, -10.0));
+        assert_eq!(harness.root_widget().pan(), Vec2::new(20.0, 10.0));
     }
 
+    /// Mouse-wheel `LineDelta` zooms about the cursor. The zoom factor is
+    /// computed in logical pixels, so the same wheel tick at two DPRs must
+    /// land on the same zoom.
     #[test]
-    fn scroll_line_delta_is_dpi_invariant() {
+    fn scroll_line_delta_zooms_dpi_invariantly() {
         use masonry::core::{PointerEvent, PointerScrollEvent, PointerState, ScrollDelta};
+        use masonry::dpi::PhysicalPosition;
+        use masonry_testing::PRIMARY_MOUSE;
+
+        fn wheel_at(scale: f64) -> (f64, Vec2) {
+            let mut harness = harness_with(snapshot(
+                vec![node(0, "a", Some(Point::new(100.0, 100.0)))],
+                vec![],
+            ));
+            let state = PointerState {
+                scale_factor: scale,
+                position: PhysicalPosition { x: 100.0, y: 100.0 },
+                ..Default::default()
+            };
+            harness.process_pointer_event(PointerEvent::Scroll(PointerScrollEvent {
+                pointer: PRIMARY_MOUSE,
+                delta: ScrollDelta::LineDelta(0.0, 1.0),
+                state,
+            }));
+            let canvas = harness.root_widget();
+            (canvas.zoom(), canvas.pan())
+        }
+
+        let (zoom_1x, pan_1x) = wheel_at(1.0);
+        let (zoom_2x, pan_2x) = wheel_at(2.0);
+        assert!(
+            (zoom_1x - 0.936).abs() < 1e-9,
+            "one wheel tick must zoom by 1 - 32*0.002; got {zoom_1x}"
+        );
+        assert_eq!(zoom_1x, zoom_2x, "zoom factor must not depend on DPR");
+        assert_eq!(pan_1x, pan_2x, "cursor-anchored pan must be in logical space");
+        assert_ne!(zoom_1x, 1.0);
+    }
+
+    /// Trackpad pinch multiplies zoom by `(1 + delta)` about the cursor,
+    /// per `PointerGesture::Pinch`.
+    #[test]
+    fn pinch_zooms_about_the_cursor() {
+        use masonry::core::{PointerEvent, PointerGesture, PointerGestureEvent, PointerState};
         use masonry::dpi::PhysicalPosition;
         use masonry_testing::PRIMARY_MOUSE;
 
@@ -1525,18 +1590,27 @@ mod tests {
             vec![],
         ));
         let state = PointerState {
-            scale_factor: 2.0,
             position: PhysicalPosition { x: 100.0, y: 100.0 },
             ..Default::default()
         };
 
-        harness.process_pointer_event(PointerEvent::Scroll(PointerScrollEvent {
+        harness.process_pointer_event(PointerEvent::Gesture(PointerGestureEvent {
             pointer: PRIMARY_MOUSE,
-            delta: ScrollDelta::LineDelta(0.0, 1.0),
+            gesture: PointerGesture::Pinch(0.1),
             state,
         }));
 
-        assert_eq!(harness.root_widget().pan(), Vec2::new(0.0, -32.0));
+        let expected_zoom = 1.0 + f64::from(0.1f32);
+        assert!(
+            (harness.root_widget().zoom() - expected_zoom).abs() < 1e-12,
+            "pinch must apply PointerGesture::Pinch's (1+delta) scale; got {}",
+            harness.root_widget().zoom()
+        );
+        let expected_pan = 100.0 - 100.0 * expected_zoom;
+        assert_eq!(
+            harness.root_widget().pan(),
+            Vec2::new(expected_pan, expected_pan)
+        );
     }
 
     #[test]
