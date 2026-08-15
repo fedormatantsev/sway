@@ -41,7 +41,7 @@ use masonry::kurbo::{Affine, Rect};
 use masonry::layout::AsUnit;
 use masonry::widgets::{Portal, Split};
 use masonry_core::kurbo::Axis;
-use sway_graph::EditorCommand;
+use sway_graph::{EditorCommand, ViewportInput};
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use winit::dpi::PhysicalSize;
 
@@ -109,7 +109,10 @@ pub enum FileRequest {
 /// `commands` is handed to the two panes that write: the inspector edits
 /// fields, the canvas creates, deletes, moves and rewires. The tree and the
 /// transport bar are read-only and do not get it.
-fn graph_root(commands: Sender<EditorCommand>) -> NewWidget<dyn Widget> {
+fn graph_root(
+    commands: Sender<EditorCommand>,
+    viewport_input: Sender<ViewportInput>,
+) -> NewWidget<dyn Widget> {
     let tree = Portal::new(SceneTree::new().prepare().with_tag(SCENE_TREE_TAG))
         .constrain_horizontal(true)
         .prepare();
@@ -125,8 +128,7 @@ fn graph_root(commands: Sender<EditorCommand>) -> NewWidget<dyn Widget> {
         .solid_bar(true)
         .prepare();
 
-    // Task 3 threads the real sender
-    let viewport = Viewport::new(crossbeam_channel::unbounded().0).prepare().with_tag(VIEWPORT_TAG);
+    let viewport = Viewport::new(viewport_input).prepare().with_tag(VIEWPORT_TAG);
     let canvas = GraphCanvas::new(commands).prepare().with_tag(GRAPH_CANVAS_TAG);
 
     let right = Split::new(viewport, canvas)
@@ -183,11 +185,16 @@ pub struct EditorUi {
 }
 
 impl EditorUi {
-    pub fn new(size: PhysicalSize<u32>, scale_factor: f64, commands: Sender<EditorCommand>) -> Self {
+    pub fn new(
+        size: PhysicalSize<u32>,
+        scale_factor: f64,
+        commands: Sender<EditorCommand>,
+        viewport_input: Sender<ViewportInput>,
+    ) -> Self {
         let signals: Rc<RefCell<Vec<RenderRootSignal>>> = Rc::new(RefCell::new(Vec::new()));
         let sink_signals = signals.clone();
         let root = RenderRoot::new(
-            graph_root(commands.clone()),
+            graph_root(commands.clone(), viewport_input),
             move |signal: RenderRootSignal| sink_signals.borrow_mut().push(signal),
             RenderRootOptions {
                 default_properties: Arc::new(masonry::theme::default_property_set()),
@@ -566,7 +573,8 @@ mod tests {
     #[test]
     fn selecting_a_node_box_highlights_its_tree_row() {
         let (tx, _rx) = crossbeam_channel::unbounded();
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
+        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx, viewport_tx);
         let snap = one_node_snapshot();
         ui.apply_snapshot(&snap);
 
@@ -584,7 +592,8 @@ mod tests {
     #[test]
     fn selecting_a_graph_node_row_highlights_its_node_box() {
         let (tx, _rx) = crossbeam_channel::unbounded();
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
+        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx, viewport_tx);
         let snap = one_node_snapshot();
         ui.apply_snapshot(&snap);
 
@@ -609,7 +618,8 @@ mod tests {
     #[test]
     fn viewport_rect_reflects_its_position_inside_nested_splits() {
         let (tx, _rx) = crossbeam_channel::unbounded();
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
+        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx, viewport_tx);
         // Settles layout/compose so the widget tree's geometry is current.
         ui.redraw();
 
@@ -631,7 +641,8 @@ mod tests {
         // Same discipline as SceneTree: a steady-state world costs one
         // comparison per frame.
         let (tx, _rx) = crossbeam_channel::unbounded();
-        let mut ui = EditorUi::new(PhysicalSize::new(1200, 800), 1.0, tx);
+        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(1200, 800), 1.0, tx, viewport_tx);
         let snap = WorldSnapshot::default();
         ui.apply_snapshot(&snap);
         let first = ui
@@ -655,7 +666,8 @@ mod tests {
         use masonry::widgets::Label;
 
         let (tx, _rx) = crossbeam_channel::unbounded();
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
+        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx, viewport_tx);
         ui.redraw();
 
         let popup = NewWidget::new(Label::new("popup"));
@@ -678,7 +690,8 @@ mod tests {
         use masonry::widgets::Label;
 
         let (tx, _rx) = crossbeam_channel::unbounded();
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
+        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx, viewport_tx);
         ui.redraw();
 
         let popup = NewWidget::new(Label::new("popup"));
@@ -715,7 +728,8 @@ mod tests {
         use masonry_core::core::LayerType;
 
         let (tx, _rx) = crossbeam_channel::unbounded();
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
+        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx, viewport_tx);
         ui.redraw();
 
         let palette = Palette::new(vec!["Lfo", "Remap"]);
@@ -744,7 +758,8 @@ mod tests {
         use masonry_core::core::CursorIcon;
 
         let (tx, _rx) = crossbeam_channel::unbounded();
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
+        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx, viewport_tx);
 
         ui.signals
             .borrow_mut()

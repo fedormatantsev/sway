@@ -9,7 +9,7 @@ use bevy::math::UVec2;
 use crossbeam_channel::Sender;
 use masonry_core::core::CursorIcon;
 use sway_gpu::{Compositor, GpuContext, Quad, UiRenderer, UiTexture, ViewportTexture, WindowSurface};
-use sway_graph::EditorCommand;
+use sway_graph::{EditorCommand, ViewportInput};
 use winit::dpi::PhysicalSize;
 
 /// Blits the viewport fullscreen. No masonry, no vello.
@@ -70,8 +70,9 @@ impl EditorPresenter {
         size: PhysicalSize<u32>,
         scale_factor: f64,
         commands: Sender<EditorCommand>,
+        viewport_input: Sender<ViewportInput>,
     ) -> Self {
-        let editor = sway_editor::EditorUi::new(size, scale_factor, commands);
+        let editor = sway_editor::EditorUi::new(size, scale_factor, commands, viewport_input);
         let ui_texture = UiTexture::new(&gpu.device, size.width.max(1), size.height.max(1));
         let ui_renderer = UiRenderer::new(gpu.device.clone(), gpu.queue.clone());
         Self {

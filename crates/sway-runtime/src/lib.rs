@@ -10,8 +10,10 @@ pub mod scatter;
 pub mod shader_validation;
 pub mod sprite_depth_spike;
 pub mod sprite_layer;
+pub mod viewport;
 
 pub use point_cloud::PointCloudPlugin;
 pub use scatter::ScatterPlugin;
 pub use sprite_depth_spike::SpriteDepthPlugin;
 pub use sprite_layer::SpriteLayerPlugin;
+pub use viewport::EditorViewportPlugin;

@@ -23,7 +23,7 @@ use bevy::math::UVec2;
 use crossbeam_channel::Sender;
 use sway_editor::FileRequest;
 use sway_gpu::{Compositor, GpuContext, ViewportTexture, WindowSurface};
-use sway_graph::EditorCommand;
+use sway_graph::{EditorCommand, ViewportInput};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
@@ -108,6 +108,7 @@ pub struct ShellConfig {
     pub editor: bool,
     pub build_app: AppBuilder,
     pub commands: Sender<EditorCommand>,
+    pub viewport_input: Sender<ViewportInput>,
 }
 
 /// Everything that exists only once the window (and therefore the GPU
@@ -310,6 +311,7 @@ impl ApplicationHandler for Shell {
                 size,
                 scale_factor,
                 config.commands,
+                config.viewport_input,
             )))
         } else {
             Presenter::Show(ShowPresenter)

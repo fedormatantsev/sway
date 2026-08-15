@@ -5740,8 +5740,10 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bytemuck",
+ "crossbeam-channel",
  "naga",
  "sway-gpu",
+ "sway-graph",
 ]
 
 [[package]]
