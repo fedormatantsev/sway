@@ -289,6 +289,7 @@ not months of dependency patching.
 | Fixed tick rate / accumulator | `bevy_time` (`Time<Fixed>`) |
 | Beat / transport clock | **`sway-midi`** |
 | Topological order, step list, walk, graph diagnostics | **`sway-graph`** |
+| Selection | **`sway-graph`** (`Selection` resource), read by editor via snapshot |
 | Event-wire buffers + pre-tick clear/copy | **`sway-events`** |
 | Document parse/emit | **`sway-document`** via ECS |
 | Geometry tables / operators | **`sway-geo`** (CPU; dormant for the MVP, §6) |
@@ -385,8 +386,8 @@ driven field holds only until the next tick, when the wire writes over it
 again. A save still bakes the instantaneous driven value into the file (a wire
 targets a field path, but a component is emitted whole); harmless, since the
 first tick after load overwrites it, and no machinery is built against it.
-Whether a future gizmo (M7) follows the same rule is open, not settled here —
-M6-5 leaves it for M7 to decide.
+The gizmo (M7) writes through, exactly as the inspector does; a drag on a
+wire-driven field holds for one tick.
 
 Continuously driven transforms should write a
 previous/next pair (`DrivenTransform`) and let a per-frame system lerp by
@@ -414,7 +415,8 @@ sway-document     on-disk format; read/write only via ECS authoring
 sway-nodes        non-MIDI built-in components, wires, behaviours
 sway-midi         MIDI IO, transport clock, MIDI/transport nodes
 sway-geo          Geometry attribute tables and CPU operators
-sway-runtime      headless Bevy app; services; pipelines
+sway-runtime      headless Bevy app; services; pipelines; editor viewport plugin
+                  (camera, picking, gizmo input) depends on sway-graph
 sway-editor       masonry UI; links the runtime directly
 sway-app          host: winit, device, editor shell or show presenter
 ```

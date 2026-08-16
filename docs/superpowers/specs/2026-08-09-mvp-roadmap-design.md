@@ -326,8 +326,8 @@ editor.
 - Click-to-select via `MeshRayCast`, used directly as a `SystemParam`.
   `bevy_picking`'s own pointer input needs `bevy_winit`, which is disabled.
   Selection joins the tree↔canvas sync that already works.
-- A translate/rotate/scale gizmo, analytic ray-vs-handle, writing `Transform`.
-  Driven axes render inert.
+- A translate/rotate/scale gizmo using Bevy's own implementation with only its
+  input half replaced, analytic ray-vs-handle, writing `Transform`.
 
 M6 and M7 have no dependency on each other and may be swapped or run in
 parallel.
@@ -381,7 +381,7 @@ decode, audio reactivity, multi-output, NDI/Spout, timeline sequencing.
   components on one entity flow in opposite directions. Cycles are already
   allowed (acyclic prefix, then append). Unchanged by this redefinition; see
   architecture §4.
-- **`MeshRayCast` outside its plugin.** It is a `SystemParam` in
-  `bevy_picking::mesh_picking::ray_cast`, but whether it needs resources that
-  only `MeshPickingPlugin` initialises is unverified. Resolve at the top of M7;
-  the fallback is hand-rolled ray-vs-AABB, which the gizmo needs anyway.
+- **`MeshRayCast` outside its plugin.** Resolved: its `SystemParam` is
+  `Res<Assets<Mesh>>`, three `Local`s and two `Query`s, none plugin-initialised.
+  `picking` is already on via bevy's default `3d` feature. The hand-rolled
+  ray-vs-AABB fallback was not built.

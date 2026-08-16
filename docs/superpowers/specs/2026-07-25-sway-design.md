@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-25 (roadmap; architecture extracted 2026-08-09; roadmap
 redefined 2026-08-09)
-**Status:** In implementation — M5 complete, M6/M7 next
+**Status:** M5, M6, M7 complete
 **Architecture:** [`docs/architecture.md`](../../architecture.md) is the
 authority on current-state design.
 **Rationale:** [`2026-08-09-mvp-roadmap-design.md`](2026-08-09-mvp-roadmap-design.md)
@@ -66,9 +66,8 @@ editor.
 ### M7 — Viewport interaction (L)
 
 Pointer/key forwarding from the shell into Bevy over the viewport rect; an
-editor camera distinct from the scene camera with orbit/pan/dolly; click-to-
-select via `MeshRayCast`; a TRS gizmo writing `Transform`, with driven axes
-inert.
+editor camera distinct from the scene camera (not persisted) with orbit/pan/dolly;
+click-to-select via `MeshRayCast`; a TRS gizmo writing `Transform`.
 
 Independent of M6 — may be swapped or run in parallel.
 
@@ -123,6 +122,7 @@ and reachable through `--demo`, not developed and not cleaned up.
   components on one entity flow in opposite directions. Cycles are already
   allowed (acyclic prefix + append). Richer `(entity, component)` vertices
   remain optional future work — see architecture §4.
-- **`MeshRayCast` outside `MeshPickingPlugin`** — unverified whether it needs
-  resources only that plugin initialises. Resolve at the top of M7; the fallback
-  is hand-rolled ray-vs-AABB, which the gizmo needs regardless.
+- **`MeshRayCast` outside `MeshPickingPlugin`** — resolved: its `SystemParam` is
+  `Res<Assets<Mesh>>`, three `Local`s and two `Query`s, none plugin-initialised.
+  `picking` is already on via bevy's default `3d` feature. The hand-rolled
+  ray-vs-AABB fallback was not built.
