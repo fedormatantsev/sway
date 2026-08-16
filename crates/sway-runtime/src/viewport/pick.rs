@@ -238,14 +238,20 @@ mod click_tests {
         let cube = {
             let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
             let handle = meshes.add(Cuboid::new(2.0, 2.0, 2.0));
-            // `Visibility` is required, not just nice-to-have: `Mesh3d` only
-            // `#[require(Transform)]` (verified against the pinned
-            // `bevy_mesh-0.19.0` source), so without it the entity never
-            // gets `InheritedVisibility`/`ViewVisibility` (those come from
-            // `Visibility`'s own `#[require(...)]`, in `bevy_camera-0.19.0`),
-            // and `MeshRayCast`'s `culling_query` reads both non-optionally
-            // — an entity missing either is invisible to the query, not just
-            // "culled", so ray casts against it silently find nothing.
+            // `Visibility::default()` is inert here, not load-bearing: it was
+            // originally added to work around what looked like a missing
+            // `InheritedVisibility`/`ViewVisibility` on `Mesh3d`-only
+            // entities, but a phase review traced the real symptom to the
+            // channel bug fixed below (`click`'s use of `ViewportInputRx`)
+            // and confirmed, by removing this line, that `Mesh3d` already
+            // gets `Visibility` (and so `InheritedVisibility`/
+            // `ViewVisibility`) via `VisibilityPlugin`'s runtime
+            // `register_required_components::<Mesh3d, Visibility>()`
+            // (`bevy_camera-0.19.0/src/visibility/mod.rs:500`) — the same
+            // mechanism this crate's other `Mesh3d` spawns
+            // (`sprite_layer.rs`, `sprite_depth_spike.rs`, `point_cloud.rs`)
+            // already rely on. Kept spelled out anyway, purely for
+            // readability.
             app.world_mut()
                 .spawn((Mesh3d(handle), Transform::default(), Visibility::default()))
                 .id()
