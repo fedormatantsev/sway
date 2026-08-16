@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn one_producer_fans_out_to_two_consumers() {
         let mut app = slice_app();
-        let a = app.world_mut().spawn(lfo(0.25, 0.5)).id();
+        let a = app.world_mut().spawn(oscillator(0.25, 0.5)).id();
         let vector = app.world_mut().spawn(Vec3Value::default()).id();
         app.world_mut().entity_mut(vector).insert(Vec3YFrom(a));
         let x = app.world_mut().spawn(Transform::default()).id();
