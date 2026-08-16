@@ -21,16 +21,35 @@
 //! `cursor_in_viewport_pixels`, rather than `Window::cursor_position()`) and
 //! the "exactly one camera" fallback dropped, since `mark_gizmo_camera`
 //! above always keeps exactly one `TransformGizmoCamera` marked.
+//!
+//! `viewport_gizmo_drag` is the third piece: a port of Bevy's private
+//! `transform_gizmo_drag` (`bevy_gizmos-0.19.0/src/transform_gizmo.rs:396-637`)
+//! with exactly three substitutions — the cursor source (as above),
+//! `ButtonInput<MouseButton>` replaced by this frame's `ViewportInput::{Down,
+//! Up,Cancel}` plus `TransformGizmoState::active` itself as the "held" signal,
+//! and the `CursorOptions`/`CursorGrabMode` confinement block dropped
+//! entirely (there is no window cursor to confine, and `confine_cursor` is
+//! always `false` — see `EditorViewportPlugin::build`). Snapping
+//! (`snap_translate`/`snap_rotate`/`snap_scale`) is out of scope for M7 and
+//! those settings are never set to `Some`, so the private `snap_value` calls
+//! Bevy's version makes are skipped rather than ported — every write here
+//! takes the plain, un-snapped value Bevy's own `None` branch would.
+//! Everything else — `intersect_plane`, `translation_plane_normal`,
+//! `axis_direction`, `gizmo_rotation`, `effective_space`, the plane choice
+//! per mode, and the write of a world-space delta onto the focused entity's
+//! local `Transform` (propagation does the rest through the parent) — is
+//! Bevy's own public geometry, called unchanged.
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::gizmos::transform_gizmo::{
-    effective_space, gizmo_rotation, point_to_ring_screen_dist, point_to_segment_dist,
-    TransformGizmoAxis, TransformGizmoCamera, TransformGizmoFocus, TransformGizmoMeshMarker,
-    TransformGizmoMode, TransformGizmoRoot, TransformGizmoSettings, TransformGizmoState,
-    AXIS_START_OFFSET, VIEW_CIRCLE_MAJOR, VIEW_RING_MAJOR,
+    axis_direction, effective_space, gizmo_rotation, intersect_plane, point_to_ring_screen_dist,
+    point_to_segment_dist, translation_plane_normal, TransformGizmoAxis, TransformGizmoCamera,
+    TransformGizmoFocus, TransformGizmoMeshMarker, TransformGizmoMode, TransformGizmoRoot,
+    TransformGizmoSettings, TransformGizmoState, AXIS_START_OFFSET, VIEW_CIRCLE_MAJOR,
+    VIEW_RING_MAJOR,
 };
 use bevy::prelude::*;
-use sway_graph::{HiddenFromEditor, Selection, ViewportInput, ViewportKey};
+use sway_graph::{HiddenFromEditor, Selection, ViewportButton, ViewportInput, ViewportKey};
 
 /// Keeps `TransformGizmoFocus` on the selection, and only there.
 pub fn follow_selection(
@@ -292,6 +311,217 @@ pub fn viewport_gizmo_hover(
     state.hovered_axis = best_axis;
 }
 
+/// The floor Bevy's private `transform_gizmo_drag` clamps every scale write
+/// to (`bevy_gizmos-0.19.0/src/transform_gizmo.rs:60`,
+/// `const MIN_SCALE: f32 = 0.01;`). Not `pub`, so duplicated here verbatim
+/// rather than imported — the same treatment `GIZMO_RENDER_LAYER` above gets
+/// for the same reason.
+const MIN_SCALE: f32 = 0.01;
+
+/// Drags the focused entity's local `Transform` while a handle is held. See
+/// the module doc comment for the three substitutions this makes against
+/// Bevy's private `transform_gizmo_drag`; everything else below is that
+/// function's own math, called or copied unchanged.
+pub fn viewport_gizmo_drag(
+    events: Res<crate::viewport::ViewportEvents>,
+    mut focus_query: Query<(Entity, &GlobalTransform, &mut Transform), With<TransformGizmoFocus>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<TransformGizmoCamera>>,
+    settings: Res<TransformGizmoSettings>,
+    mut state: ResMut<TransformGizmoState>,
+) {
+    let Some((camera, cam_tf)) = cameras.iter().next() else {
+        return;
+    };
+
+    // End drag. Checked first and unconditionally: a `Cancel` or `Up` must
+    // win over anything else this frame carries, the same hazard M6 Task 14
+    // found on the canvas (a stuck drag that never lets picking run again).
+    if state.active
+        && events
+            .0
+            .iter()
+            .any(|event| matches!(event, ViewportInput::Up { .. } | ViewportInput::Cancel))
+    {
+        state.active = false;
+        state.axis = None;
+        state.entity = None;
+        return;
+    }
+
+    let Some(cursor_pos) = events.0.iter().rev().find_map(|event| match event {
+        ViewportInput::Move { pos, .. } | ViewportInput::Down { pos, .. } => Some(*pos),
+        _ => None,
+    }) else {
+        return;
+    };
+    let Some(cursor_pos) = cursor_in_viewport_pixels(camera, cursor_pos) else {
+        return;
+    };
+
+    // Start drag.
+    if !state.active {
+        let pressed = events.0.iter().any(|event| {
+            matches!(
+                event,
+                ViewportInput::Down { button: ViewportButton::Primary, modifiers, .. }
+                    if !modifiers.alt
+            )
+        });
+        if !pressed {
+            return;
+        }
+        let Some(axis) = state.hovered_axis else {
+            return;
+        };
+        let Some((entity, global_tf, transform)) = focus_query.iter().next() else {
+            return;
+        };
+
+        let space = effective_space(&settings);
+        let rotation = gizmo_rotation(global_tf, space);
+        let axis_dir = axis_direction(axis, rotation, cam_tf);
+        let gizmo_pos = global_tf.translation();
+
+        let Ok(ray) = camera.viewport_to_world(cam_tf, cursor_pos) else {
+            return;
+        };
+
+        let drag_start_world = match settings.mode {
+            TransformGizmoMode::Translate => {
+                if axis == TransformGizmoAxis::View {
+                    let plane_normal = cam_tf.forward().as_vec3();
+                    let Some(intersection) = intersect_plane(ray, plane_normal, gizmo_pos) else {
+                        return;
+                    };
+                    intersection
+                } else {
+                    let plane_normal = translation_plane_normal(ray, axis_dir);
+                    let Some(intersection) = intersect_plane(ray, plane_normal, gizmo_pos) else {
+                        return;
+                    };
+                    let cursor_vec = intersection - gizmo_pos;
+                    cursor_vec.dot(axis_dir.normalize()) * axis_dir.normalize() + gizmo_pos
+                }
+            }
+            TransformGizmoMode::Scale => {
+                let plane_normal = translation_plane_normal(ray, axis_dir);
+                let Some(intersection) = intersect_plane(ray, plane_normal, gizmo_pos) else {
+                    return;
+                };
+                let cursor_vec = intersection - gizmo_pos;
+                cursor_vec.dot(axis_dir.normalize()) * axis_dir.normalize() + gizmo_pos
+            }
+            TransformGizmoMode::Rotate => {
+                let rot_axis = if axis == TransformGizmoAxis::View {
+                    cam_tf.forward().as_vec3()
+                } else {
+                    axis_dir.normalize()
+                };
+                let Some(intersection) = intersect_plane(ray, rot_axis, gizmo_pos) else {
+                    return;
+                };
+                (intersection - gizmo_pos).normalize()
+            }
+        };
+
+        state.active = true;
+        state.axis = Some(axis);
+        state.start_transform = *transform;
+        state.entity = Some(entity);
+        state.drag_start_world = drag_start_world;
+        state.gizmo_origin = gizmo_pos;
+        return;
+    }
+
+    // Continue drag.
+    let Some(drag_entity) = state.entity else {
+        return;
+    };
+    let Some(axis) = state.axis else {
+        return;
+    };
+    let Ok((_, global_tf, mut transform)) = focus_query.get_mut(drag_entity) else {
+        return;
+    };
+
+    let space = effective_space(&settings);
+    let rotation = gizmo_rotation(global_tf, space);
+    let axis_dir = axis_direction(axis, rotation, cam_tf);
+    let gizmo_origin = state.gizmo_origin;
+
+    let Ok(ray) = camera.viewport_to_world(cam_tf, cursor_pos) else {
+        return;
+    };
+
+    match settings.mode {
+        TransformGizmoMode::Translate => {
+            if axis == TransformGizmoAxis::View {
+                let plane_normal = cam_tf.forward().as_vec3();
+                let Some(intersection) = intersect_plane(ray, plane_normal, gizmo_origin) else {
+                    return;
+                };
+                let delta = intersection - state.drag_start_world;
+                transform.translation = state.start_transform.translation + delta;
+            } else {
+                let plane_normal = translation_plane_normal(ray, axis_dir);
+                let Some(intersection) = intersect_plane(ray, plane_normal, gizmo_origin) else {
+                    return;
+                };
+                let cursor_vec = intersection - gizmo_origin;
+                let axis_norm = axis_dir.normalize();
+                let new_projected = cursor_vec.dot(axis_norm) * axis_norm + gizmo_origin;
+                let delta = new_projected - state.drag_start_world;
+                transform.translation = state.start_transform.translation + delta;
+            }
+        }
+        TransformGizmoMode::Rotate => {
+            let rot_axis = if axis == TransformGizmoAxis::View {
+                cam_tf.forward().as_vec3()
+            } else {
+                axis_dir.normalize()
+            };
+            let Some(intersection) = intersect_plane(ray, rot_axis, gizmo_origin) else {
+                return;
+            };
+            let cursor_vector = (intersection - gizmo_origin).normalize();
+            let drag_start = state.drag_start_world;
+
+            let dot = drag_start.dot(cursor_vector);
+            let det = rot_axis.dot(drag_start.cross(cursor_vector));
+            let angle = bevy::math::ops::atan2(det, dot);
+            let rotation_delta = Quat::from_axis_angle(rot_axis, angle);
+            transform.rotation = rotation_delta * state.start_transform.rotation;
+        }
+        TransformGizmoMode::Scale => {
+            let plane_normal = translation_plane_normal(ray, axis_dir);
+            let Some(intersection) = intersect_plane(ray, plane_normal, gizmo_origin) else {
+                return;
+            };
+            let axis_norm = axis_dir.normalize();
+            let cursor_projected = (intersection - gizmo_origin).dot(axis_norm);
+            let start_projected = (state.drag_start_world - gizmo_origin).dot(axis_norm);
+
+            let scale_factor = if start_projected.abs() > f32::EPSILON {
+                cursor_projected / start_projected
+            } else {
+                1.0
+            };
+
+            let mut new_scale = state.start_transform.scale;
+            match axis {
+                TransformGizmoAxis::X => new_scale.x = (new_scale.x * scale_factor).max(MIN_SCALE),
+                TransformGizmoAxis::Y => new_scale.y = (new_scale.y * scale_factor).max(MIN_SCALE),
+                TransformGizmoAxis::Z => new_scale.z = (new_scale.z * scale_factor).max(MIN_SCALE),
+                TransformGizmoAxis::View => {
+                    new_scale *= scale_factor;
+                    new_scale = new_scale.max(Vec3::splat(MIN_SCALE));
+                }
+            }
+            transform.scale = new_scale;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,5 +743,243 @@ mod tests {
             app.world().resource::<TransformGizmoState>().hovered_axis,
             Some(TransformGizmoAxis::Y),
         );
+    }
+
+    /// Sends every event through the same channel `hover` uses, then lets
+    /// them all reach the systems in a single frame — the channel-based
+    /// counterpart to `camera.rs`'s `nav_tests::feed` (that one writes
+    /// `ViewportEvents` directly, which works there only because that test
+    /// module never registers `drain_viewport_input`; see `HoverChannel`'s
+    /// doc comment for why this fixture cannot).
+    fn feed(app: &mut App, events: Vec<ViewportInput>) {
+        let tx = app.world().resource::<HoverChannel>().0.clone();
+        for event in events {
+            tx.send(event).unwrap();
+        }
+        app.update();
+    }
+
+    /// Continues a drag: one more `ViewportInput::Move` at `pos`, reaching
+    /// `viewport_gizmo_drag` the same way `hover` reaches
+    /// `viewport_gizmo_hover` — both read the same "most recent `Move`/`Down`
+    /// this frame" cursor source.
+    fn drag_to(app: &mut App, pos: Vec2) {
+        hover(app, pos);
+    }
+
+    /// A plain, un-modified primary release. `viewport_gizmo_drag`'s "end
+    /// drag" branch does not read the position an `Up` carries — Bevy's own
+    /// version does not either — so `Vec2::ZERO` is not load-bearing here.
+    fn release(app: &mut App) {
+        feed(app, vec![ViewportInput::Up { button: ViewportButton::Primary, pos: Vec2::ZERO }]);
+    }
+
+    /// Hovers `pos` (setting `TransformGizmoState::hovered_axis`, exactly as
+    /// a real cursor arriving at that position over one or more prior frames
+    /// would) and asserts it lands on `axis` before pressing — a bad `pos`
+    /// would otherwise fail the *drag* assertions later with a confusing
+    /// "nothing moved" rather than pointing at the real cause. Then sends the
+    /// `Down` that `viewport_gizmo_drag`'s "start drag" branch claims.
+    fn press_on_axis(app: &mut App, axis: TransformGizmoAxis, pos: Vec2) {
+        hover(app, pos);
+        assert_eq!(
+            app.world().resource::<TransformGizmoState>().hovered_axis,
+            Some(axis),
+            "test setup: cursor at {pos:?} is not over the {axis:?} handle",
+        );
+        feed(app, vec![ViewportInput::Down {
+            button: ViewportButton::Primary,
+            pos,
+            modifiers: sway_graph::ViewportModifiers::default(),
+        }]);
+    }
+
+    /// The screen position of the focused entity's handle for `axis`, in
+    /// whatever mode `TransformGizmoSettings` is currently in — the
+    /// translate/scale handle's tip, or a point on the rotation ring.
+    /// Computed by projecting through the real camera and the same
+    /// `effective_space`/`gizmo_rotation`/`world_to_viewport` geometry the
+    /// production code uses, rather than a hardcoded literal: the
+    /// parented-object test moves the focused entity between calls, and a
+    /// fixed literal would silently stop pointing at the handle once it did.
+    fn cursor_over_axis(app: &mut App, axis: TransformGizmoAxis) -> Vec2 {
+        let world = app.world_mut();
+        let mut focus_query = world.query_filtered::<&GlobalTransform, With<TransformGizmoFocus>>();
+        let global_tf = *focus_query.single(world).expect("a focused entity");
+
+        let (mode, axis_length, rotate_ring_radius, screen_scale_factor, space) = {
+            let settings = world.resource::<TransformGizmoSettings>();
+            (
+                settings.mode,
+                settings.axis_length,
+                settings.rotate_ring_radius,
+                settings.screen_scale_factor,
+                *effective_space(settings),
+            )
+        };
+        let rotation = gizmo_rotation(&global_tf, &space);
+
+        let mut cam_query =
+            world.query_filtered::<(&Camera, &GlobalTransform), With<TransformGizmoCamera>>();
+        let (camera, cam_tf) = cam_query.single(world).expect("a marked camera");
+
+        let gizmo_pos = global_tf.translation();
+        let scale = if screen_scale_factor > 0.0 {
+            (cam_tf.translation() - gizmo_pos).length() * screen_scale_factor
+        } else {
+            1.0
+        };
+        let dir = match axis {
+            TransformGizmoAxis::X => rotation * Vec3::X,
+            TransformGizmoAxis::Y => rotation * Vec3::Y,
+            TransformGizmoAxis::Z => rotation * Vec3::Z,
+            TransformGizmoAxis::View => cam_tf.forward().as_vec3(),
+        };
+        let world_point = match mode {
+            TransformGizmoMode::Translate | TransformGizmoMode::Scale => {
+                gizmo_pos + dir * (axis_length * scale)
+            }
+            TransformGizmoMode::Rotate => {
+                // A point genuinely on the ring, but away from the one angle
+                // (straight out along the camera's own right vector) that
+                // collides with two other things at once in this fixture's
+                // head-on camera: the X-translate handle's endpoint, and —
+                // worse — the Z ring's own screen circle, since a ring whose
+                // normal roughly follows the camera's forward axis (the Z
+                // ring, here) is seen nearly face-on and so traces out that
+                // same on-screen radius at every angle, while a ring whose
+                // normal is broadside to the camera (the Y ring, here) is
+                // seen edge-on and collapses toward screen-centre as its
+                // points move away from that one angle. Blending `right` with
+                // the ring's other in-plane basis vector at a substantial
+                // angle keeps the point on the true 3D ring while pulling its
+                // *screen* distance from centre well inside the face-on ring's
+                // radius, breaking the tie in the edge-on ring's favour.
+                let right = cam_tf.right().as_vec3();
+                let in_plane = right - dir * right.dot(dir);
+                let basis_a = if in_plane.length_squared() > 1e-6 {
+                    in_plane.normalize()
+                } else {
+                    dir.any_orthonormal_vector()
+                };
+                let basis_b = dir.cross(basis_a).normalize();
+                let perp = (basis_a * 0.85 + basis_b * (1.0 - 0.85 * 0.85_f32).sqrt()).normalize();
+                // A small nudge along the camera's own up, off the ring's
+                // exact plane. This fixture's camera sits at the same world
+                // height as the gizmo (`app_with_a_cube`'s `(0, 0, 10)`, cube
+                // at the origin), so a ray toward a point genuinely *on* the
+                // Y ring — which, being normal to Y, is entirely at that same
+                // height — has an exactly-zero Y direction component and can
+                // never hit the (also Y-normal) rotation plane
+                // `viewport_gizmo_drag` intersects against
+                // (`intersect_plane`'s `denominator` is exactly `0.0`, not
+                // merely small). A real cursor would never land with that
+                // much precision either; nudging off the ring by a fraction
+                // of its radius keeps this within `point_to_ring_screen_dist`'s
+                // generous hit threshold while giving the ray a real Y
+                // component to intersect with.
+                let nudge = cam_tf.up().as_vec3() * (0.1 * rotate_ring_radius * scale);
+                gizmo_pos + perp * (rotate_ring_radius * scale) + nudge
+            }
+        };
+        let screen = camera.world_to_viewport(cam_tf, world_point).expect("point in front of the camera");
+        screen / camera.logical_viewport_size().expect("a sized viewport")
+    }
+
+    /// The rotate-Y ring's screen position, in whatever scene `app` currently
+    /// holds. Named separately from `cursor_over_axis` only for readability
+    /// at the rotate test's call site — viewed from this fixture's camera
+    /// (looking down `-Z`) the Y ring sits edge-on, not a position a human
+    /// could eyeball the way the X handle's screen-right position is, so it
+    /// goes through the same real geometry rather than a guessed literal.
+    /// Callers must switch `TransformGizmoSettings::mode` to `Rotate` first,
+    /// same as the rotate test does.
+    fn ring_point_for_y(app: &mut App) -> Vec2 {
+        cursor_over_axis(app, TransformGizmoAxis::Y)
+    }
+
+    #[test]
+    fn dragging_the_x_handle_moves_along_x_only() {
+        let (mut app, cube) = app_with_a_focused_gizmo();
+        let start = cursor_over_axis(&mut app, TransformGizmoAxis::X);
+        press_on_axis(&mut app, TransformGizmoAxis::X, start);
+        drag_to(&mut app, start + Vec2::new(0.10, 0.0));
+
+        let tf = app.world().get::<Transform>(cube).unwrap();
+        assert!(tf.translation.x.abs() > 0.01, "x did not move: {:?}", tf.translation);
+        assert!(tf.translation.y.abs() < 1e-4, "y moved: {:?}", tf.translation);
+        assert!(tf.translation.z.abs() < 1e-4, "z moved: {:?}", tf.translation);
+    }
+
+    #[test]
+    fn a_release_ends_the_drag() {
+        let (mut app, cube) = app_with_a_focused_gizmo();
+        let start = cursor_over_axis(&mut app, TransformGizmoAxis::X);
+        press_on_axis(&mut app, TransformGizmoAxis::X, start);
+        drag_to(&mut app, start + Vec2::new(0.10, 0.0));
+        release(&mut app);
+        let after_release = *app.world().get::<Transform>(cube).unwrap();
+
+        drag_to(&mut app, start + Vec2::new(0.28, 0.0));
+
+        assert_eq!(*app.world().get::<Transform>(cube).unwrap(), after_release);
+        assert!(!app.world().resource::<TransformGizmoState>().active);
+    }
+
+    #[test]
+    fn a_cancel_ends_the_drag_too() {
+        // Same hazard M6 Task 14 found on the canvas: without this the state
+        // stays `active` forever and picking never works again.
+        let (mut app, _cube) = app_with_a_focused_gizmo();
+        let start = cursor_over_axis(&mut app, TransformGizmoAxis::X);
+        press_on_axis(&mut app, TransformGizmoAxis::X, start);
+        feed(&mut app, vec![ViewportInput::Cancel]);
+        assert!(!app.world().resource::<TransformGizmoState>().active);
+    }
+
+    #[test]
+    fn rotate_mode_turns_the_object_without_moving_it() {
+        let (mut app, cube) = app_with_a_focused_gizmo();
+        app.world_mut().resource_mut::<TransformGizmoSettings>().mode = TransformGizmoMode::Rotate;
+        let before = *app.world().get::<Transform>(cube).unwrap();
+        let ring_pos = ring_point_for_y(&mut app);
+        press_on_axis(&mut app, TransformGizmoAxis::Y, ring_pos);
+        drag_to(&mut app, ring_pos + Vec2::new(0.06, 0.0));
+
+        let after = app.world().get::<Transform>(cube).unwrap();
+        assert_ne!(after.rotation, before.rotation);
+        assert_eq!(after.translation, before.translation);
+    }
+
+    #[test]
+    fn a_drag_on_a_handle_does_not_also_select_something() {
+        // `pick_on_click` runs after this system and skips while a drag is
+        // active. If it did not, grabbing a handle would reselect whatever mesh
+        // the ray happened to hit behind it.
+        let (mut app, cube) = app_with_a_focused_gizmo();
+        let start = cursor_over_axis(&mut app, TransformGizmoAxis::X);
+        press_on_axis(&mut app, TransformGizmoAxis::X, start);
+        assert_eq!(app.world().resource::<Selection>().0, Some(cube));
+    }
+
+    #[test]
+    fn a_parented_object_moves_the_same_distance_as_an_unparented_one() {
+        // The gizmo displays at `GlobalTransform` and writes local `Transform`;
+        // the demo document's own cube is parented, so a version that forgot the
+        // parent's inverse would be visibly wrong on the first real run.
+        let (mut app, cube) = app_with_a_focused_gizmo();
+        let parent = app
+            .world_mut()
+            .spawn(Transform::from_xyz(5.0, 0.0, 0.0).with_scale(Vec3::splat(2.0)))
+            .id();
+        app.world_mut().entity_mut(cube).insert(ChildOf(parent));
+        app.update();
+
+        let start = cursor_over_axis(&mut app, TransformGizmoAxis::X);
+        press_on_axis(&mut app, TransformGizmoAxis::X, start);
+        drag_to(&mut app, start + Vec2::new(0.10, 0.0));
+
+        let world_x = app.world().get::<GlobalTransform>(cube).unwrap().translation().x;
+        assert!(world_x > 5.0, "the child must move in world space: {world_x}");
     }
 }
