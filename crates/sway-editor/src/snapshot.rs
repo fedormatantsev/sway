@@ -12,7 +12,7 @@ use bevy_transform::components::Transform;
 use kurbo::Point;
 use sway_graph::order::{GraphOrder, Step};
 use sway_graph::{ComponentDocRegistry, EditorPos, GraphDiagnostics, WireRegistry};
-use sway_midi::MusicalTime;
+use sway_midi::{MusicalTime, Transport};
 
 /// The editor's display key for a node box.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -249,7 +249,7 @@ fn format_value(value: &dyn PartialReflect) -> String {
     format!("{value:?}")
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TransportView {
     pub playing: bool,
     pub bpm: f32,
@@ -257,10 +257,19 @@ pub struct TransportView {
     pub locked: bool,
 }
 
+impl Default for TransportView {
+    fn default() -> Self {
+        transport_view(&Transport::default())
+    }
+}
+
 fn capture_transport(world: &World) -> TransportView {
-    let Some(t) = world.get_resource::<sway_midi::Transport>() else {
-        return TransportView::default();
-    };
+    world
+        .get_resource::<Transport>()
+        .map_or_else(TransportView::default, transport_view)
+}
+
+fn transport_view(t: &Transport) -> TransportView {
     TransportView {
         playing: t.playing,
         bpm: t.bpm as f32,
@@ -656,6 +665,18 @@ mod tests {
         assert!(snapshot.transport.locked);
         assert!((snapshot.transport.bpm - 128.0).abs() < 0.01);
         assert_eq!(snapshot.transport.position, "005.2.3");
+    }
+
+    #[test]
+    fn a_snapshot_without_transport_uses_the_stopped_default_readout() {
+        let world = World::new();
+
+        let snapshot = capture(&world);
+
+        assert!(!snapshot.transport.playing);
+        assert_eq!(snapshot.transport.bpm, 120.0);
+        assert_eq!(snapshot.transport.position, "001.1.1");
+        assert!(!snapshot.transport.locked);
     }
 
     #[test]
