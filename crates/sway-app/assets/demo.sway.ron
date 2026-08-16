@@ -4,15 +4,22 @@
 //   lfoA ──amplitude──▶ lfoB
 //   lfoA ──vec3.y────▶ vec3A ──translation──▶ cubeA ─┐
 //   lfoB ──vec3.y────▶ vec3B ──translation──▶ cubeB ─┤─parent─▶ group
-//   mat  ──material──▶ cubeA, cubeB
+//   mat  ──material──▶ cubeA, cubeB, cubeC
+//                                   cubeC ───────────┘─parent─▶ group
 //
 // Each node names one component and lets `#[require]` supply the rest (roadmap
-// D4), which is why there is no `FloatOut` here and no `Transform` on the
-// cubes — the cubes' translation is wired, and an authored one would be
+// D4), which is why there is no `FloatOut` here and no `Transform` on cubeA/
+// cubeB — their translation is wired, and an authored one would be
 // overwritten on the first tick anyway.
 //
 // The cubes' x offsets live in the `Vec3` nodes because `translation` is
 // written whole (roadmap D5).
+//
+// `cubeC` is the odd one out: an authored `Transform` and no `translation`
+// wire, on purpose (M7 Task 15's exit-criterion walkthrough needs one mesh
+// whose drag actually holds — cubeA/cubeB's translate handle springs back on
+// the next tick by design, M7-7, which makes them useless for proving a
+// translate-drag "sticks").
 Project(
     version: 1,
     entities: [
@@ -93,6 +100,19 @@ Project(
                 "EditorPos": ((20.0, 160.0)),
             },
             wires: { "translation": "vec3B", "material": "mat", "parent": "group" },
+        ),
+        Entity(
+            id: "cubeC",
+            components: {
+                "MeshAsset": (path: "cube.gltf#Mesh0/Primitive0"),
+                "Transform": (
+                    translation: (0.0, 1.6, -0.8),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "EditorPos": ((20.0, 280.0)),
+            },
+            wires: { "material": "mat", "parent": "group" },
         ),
         Entity(
             id: "group",
