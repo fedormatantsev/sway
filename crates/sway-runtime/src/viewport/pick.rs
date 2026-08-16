@@ -1,8 +1,15 @@
 //! Click-to-select. Spec M7-6.
 
+use std::collections::HashSet;
+
 use bevy::camera::Camera;
+use bevy::gizmos::transform_gizmo::{TransformGizmoMeshMarker, TransformGizmoRoot};
 use bevy::math::Ray3d;
+use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
 use bevy::prelude::*;
+use sway_graph::{ViewportButton, ViewportInput};
+
+use crate::viewport::{ViewportCamera, ViewportCameraRole};
 
 /// Builds a world-space ray from a normalized viewport position.
 ///
@@ -41,6 +48,82 @@ pub fn viewport_ray(
 ) -> Option<Ray3d> {
     let size = camera.logical_viewport_size()?;
     camera.viewport_to_world(camera_transform, pos * size).ok()
+}
+
+/// True for an entity belonging to the transform gizmo's own rendered
+/// handles (`TransformGizmoRoot` or `TransformGizmoMeshMarker`, spec M7-8).
+fn is_gizmo_mesh(entity: Entity, gizmo_meshes: &HashSet<Entity>) -> bool {
+    gizmo_meshes.contains(&entity)
+}
+
+/// Selects the mesh under a plain primary press.
+///
+/// Writes `Selection` directly rather than sending `EditorCommand::Select`:
+/// the tree and the canvas send commands because they live on the far side
+/// of a channel, while this is already a world system — the same reasoning
+/// the gizmo uses for writing `Transform` directly (spec M7-8).
+///
+/// `MeshRayCast` is used as a bare `SystemParam`. `MeshPickingPlugin` is
+/// deliberately not added: it exists to run `bevy_picking`'s own pointer
+/// backend, which needs `bevy_winit` — disabled here. Its `SystemParam`
+/// fields are `Res<Assets<Mesh>>`, three `Local`s and two `Query`s, none of
+/// which that plugin initialises (spec M7-6).
+#[allow(clippy::type_complexity)] // an ECS query filter tuple, not a type to simplify
+pub fn pick_on_click(
+    events: Res<crate::viewport::ViewportEvents>,
+    active: Res<ViewportCamera>,
+    cameras: Query<(&Camera, &GlobalTransform, &ViewportCameraRole)>,
+    gizmo_state: Option<Res<bevy::gizmos::transform_gizmo::TransformGizmoState>>,
+    gizmo_meshes: Query<Entity, Or<(With<TransformGizmoRoot>, With<TransformGizmoMeshMarker>)>>,
+    mut ray_cast: MeshRayCast,
+    mut selection: ResMut<sway_graph::Selection>,
+) {
+    // A drag on a gizmo handle is not a pick. Task 15 makes this reachable;
+    // until then `active` is always false.
+    if gizmo_state.is_some_and(|state| state.active) {
+        return;
+    }
+
+    // Collected up front: a closure can't borrow both a `Query` and the
+    // `MeshRayCast` `SystemParam` at once.
+    let gizmo_meshes: HashSet<Entity> = gizmo_meshes.iter().collect();
+
+    for event in &events.0 {
+        let ViewportInput::Down { button: ViewportButton::Primary, pos, modifiers } = event else {
+            continue;
+        };
+        if modifiers.alt {
+            // Alt+drag is navigation (spec M7-3).
+            continue;
+        }
+
+        let Some((camera, camera_transform)) = cameras.iter().find_map(|(camera, tf, role)| {
+            matches!(
+                (*active, role),
+                (ViewportCamera::Editor, ViewportCameraRole::Editor)
+                    | (ViewportCamera::Scene, ViewportCameraRole::Scene)
+            )
+            .then_some((camera, tf))
+        }) else {
+            continue;
+        };
+
+        let Some(ray) = viewport_ray(camera, camera_transform, *pos) else {
+            continue;
+        };
+
+        // The gizmo's own handle meshes are `Mesh3d` entities sitting right
+        // under the cursor whenever a gizmo is up (spec M7-8, consequence 1).
+        let filter = |entity: Entity| !is_gizmo_mesh(entity, &gizmo_meshes);
+        let settings = MeshRayCastSettings::default()
+            .with_filter(&filter)
+            .always_early_exit();
+
+        let hit = ray_cast.cast_ray(ray, &settings).first().map(|(entity, _)| *entity);
+        if selection.0 != hit {
+            selection.0 = hit;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -119,5 +202,106 @@ mod tests {
         let camera = Camera::default();
         let ray = viewport_ray(&camera, &GlobalTransform::default(), Vec2::splat(0.5));
         assert!(ray.is_none());
+    }
+}
+
+#[cfg(test)]
+mod click_tests {
+    use super::*;
+    use crate::viewport::{ViewportCamera, ViewportCameraRole};
+    use sway_graph::{Selection, ViewportButton, ViewportInput, ViewportModifiers};
+
+    /// A cube at the origin, a camera looking at it, in a real render-capable
+    /// app — `MeshRayCast` needs `Assets<Mesh>` and the `Aabb` that Bevy's own
+    /// systems compute, so a bare `World` will not do.
+    /// Also wires up a real `ViewportInputRx` channel: `EditorViewportPlugin`
+    /// includes `drain_viewport_input`, which unconditionally clears
+    /// `ViewportEvents` at the start of every `PreUpdate` and refills it from
+    /// the channel only if one exists (see its doc comment). Writing straight
+    /// into `ViewportEvents` — as `nav_tests` in `camera.rs` does — would be
+    /// wiped by that same-frame clear before `pick_on_click` ever runs in
+    /// `PostUpdate`, since this fixture (unlike `nav_tests`'s bare `App`)
+    /// registers the whole plugin. Sending through the channel instead is
+    /// both correct and the more faithful test: it is genuinely how a click
+    /// reaches this system in production.
+    fn app_with_a_cube() -> (App, Entity, crossbeam_channel::Sender<ViewportInput>) {
+        let gpu = sway_gpu::GpuContext::new(None);
+        let size = UVec2::new(64, 64);
+        let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);
+        let mut app = crate::headless::build_app(&gpu, &viewport, size);
+        app.add_plugins(crate::viewport::EditorViewportPlugin);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        app.insert_resource(sway_graph::ViewportInputRx(rx));
+        app.finish();
+        app.cleanup();
+
+        let cube = {
+            let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
+            let handle = meshes.add(Cuboid::new(2.0, 2.0, 2.0));
+            // `Visibility` is required, not just nice-to-have: `Mesh3d` only
+            // `#[require(Transform)]` (verified against the pinned
+            // `bevy_mesh-0.19.0` source), so without it the entity never
+            // gets `InheritedVisibility`/`ViewVisibility` (those come from
+            // `Visibility`'s own `#[require(...)]`, in `bevy_camera-0.19.0`),
+            // and `MeshRayCast`'s `culling_query` reads both non-optionally
+            // — an entity missing either is invisible to the query, not just
+            // "culled", so ray casts against it silently find nothing.
+            app.world_mut()
+                .spawn((Mesh3d(handle), Transform::default(), Visibility::default()))
+                .id()
+        };
+        app.world_mut().spawn((
+            Camera3d::default(),
+            ViewportCameraRole::Scene,
+            Transform::from_xyz(0.0, 0.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
+        ));
+        // Several updates: `Aabb` is computed by a PostUpdate system and the
+        // camera's projection is filled in by Bevy's camera systems.
+        for _ in 0..4 {
+            app.update();
+        }
+        (app, cube, tx)
+    }
+
+    fn click(app: &mut App, tx: &crossbeam_channel::Sender<ViewportInput>, pos: Vec2) {
+        tx.send(ViewportInput::Down {
+            button: ViewportButton::Primary,
+            pos,
+            modifiers: ViewportModifiers::default(),
+        })
+        .unwrap();
+        app.update();
+    }
+
+    #[test]
+    fn clicking_a_mesh_selects_it() {
+        let (mut app, cube, tx) = app_with_a_cube();
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
+        click(&mut app, &tx, Vec2::splat(0.5));
+        assert_eq!(app.world().resource::<Selection>().0, Some(cube));
+    }
+
+    #[test]
+    fn clicking_empty_space_clears_the_selection() {
+        let (mut app, cube, tx) = app_with_a_cube();
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
+        app.world_mut().resource_mut::<Selection>().0 = Some(cube);
+        click(&mut app, &tx, Vec2::new(0.02, 0.02));
+        assert_eq!(app.world().resource::<Selection>().0, None);
+    }
+
+    #[test]
+    fn an_alt_click_navigates_instead_of_picking() {
+        let (mut app, cube, tx) = app_with_a_cube();
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
+        tx.send(ViewportInput::Down {
+            button: ViewportButton::Primary,
+            pos: Vec2::splat(0.5),
+            modifiers: ViewportModifiers { alt: true, ..Default::default() },
+        })
+        .unwrap();
+        app.update();
+        assert_eq!(app.world().resource::<Selection>().0, None);
+        let _ = cube;
     }
 }

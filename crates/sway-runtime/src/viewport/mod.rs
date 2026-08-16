@@ -6,6 +6,8 @@ pub mod pick;
 use bevy::prelude::*;
 use sway_graph::{ViewportInput, ViewportInputRx};
 
+pub use camera::{ViewportCamera, ViewportCameraRole};
+
 /// This frame's viewport input, replaced wholesale each `PreUpdate`.
 ///
 /// One drain, several readers: the camera, the picker and the gizmo all need
@@ -43,6 +45,7 @@ impl Plugin for EditorViewportPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ViewportEvents>()
             .init_resource::<camera::ViewportCamera>()
+            .init_resource::<sway_graph::Selection>()
             .add_systems(
                 PreUpdate,
                 drain_viewport_input.in_set(ViewportSystems::Drain),
@@ -57,6 +60,13 @@ impl Plugin for EditorViewportPlugin {
             .add_systems(
                 Update,
                 (camera::tag_scene_cameras, camera::apply_active_camera).chain(),
+            )
+            .add_systems(
+                PostUpdate,
+                pick::pick_on_click
+                    .in_set(ViewportSystems::Pick)
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .after(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
             );
     }
 }
