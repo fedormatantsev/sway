@@ -121,6 +121,33 @@ mod tests {
     }
 
     #[test]
+    fn wired_time_reaches_oscillator_output_in_one_tick() {
+        let mut app = slice_app();
+        let time = app.world_mut().spawn(FloatOut(1.0)).id();
+        let oscillator = app
+            .world_mut()
+            .spawn((
+                Oscillator {
+                    time: 0.0,
+                    period: 4.0,
+                    shape: Waveform::Sine,
+                    phase: 0.0,
+                    amplitude: 1.0,
+                },
+                TimeFrom(time),
+            ))
+            .id();
+
+        app.update();
+
+        assert_eq!(
+            app.world().get::<FloatOut>(oscillator).map(|out| out.0),
+            Some(1.0),
+            "wired quarter-cycle time must affect the oscillator output in the same tick"
+        );
+    }
+
+    #[test]
     fn the_amplitude_wire_never_writes_an_equal_value() {
         assert_writes_only_on_change::<AmplitudeFrom>(
             FloatOut(1.0),
