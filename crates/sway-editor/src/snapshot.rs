@@ -11,7 +11,10 @@ use bevy_reflect::{PartialReflect, ReflectRef};
 use bevy_transform::components::Transform;
 use kurbo::Point;
 use sway_graph::order::{GraphOrder, Step};
-use sway_graph::{ComponentDocRegistry, EditorPos, GraphDiagnostics, Selection, TransportTime, WireRegistry};
+use sway_graph::{
+    ComponentDocRegistry, EditorPos, GraphDiagnostics, HiddenFromEditor, Selection, TransportTime,
+    WireRegistry,
+};
 
 /// The editor's display key for a node box.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -354,11 +357,13 @@ fn graph_entities(world: &World) -> Vec<Entity> {
     entities
 }
 
-/// Every entity the canvas draws: those carrying `EditorPos` (spec M6-4).
+/// Every entity the canvas draws: those carrying `EditorPos` (spec M6-4),
+/// excluding anything marked [`HiddenFromEditor`].
 fn canvas_entities(world: &World) -> Vec<Entity> {
     let mut entities: Vec<Entity> = world
         .iter_entities()
         .filter(|entity| entity.contains::<EditorPos>())
+        .filter(|entity| !entity.contains::<HiddenFromEditor>())
         .map(|entity| entity.id())
         .collect();
     entities.sort();
@@ -489,6 +494,9 @@ fn capture_tree(world: &World) -> Vec<TreeRow> {
     let mut scene_roots: Vec<Entity> = world
         .iter_entities()
         .filter(|entity| entity.contains::<Transform>())
+        // The transform gizmo's own handle meshes (spec M7-8) carry
+        // `Transform` but are implementation detail, not scene content.
+        .filter(|entity| !entity.contains::<HiddenFromEditor>())
         .filter(|entity| match entity.get::<ChildOf>() {
             Some(ChildOf(parent)) => world.get::<Transform>(*parent).is_none(),
             None => true,
@@ -537,6 +545,7 @@ fn push_scene_subtree(
             .iter()
             .copied()
             .filter(|child| world.get::<Transform>(*child).is_some())
+            .filter(|child| world.get::<HiddenFromEditor>(*child).is_none())
             .collect();
         spatial.sort_unstable();
         for child in spatial {
@@ -680,6 +689,32 @@ mod tests {
         let before = entities.len();
         entities.dedup();
         assert_eq!(entities.len(), before);
+    }
+
+    #[test]
+    fn gizmo_handle_meshes_stay_out_of_the_scene_tree() {
+        // Bevy's transform gizmo renderer spawns ~10 mesh entities carrying
+        // `Transform`, and `capture_tree` walks every `Transform` entity.
+        // `sway-editor` cannot name the renderer's own marker types (that
+        // would require `bevy_gizmos`, which pulls in `bevy_render`), so it
+        // filters on `HiddenFromEditor` instead -- see that type's doc
+        // comment in `sway-graph`.
+        //
+        // A bare `bevy_ecs::World` already carries one entity of its own
+        // (Bevy's internal bookkeeping, present even before anything here
+        // spawns a thing), so this asserts the two marked entities are
+        // absent by id rather than asserting the tree is empty outright.
+        let mut world = World::new();
+        let gizmo_a = world.spawn((Transform::default(), HiddenFromEditor)).id();
+        let gizmo_b = world.spawn((Transform::default(), HiddenFromEditor)).id();
+
+        let snap = capture(&world);
+
+        assert!(
+            !snap.tree.iter().any(|row| row.entity == gizmo_a || row.entity == gizmo_b),
+            "the gizmo's own meshes must not appear as scene rows: {:?}",
+            snap.tree,
+        );
     }
 
     #[test]

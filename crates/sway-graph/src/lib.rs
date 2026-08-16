@@ -15,7 +15,7 @@ pub mod watch;
 pub mod wire;
 
 pub use command::{EditorCommand, EditorRx, FieldValue, apply_editor_command, apply_editor_commands};
-pub use ctx::{EditorPos, Selection, TickCtx};
+pub use ctx::{EditorPos, HiddenFromEditor, Selection, TickCtx};
 pub use diagnostics::GraphDiagnostics;
 pub use order::{GraphOrder, Link, Sorted, Step, TopologyDirty, rebuild_order, topological_order};
 pub use registry_components::{ComponentDocRegistry, ComponentEntry, register_authorable};

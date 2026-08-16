@@ -1,8 +1,10 @@
 //! Viewport interaction: the world half. Spec M7.
 
 pub mod camera;
+pub mod gizmo;
 pub mod pick;
 
+use bevy::gizmos::transform_gizmo::{TransformGizmoSettings, TransformGizmoSpace, TransformGizmoState};
 use bevy::prelude::*;
 use sway_graph::{ViewportInput, ViewportInputRx};
 
@@ -46,6 +48,17 @@ impl Plugin for EditorViewportPlugin {
         app.init_resource::<ViewportEvents>()
             .init_resource::<camera::ViewportCamera>()
             .init_resource::<sway_graph::Selection>()
+            // Switches `TransformGizmoRenderPlugin`'s systems on; both must
+            // exist before `Startup`, when `spawn_gizmo_meshes` runs.
+            .init_resource::<TransformGizmoState>()
+            .insert_resource(TransformGizmoSettings {
+                space: TransformGizmoSpace::World,
+                // Nothing here owns a cursor to confine, and the setting
+                // reaches for `CursorOptions` on a window that does not
+                // exist.
+                confine_cursor: false,
+                ..Default::default()
+            })
             .add_systems(
                 PreUpdate,
                 drain_viewport_input.in_set(ViewportSystems::Drain),
@@ -60,6 +73,15 @@ impl Plugin for EditorViewportPlugin {
             .add_systems(
                 Update,
                 (camera::tag_scene_cameras, camera::apply_active_camera).chain(),
+            )
+            .add_systems(
+                Update,
+                (
+                    gizmo::follow_selection,
+                    gizmo::mark_gizmo_camera,
+                    gizmo::hide_gizmo_meshes_from_editor,
+                    gizmo::disable_gizmo_camera_clear,
+                ),
             )
             .add_systems(
                 PostUpdate,
