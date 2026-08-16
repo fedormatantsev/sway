@@ -30,7 +30,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::presenter::{EditorPresenter, ShowPresenter, EDITOR_VIEWPORT_SIZE};
+use crate::presenter::{EDITOR_VIEWPORT_SIZE, EditorPresenter, ShowPresenter};
 
 /// A file dialog in flight.
 ///
@@ -150,7 +150,10 @@ impl Running {
         // The toolbar's requests, then one poll of whatever dialog is open.
         // Both only exist on the editor path; the show path has no toolbar.
         let (requests, view_requests) = if let Presenter::Editor(presenter) = &mut self.presenter {
-            (presenter.take_file_requests(), presenter.take_view_requests())
+            (
+                presenter.take_file_requests(),
+                presenter.take_view_requests(),
+            )
         } else {
             (vec![], vec![])
         };
@@ -175,7 +178,9 @@ impl Running {
             match request {
                 ViewRequest::ToggleCamera => {
                     let world = self.app.world_mut();
-                    if let Some(mut active) = world.get_resource_mut::<sway_runtime::viewport::camera::ViewportCamera>() {
+                    if let Some(mut active) =
+                        world.get_resource_mut::<sway_runtime::viewport::camera::ViewportCamera>()
+                    {
                         *active = match *active {
                             sway_runtime::viewport::camera::ViewportCamera::Editor => {
                                 sway_runtime::viewport::camera::ViewportCamera::Scene
@@ -260,7 +265,11 @@ impl ApplicationHandler for Shell {
             return;
         };
 
-        let title = if config.editor { "sway (editor)" } else { "sway" };
+        let title = if config.editor {
+            "sway (editor)"
+        } else {
+            "sway"
+        };
         let window = event_loop
             .create_window(Window::default_attributes().with_title(title))
             .expect("could not create the window");
@@ -296,7 +305,9 @@ impl ApplicationHandler for Shell {
         let (viewport_width, viewport_height) = if config.editor {
             (
                 (EDITOR_VIEWPORT_SIZE.width * scale_factor).round().max(1.0) as u32,
-                (EDITOR_VIEWPORT_SIZE.height * scale_factor).round().max(1.0) as u32,
+                (EDITOR_VIEWPORT_SIZE.height * scale_factor)
+                    .round()
+                    .max(1.0) as u32,
             )
         } else {
             (width, height)
@@ -305,11 +316,8 @@ impl ApplicationHandler for Shell {
         let viewport = ViewportTexture::new(&gpu.device, viewport_width, viewport_height);
         let compositor = Compositor::new(&gpu.device, surface.format());
 
-        let mut app = (config.build_app)(
-            &gpu,
-            &viewport,
-            UVec2::new(viewport_width, viewport_height),
-        );
+        let mut app =
+            (config.build_app)(&gpu, &viewport, UVec2::new(viewport_width, viewport_height));
         // Must run once, after construction and before the first `app.update()`,
         // or render resources stay uninitialised (normally an `App::run` runner
         // busy-waits on `plugins_state() == Ready` before calling these; we skip
@@ -351,7 +359,12 @@ impl ApplicationHandler for Shell {
         });
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
         let Some(running) = &mut self.running else {
             return;
         };

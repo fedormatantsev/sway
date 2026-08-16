@@ -17,12 +17,12 @@
 //! and both halves render identically -- that asymmetry is the entire
 //! proof.
 
-use bevy::prelude::*;
 use bevy::camera::visibility::NoFrustumCulling;
+use bevy::prelude::*;
 use sway_gpu::wgpu;
 use sway_runtime::sprite_depth_spike::{
-    depth_step_image, solid_white_image, SpriteDepthMaterial, SpriteDepthPlugin,
-    SpriteDepthUniform, SPIKE_DEPTH_PIVOT, SPIKE_DEPTH_RANGE,
+    SPIKE_DEPTH_PIVOT, SPIKE_DEPTH_RANGE, SpriteDepthMaterial, SpriteDepthPlugin,
+    SpriteDepthUniform, depth_step_image, solid_white_image,
 };
 
 const VIEWPORT: u32 = 64;
@@ -81,7 +81,9 @@ fn read_pixels(gpu: &sway_gpu::GpuContext, viewport: &sway_gpu::ViewportTexture)
     gpu.device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("device poll failed");
-    rx.recv().expect("map_async never ran").expect("mapping failed");
+    rx.recv()
+        .expect("map_async never ran")
+        .expect("mapping failed");
 
     let data = slice.get_mapped_range();
     let mut pixels = Vec::with_capacity((VIEWPORT * VIEWPORT) as usize);

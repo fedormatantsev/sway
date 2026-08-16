@@ -21,5 +21,8 @@ fn despawning_a_producer_removes_the_wire_from_its_consumers() {
         "if this fails, EditorCommand::Delete must walk the producer's \
          RelationshipTarget and remove each consumer's wire component itself"
     );
-    assert!(world.get_entity(dst).is_ok(), "the consumer itself must survive");
+    assert!(
+        world.get_entity(dst).is_ok(),
+        "the consumer itself must survive"
+    );
 }

@@ -107,7 +107,10 @@ pub fn to_document(world: &mut World) -> ProjectDoc {
         world.insert_resource(wires);
     }
 
-    ProjectDoc { version: FORMAT_VERSION, entities }
+    ProjectDoc {
+        version: FORMAT_VERSION,
+        entities,
+    }
 }
 
 /// One component per line, one wire per line — the format constraint M7's
@@ -126,13 +129,13 @@ pub fn to_ron(doc: &ProjectDoc) -> Result<String, ron::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sway_graph::TopologyDirty;
     use crate::apply::apply;
     use crate::doc::parse;
+    use bevy_app::App;
+    use sway_graph::TopologyDirty;
     use sway_graph::register_authorable;
     use sway_graph::register_wire;
     use sway_graph::test_wires::{FloatOut, Gain, GainFrom};
-    use bevy_app::App;
 
     fn round_trip_app() -> App {
         let mut app = App::new();
@@ -158,7 +161,11 @@ mod tests {
 
         assert_eq!(emitted.version, FORMAT_VERSION);
         assert_eq!(emitted.entities.len(), 2);
-        let dst = emitted.entities.iter().find(|e| e.id == "dst").expect("present");
+        let dst = emitted
+            .entities
+            .iter()
+            .find(|e| e.id == "dst")
+            .expect("present");
         assert_eq!(dst.wires.get("factor").map(String::as_str), Some("src"));
         assert!(dst.components.contains_key("Gain"));
     }
@@ -206,7 +213,9 @@ mod tests {
             "the whole payload is on one line: {gain_line}"
         );
         assert_eq!(
-            text.lines().filter(|line| line.contains("\"factor\": \"src\"")).count(),
+            text.lines()
+                .filter(|line| line.contains("\"factor\": \"src\""))
+                .count(),
             1,
             "the wire is one line"
         );

@@ -36,7 +36,9 @@ pub fn save_to_path(world: &mut World, path: &Path) -> Result<(), String> {
     let doc = to_document(world);
     let text = to_ron(&doc).map_err(|e| e.to_string())?;
     std::fs::write(path, text).map_err(|e| e.to_string())?;
-    world.insert_resource(CurrentDocument { path: Some(path.to_path_buf()) });
+    world.insert_resource(CurrentDocument {
+        path: Some(path.to_path_buf()),
+    });
     world.insert_resource(LastApplied(Some(doc)));
     Ok(())
 }
@@ -46,7 +48,9 @@ pub fn open_from_path(world: &mut World, path: &Path) -> Result<(), String> {
     let doc = parse(&text).map_err(|e| e.to_string())?;
     let diagnostics = apply(world, &doc);
     world.insert_resource(diagnostics);
-    world.insert_resource(CurrentDocument { path: Some(path.to_path_buf()) });
+    world.insert_resource(CurrentDocument {
+        path: Some(path.to_path_buf()),
+    });
     world.insert_resource(LastApplied(Some(doc)));
     // The watcher on any previously-loaded asset path stops mattering.
     if let Some(mut handle) = world.get_resource_mut::<crate::asset::ProjectHandle>() {
@@ -102,7 +106,10 @@ mod tests {
         let mut app = file_app();
         save_to_path(app.world_mut(), &path).expect("saves");
 
-        assert_eq!(app.world().resource::<CurrentDocument>().path.as_deref(), Some(path.as_path()));
+        assert_eq!(
+            app.world().resource::<CurrentDocument>().path.as_deref(),
+            Some(path.as_path())
+        );
     }
 
     #[test]
@@ -112,7 +119,8 @@ mod tests {
         app.world_mut().spawn(EditorPos(Vec2::ZERO));
         app.update();
         let doc = crate::to_document(app.world_mut());
-        app.world_mut().insert_resource(LastApplied(Some(doc.clone())));
+        app.world_mut()
+            .insert_resource(LastApplied(Some(doc.clone())));
 
         assert!(should_skip(app.world(), &doc));
     }

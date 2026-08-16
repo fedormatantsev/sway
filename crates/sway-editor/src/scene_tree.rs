@@ -17,8 +17,8 @@ use crossbeam_channel::Sender;
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
     AccessCtx, ChildrenIds, EventCtx, LayoutCtx, MeasureCtx, PaintCtx, PointerButton,
-    PointerButtonEvent, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, Widget,
-    WidgetId, WidgetMut, WidgetPod,
+    PointerButtonEvent, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, Widget, WidgetId,
+    WidgetMut, WidgetPod,
 };
 use masonry::imaging::Painter;
 use masonry::layout::{LenReq, Length};
@@ -239,7 +239,12 @@ impl Widget for SceneTree {
 
     /// Paints the selection band and the header backgrounds; the row text is
     /// each `Label` child's own job, painted after this.
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let width = NATURAL_WIDTH.max(
             self.rows
                 .iter()
@@ -247,7 +252,12 @@ impl Widget for SceneTree {
                 .fold(0.0, f64::max),
         );
         for (index, row) in self.rows.iter().enumerate() {
-            let band = Rect::new(0.0, index as f64 * ROW_HEIGHT, width, (index + 1) as f64 * ROW_HEIGHT);
+            let band = Rect::new(
+                0.0,
+                index as f64 * ROW_HEIGHT,
+                width,
+                (index + 1) as f64 * ROW_HEIGHT,
+            );
             if row.entity.is_none() {
                 painter.fill_rect(band, Color::from_rgb8(44, 46, 54));
             } else if row.entity == self.selected {
@@ -262,14 +272,20 @@ impl Widget for SceneTree {
         _props: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
-        let PointerEvent::Down(PointerButtonEvent { button: Some(PointerButton::Primary), state, .. }) =
-            event
+        let PointerEvent::Down(PointerButtonEvent {
+            button: Some(PointerButton::Primary),
+            state,
+            ..
+        }) = event
         else {
             return;
         };
         let local = ctx.local_position(state.position);
         let index = (local.y / ROW_HEIGHT).floor();
-        let Some(row) = usize::try_from(index as i64).ok().and_then(|i| self.rows.get(i)) else {
+        let Some(row) = usize::try_from(index as i64)
+            .ok()
+            .and_then(|i| self.rows.get(i))
+        else {
             return;
         };
         // A header is not selectable.
@@ -282,8 +298,13 @@ impl Widget for SceneTree {
         // every frame is what caused the M6 flicker. This widget just asks;
         // `apply_snapshot` is what actually moves the highlight, once the
         // world answers back.
-        let _ = self.commands.send(EditorCommand::Select { entity: Some(entity) });
-        ctx.submit_action::<Self::Action>(SceneTreeAction { entity, node_id: row.node_id });
+        let _ = self.commands.send(EditorCommand::Select {
+            entity: Some(entity),
+        });
+        ctx.submit_action::<Self::Action>(SceneTreeAction {
+            entity,
+            node_id: row.node_id,
+        });
         ctx.request_paint_only();
         ctx.set_handled();
     }
@@ -292,7 +313,13 @@ impl Widget for SceneTree {
         Role::Tree
     }
 
-    fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, _node: &mut Node) {}
+    fn accessibility(
+        &mut self,
+        _ctx: &mut AccessCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _node: &mut Node,
+    ) {
+    }
 
     fn children_ids(&self) -> ChildrenIds {
         self.rows.iter().map(|row| row.pod.id()).collect()
@@ -329,7 +356,10 @@ mod tests {
     }
 
     fn tree(rows: Vec<TreeRow>) -> WorldSnapshot {
-        WorldSnapshot { tree: rows, ..Default::default() }
+        WorldSnapshot {
+            tree: rows,
+            ..Default::default()
+        }
     }
 
     /// A single-entity tree: one "GRAPH" header plus one selectable row for
@@ -338,9 +368,14 @@ mod tests {
         tree(vec![row(1, TreeGroup::Graph, 0, "LFO #1")])
     }
 
-    fn harness_with(commands: Sender<EditorCommand>, snap: WorldSnapshot) -> TestHarness<SceneTree> {
-        let mut harness =
-            TestHarness::create(DefaultProperties::default(), SceneTree::new(commands).prepare());
+    fn harness_with(
+        commands: Sender<EditorCommand>,
+        snap: WorldSnapshot,
+    ) -> TestHarness<SceneTree> {
+        let mut harness = TestHarness::create(
+            DefaultProperties::default(),
+            SceneTree::new(commands).prepare(),
+        );
         harness.edit_root_widget(|mut tree| {
             SceneTree::apply_snapshot(&mut tree, &snap);
         });
@@ -454,7 +489,9 @@ mod tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![EditorCommand::Select { entity: Some(entity(1)) }],
+            vec![EditorCommand::Select {
+                entity: Some(entity(1))
+            }],
         );
     }
 
@@ -466,7 +503,11 @@ mod tests {
         harness.mouse_move(Point::new(20.0, ROW_HEIGHT * 0.5));
         harness.mouse_button_press(Some(PointerButton::Primary));
 
-        assert_eq!(rx.try_iter().count(), 0, "a header press must send no command");
+        assert_eq!(
+            rx.try_iter().count(),
+            0,
+            "a header press must send no command"
+        );
     }
 
     #[test]
@@ -479,7 +520,9 @@ mod tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![EditorCommand::Select { entity: Some(entity(1)) }],
+            vec![EditorCommand::Select {
+                entity: Some(entity(1))
+            }],
         );
     }
 

@@ -43,9 +43,19 @@ const NATURAL_WIDTH: f64 = 240.0;
 enum RowKind {
     Header(WidgetPod<Label>),
     ReadOnly(WidgetPod<Label>),
-    Text { label: WidgetPod<Label>, input: WidgetPod<TextInput>, input_area: WidgetId },
-    Bool { label: WidgetPod<Label>, toggle: WidgetPod<Checkbox> },
-    Enum { label: WidgetPod<Label>, selector: WidgetPod<Selector> },
+    Text {
+        label: WidgetPod<Label>,
+        input: WidgetPod<TextInput>,
+        input_area: WidgetId,
+    },
+    Bool {
+        label: WidgetPod<Label>,
+        toggle: WidgetPod<Checkbox>,
+    },
+    Enum {
+        label: WidgetPod<Label>,
+        selector: WidgetPod<Selector>,
+    },
 }
 
 struct Row {
@@ -102,14 +112,18 @@ impl Inspector {
     /// `TestHarness::focus_on`/blur through the same id masonry itself
     /// tracks, the same shape `Palette::row_id` gives `mouse_click_on`.
     pub fn row_focus_id(&self, row_index: usize) -> Option<WidgetId> {
-        self.rows.get(row_index).and_then(|row| focus_id_of_row(&row.kind))
+        self.rows
+            .get(row_index)
+            .and_then(|row| focus_id_of_row(&row.kind))
     }
 
     /// Parses `text` against the row's `FieldKind` and sends a `SetField`.
     /// A value that does not parse sends nothing -- the field simply snaps back
     /// on the next snapshot.
     fn commit(&mut self, row_index: usize, text: &str) {
-        let Some(row) = self.rows.get(row_index) else { return };
+        let Some(row) = self.rows.get(row_index) else {
+            return;
+        };
         let (Some(entity), Some((component, field, kind))) = (self.entity, row.target.clone())
         else {
             return; // a header row, or nothing selected
@@ -182,7 +196,9 @@ impl Inspector {
         }
         for ((component, field), text) in std::mem::take(&mut self.pending) {
             if let Some(index) = self.rows.iter().position(|row| {
-                row.target.as_ref().is_some_and(|(c, f, _)| *c == component && *f == field)
+                row.target
+                    .as_ref()
+                    .is_some_and(|(c, f, _)| *c == component && *f == field)
             }) {
                 self.commit(index, &text);
             }
@@ -240,7 +256,9 @@ impl Inspector {
             for field in &component.fields {
                 let target = Some((component.name, field.name.clone(), field.kind.clone()));
                 if preserved.as_ref().and_then(|row| row.target.clone()) == target {
-                    this.widget.rows.push(preserved.take().expect("checked above"));
+                    this.widget
+                        .rows
+                        .push(preserved.take().expect("checked above"));
                     continue;
                 }
                 let label = WidgetPod::new(Label::new(field.name.clone()));
@@ -261,12 +279,9 @@ impl Inspector {
                             ),
                         ),
                     },
-                    FieldKind::Opaque | FieldKind::Enum(_) => {
-                        RowKind::ReadOnly(WidgetPod::new(Label::new(format!(
-                            "{}  {}",
-                            field.name, field.value
-                        ))))
-                    }
+                    FieldKind::Opaque | FieldKind::Enum(_) => RowKind::ReadOnly(WidgetPod::new(
+                        Label::new(format!("{}  {}", field.name, field.value)),
+                    )),
                     // Float, Int, Str and Vec3 all commit as text; `commit`
                     // parses each against its own kind.
                     _ => {
@@ -312,7 +327,9 @@ impl Inspector {
     fn resolve_action(&self, action: &ErasedAction, source: WidgetId) -> Option<RowEvent> {
         for (index, row) in self.rows.iter().enumerate() {
             match &row.kind {
-                RowKind::Text { input, input_area, .. } => {
+                RowKind::Text {
+                    input, input_area, ..
+                } => {
                     // The action comes from the TextArea inside the TextInput,
                     // not from the TextInput itself.
                     if input.id() != source && *input_area != source {
@@ -525,7 +542,12 @@ impl Widget for Inspector {
     /// Fills the background the same colour `SceneTree` uses for its header
     /// rows; the row text is each `Label` child's own job, painted after
     /// this.
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let rect = Rect::new(0.0, 0.0, NATURAL_WIDTH, self.content_height());
         painter.fill_rect(rect, Color::from_rgb8(44, 46, 54));
     }
@@ -534,7 +556,13 @@ impl Widget for Inspector {
         Role::List
     }
 
-    fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, _node: &mut Node) {}
+    fn accessibility(
+        &mut self,
+        _ctx: &mut AccessCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _node: &mut Node,
+    ) {
+    }
 
     fn children_ids(&self) -> ChildrenIds {
         let mut ids = Vec::new();
@@ -566,7 +594,10 @@ mod tests {
     fn harness_with(
         kind: FieldKind,
         value: &str,
-    ) -> (TestHarness<Inspector>, crossbeam_channel::Receiver<EditorCommand>) {
+    ) -> (
+        TestHarness<Inspector>,
+        crossbeam_channel::Receiver<EditorCommand>,
+    ) {
         let (tx, rx) = crossbeam_channel::unbounded();
         let mut harness =
             TestHarness::create(DefaultProperties::default(), Inspector::new(tx).prepare());
@@ -676,8 +707,10 @@ mod tests {
         // is exactly what a fresh `TextArea`'s buffer ends up holding,
         // independent of where its initial cursor sits.
         let (mut harness, rx) = harness_with(FieldKind::Float, "");
-        let input_id =
-            harness.root_widget().row_focus_id(1).expect("row 1 is the gain text row");
+        let input_id = harness
+            .root_widget()
+            .row_focus_id(1)
+            .expect("row 1 is the gain text row");
 
         harness.focus_on(Some(input_id));
         harness.keyboard_type_chars("0.75");
@@ -749,8 +782,10 @@ mod tests {
             Inspector::apply_snapshot(&mut inspector, &two_component_snapshot("0.500", "0.1"));
         });
 
-        let gain_input_id =
-            harness.root_widget().row_focus_id(1).expect("row 1 is the gain text row");
+        let gain_input_id = harness
+            .root_widget()
+            .row_focus_id(1)
+            .expect("row 1 is the gain text row");
         harness.focus_on(Some(gain_input_id));
         assert_eq!(harness.focused_widget_id(), Some(gain_input_id));
 

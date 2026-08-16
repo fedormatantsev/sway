@@ -12,8 +12,8 @@ use bevy_ecs::world::World;
 use bevy_reflect::prelude::ReflectDefault;
 use bevy_reflect::serde::{TypedReflectDeserializer, TypedReflectSerializer};
 use bevy_reflect::{PartialReflect, Reflect, TypeRegistry};
-use serde::de::DeserializeSeed;
 use ron::de::Deserializer as RonDeserializer;
+use serde::de::DeserializeSeed;
 
 #[derive(Reflect, Clone, Copy, Debug, Default, PartialEq)]
 enum Shape {
@@ -32,7 +32,11 @@ struct Osc {
 
 impl Default for Osc {
     fn default() -> Self {
-        Self { hz: 1.0, shape: Shape::Sine, amplitude: 0.5 }
+        Self {
+            hz: 1.0,
+            shape: Shape::Sine,
+            amplitude: 0.5,
+        }
     }
 }
 
@@ -79,7 +83,11 @@ fn a_full_payload_becomes_the_component() {
 
     assert_eq!(
         world.get::<Osc>(entity),
-        Some(&Osc { hz: 2.0, shape: Shape::Saw, amplitude: 0.25 })
+        Some(&Osc {
+            hz: 2.0,
+            shape: Shape::Saw,
+            amplitude: 0.25
+        })
     );
 }
 
@@ -98,7 +106,11 @@ fn a_partial_payload_fills_the_rest_from_default() {
 
     assert_eq!(
         world.get::<Osc>(entity),
-        Some(&Osc { hz: 2.0, shape: Shape::Sine, amplitude: 0.5 }),
+        Some(&Osc {
+            hz: 2.0,
+            shape: Shape::Sine,
+            amplitude: 0.5
+        }),
         "unnamed fields come from Default, not from zero"
     );
 }
@@ -123,13 +135,21 @@ fn apply_overwrites_unnamed_fields_via_eager_default_fill() {
 
     let mut world = World::new();
     let entity = world
-        .spawn(Osc { hz: 1.0, shape: Shape::Saw, amplitude: 0.9 })
+        .spawn(Osc {
+            hz: 1.0,
+            shape: Shape::Saw,
+            amplitude: 0.9,
+        })
         .id();
     reflect.apply(world.entity_mut(entity), &*value);
 
     assert_eq!(
         world.get::<Osc>(entity),
-        Some(&Osc { hz: 3.0, shape: Shape::Sine, amplitude: 0.5 }),
+        Some(&Osc {
+            hz: 3.0,
+            shape: Shape::Sine,
+            amplitude: 0.5
+        }),
         "apply does not preserve unnamed fields here: they come back as \
          Default, not as whatever was there before"
     );
@@ -148,13 +168,23 @@ fn a_partial_value_compares_against_the_live_component() {
     // Unnamed fields already sit at their Default — the only case under
     // which two reloads of the same partial text compare equal (see CLAIM 3
     // above).
-    let current = Osc { hz: 3.0, shape: Shape::Sine, amplitude: 0.5 };
+    let current = Osc {
+        hz: 3.0,
+        shape: Shape::Sine,
+        amplitude: 0.5,
+    };
 
     let same = payload("(hz: 3.0)", &registry);
     let different = payload("(hz: 4.0)", &registry);
 
-    assert_eq!(same.reflect_partial_eq(current.as_partial_reflect()), Some(true));
-    assert_eq!(different.reflect_partial_eq(current.as_partial_reflect()), Some(false));
+    assert_eq!(
+        same.reflect_partial_eq(current.as_partial_reflect()),
+        Some(true)
+    );
+    assert_eq!(
+        different.reflect_partial_eq(current.as_partial_reflect()),
+        Some(false)
+    );
 }
 
 /// A partial payload does NOT ignore a live component's unnamed fields when
@@ -165,7 +195,11 @@ fn a_partial_value_compares_against_the_live_component() {
 #[test]
 fn a_partial_value_does_not_ignore_a_live_components_drifted_unnamed_fields() {
     let registry = registry();
-    let current = Osc { hz: 3.0, shape: Shape::Saw, amplitude: 0.9 };
+    let current = Osc {
+        hz: 3.0,
+        shape: Shape::Saw,
+        amplitude: 0.9,
+    };
     let same_hz = payload("(hz: 3.0)", &registry);
 
     assert_eq!(
@@ -181,7 +215,11 @@ fn a_partial_value_does_not_ignore_a_live_components_drifted_unnamed_fields() {
 fn a_component_round_trips_through_text() {
     let registry = registry();
     let reflect = reflect_component(&registry);
-    let original = Osc { hz: 7.5, shape: Shape::Saw, amplitude: 0.125 };
+    let original = Osc {
+        hz: 7.5,
+        shape: Shape::Saw,
+        amplitude: 0.125,
+    };
 
     let mut world = World::new();
     let entity = world.spawn(original).id();
@@ -207,9 +245,15 @@ fn a_component_round_trips_through_text() {
 fn the_app_registry_carries_the_same_type_data() {
     let mut world = World::new();
     world.init_resource::<AppTypeRegistry>();
-    world.resource_mut::<AppTypeRegistry>().write().register::<Osc>();
+    world
+        .resource_mut::<AppTypeRegistry>()
+        .write()
+        .register::<Osc>();
 
     let registry = world.resource::<AppTypeRegistry>().clone();
     let read = registry.read();
-    assert!(read.get_type_data::<ReflectComponent>(TypeId::of::<Osc>()).is_some());
+    assert!(
+        read.get_type_data::<ReflectComponent>(TypeId::of::<Osc>())
+            .is_some()
+    );
 }

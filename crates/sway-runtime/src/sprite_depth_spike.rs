@@ -19,16 +19,16 @@
 //!    reverse-Z makes the direct route a trap.
 
 use bevy::{
-    asset::{embedded_asset, embedded_path, AssetPath, RenderAssetUsages},
+    asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path},
     camera::visibility::NoFrustumCulling,
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{MaterialPipeline, MaterialPipelineKey},
     prelude::*,
     reflect::TypePath,
     render::render_resource::{
-        AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType,
-        SpecializedMeshPipelineError, TextureDimension, TextureFormat,
+        AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+        TextureDimension, TextureFormat,
     },
-    mesh::MeshVertexBufferLayoutRef,
-    pbr::{MaterialPipeline, MaterialPipelineKey},
     shader::ShaderRef,
 };
 
@@ -133,7 +133,11 @@ pub fn depth_step_rgba(size: u32) -> Vec<u8> {
 /// would not.
 pub fn depth_step_image(size: u32) -> Image {
     Image::new(
-        Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
         TextureDimension::D2,
         depth_step_rgba(size),
         TextureFormat::Rgba8Unorm,
@@ -145,7 +149,11 @@ pub fn depth_step_image(size: u32) -> Image {
 /// texture only has to not interfere.
 pub fn solid_white_image(size: u32) -> Image {
     Image::new(
-        Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
         TextureDimension::D2,
         vec![255u8; (size as usize) * (size as usize) * 4],
         TextureFormat::Rgba8UnormSrgb,
@@ -202,8 +210,8 @@ pub fn spawn_depth_spike_scene(
 mod tests {
     use super::*;
     use bevy::render::render_resource::{
-        CompareFunction, DepthBiasState, DepthStencilState, RenderPipelineDescriptor,
-        StencilState, TextureFormat,
+        CompareFunction, DepthBiasState, DepthStencilState, RenderPipelineDescriptor, StencilState,
+        TextureFormat,
     };
 
     /// The whole point of the spike, in one assertion: Bevy's mesh pipeline
@@ -268,7 +276,10 @@ mod tests {
     #[test]
     fn the_depth_range_pushes_each_half_clear_of_the_cube() {
         let offset = |d: f32| (d - SPIKE_DEPTH_PIVOT) * SPIKE_DEPTH_RANGE;
-        assert!(offset(0.0) <= -2.0, "near half must sit in front of the cube");
+        assert!(
+            offset(0.0) <= -2.0,
+            "near half must sit in front of the cube"
+        );
         assert!(offset(1.0) >= 2.0, "far half must sit behind the cube");
     }
 }

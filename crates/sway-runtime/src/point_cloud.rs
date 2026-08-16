@@ -51,7 +51,7 @@ use bevy::{
     core_pipeline::core_3d::Transparent3d,
     ecs::{
         query::QueryItem,
-        system::{lifetimeless::*, SystemParamItem},
+        system::{SystemParamItem, lifetimeless::*},
     },
     mesh::{MeshVertexBufferLayoutRef, VertexBufferLayout},
     pbr::{
@@ -59,9 +59,10 @@ use bevy::{
     },
     prelude::*,
     render::{
+        Render, RenderApp, RenderStartup, RenderSystems,
         batching::gpu_preprocessing::BatchedInstanceBuffers,
         extract_component::{ExtractComponent, ExtractComponentPlugin},
-        mesh::{allocator::MeshAllocator, RenderMesh, RenderMeshBufferInfo},
+        mesh::{RenderMesh, RenderMeshBufferInfo, allocator::MeshAllocator},
         render_asset::RenderAssets,
         render_phase::{
             AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
@@ -72,7 +73,6 @@ use bevy::{
         sync_component::SyncComponent,
         sync_world::MainEntity,
         view::{ExtractedView, NoIndirectDrawing},
-        Render, RenderApp, RenderStartup, RenderSystems,
     },
 };
 use bytemuck::{Pod, Zeroable};
@@ -172,7 +172,11 @@ fn fibonacci_sphere_points(count: usize, radius: f32, scale: f32) -> Vec<PointIn
                 Vec3::new(theta.cos() * radius_at_y, y, theta.sin() * radius_at_y) * radius;
             let hue = 360.0 * (i_f / count as f32);
             let color = LinearRgba::from(Color::hsla(hue, 0.8, 0.5, 1.0)).to_f32_array();
-            PointInstance { position, scale, color }
+            PointInstance {
+                position,
+                scale,
+                color,
+            }
         })
         .collect()
 }

@@ -54,8 +54,13 @@ impl<'a> Frame<'a> {
     /// Keeps the capability the old free-standing `Compositor::draw` had:
     /// multiple quads, each with its own destination rect and blend mode.
     pub fn composite(&mut self, quads: &[Quad]) {
-        self.compositor
-            .draw(&mut self.encoder, &self.device, &self.queue, &self.view, quads);
+        self.compositor.draw(
+            &mut self.encoder,
+            &self.device,
+            &self.queue,
+            &self.view,
+            quads,
+        );
     }
 
     /// Finishes the encoder, submits it, and presents the frame.

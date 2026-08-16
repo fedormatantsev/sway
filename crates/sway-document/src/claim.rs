@@ -122,7 +122,8 @@ mod tests {
     #[test]
     fn a_claimed_id_does_not_collide_with_one_the_document_already_named() {
         let mut app = claim_app();
-        app.world_mut().spawn((EditorPos(Vec2::ZERO), DocId("EditorPos".to_string())));
+        app.world_mut()
+            .spawn((EditorPos(Vec2::ZERO), DocId("EditorPos".to_string())));
         let fresh = app.world_mut().spawn(EditorPos(Vec2::ZERO)).id();
 
         app.update();

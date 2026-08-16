@@ -205,13 +205,23 @@ mod tests {
         app.world_mut().entity_mut(vector).insert(Vec3YFrom(a));
         let x = app.world_mut().spawn(Transform::default()).id();
         let y = app.world_mut().spawn(Transform::default()).id();
-        app.world_mut().entity_mut(x).insert(TranslationFrom(vector));
-        app.world_mut().entity_mut(y).insert(TranslationFrom(vector));
+        app.world_mut()
+            .entity_mut(x)
+            .insert(TranslationFrom(vector));
+        app.world_mut()
+            .entity_mut(y)
+            .insert(TranslationFrom(vector));
 
         app.update();
 
-        assert_eq!(app.world().get::<Transform>(x).map(|t| t.translation.y), Some(0.5));
-        assert_eq!(app.world().get::<Transform>(y).map(|t| t.translation.y), Some(0.5));
+        assert_eq!(
+            app.world().get::<Transform>(x).map(|t| t.translation.y),
+            Some(0.5)
+        );
+        assert_eq!(
+            app.world().get::<Transform>(y).map(|t| t.translation.y),
+            Some(0.5)
+        );
     }
 
     #[test]
@@ -226,9 +236,6 @@ mod tests {
         app.update();
 
         assert_eq!(app.world().get::<ChildOf>(child).map(|c| c.0), Some(group));
-        assert_eq!(
-            app.world().get::<Children>(group).map(|c| c.len()),
-            Some(1)
-        );
+        assert_eq!(app.world().get::<Children>(group).map(|c| c.len()), Some(1));
     }
 }

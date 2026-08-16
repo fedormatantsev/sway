@@ -23,8 +23,8 @@ use masonry::widgets::{Button, ButtonPress, Label};
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
 
-use crate::{FileRequest, ViewRequest};
 use crate::snapshot::WorldSnapshot;
+use crate::{FileRequest, ViewRequest};
 
 /// Height of the strip, in logical pixels.
 pub const TRANSPORT_BAR_HEIGHT: f64 = 24.0;
@@ -235,7 +235,12 @@ impl Widget for TransportBar {
         ctx.set_clip_path(size.to_rect());
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         painter.fill_rect(
             Rect::new(0.0, 0.0, 4000.0, TRANSPORT_BAR_HEIGHT),
             Color::from_rgb8(30, 32, 38),
@@ -243,7 +248,12 @@ impl Widget for TransportBar {
         // A one-pixel accent under the state field, green while playing. The
         // strip has to be readable from across a room during a soundcheck.
         painter.fill_rect(
-            Rect::new(0.0, TRANSPORT_BAR_HEIGHT - 2.0, PADDING, TRANSPORT_BAR_HEIGHT),
+            Rect::new(
+                0.0,
+                TRANSPORT_BAR_HEIGHT - 2.0,
+                PADDING,
+                TRANSPORT_BAR_HEIGHT,
+            ),
             if self.playing {
                 Color::from_rgb8(90, 200, 120)
             } else {
@@ -256,7 +266,13 @@ impl Widget for TransportBar {
         Role::Label
     }
 
-    fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, _node: &mut Node) {}
+    fn accessibility(
+        &mut self,
+        _ctx: &mut AccessCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _node: &mut Node,
+    ) {
+    }
 
     fn children_ids(&self) -> ChildrenIds {
         self.labels
@@ -310,7 +326,11 @@ mod tests {
         let harness = harness_with(snapshot(true, 128.02, "005.3.2", true));
         assert_eq!(
             harness.root_widget().fields(),
-            vec!["PLAY".to_string(), "128.0 BPM".to_string(), "005.3.2".to_string()]
+            vec![
+                "PLAY".to_string(),
+                "128.0 BPM".to_string(),
+                "005.3.2".to_string()
+            ]
         );
     }
 
@@ -326,7 +346,10 @@ mod tests {
         // the visuals are sliding.
         let locked = harness_with(snapshot(true, 120.0, "001.1.1", true));
         let free = harness_with(snapshot(true, 120.0, "001.1.1", false));
-        assert_ne!(locked.root_widget().fields()[1], free.root_widget().fields()[1]);
+        assert_ne!(
+            locked.root_widget().fields()[1],
+            free.root_widget().fields()[1]
+        );
     }
 
     #[test]

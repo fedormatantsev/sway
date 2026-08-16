@@ -11,8 +11,8 @@ use bevy_app::App;
 use bevy_ecs::component::Component;
 use bevy_ecs::reflect::{AppTypeRegistry, ReflectComponent};
 use bevy_ecs::resource::Resource;
-use bevy_reflect::{GetTypeRegistration, Reflect, TypePath};
 use bevy_reflect::std_traits::ReflectDefault;
+use bevy_reflect::{GetTypeRegistration, Reflect, TypePath};
 
 pub struct ComponentEntry {
     /// The key used in a document, e.g. `"Lfo"`.
@@ -123,7 +123,10 @@ mod tests {
         register_authorable::<Gain>(&mut app, "Gain");
         register_authorable::<Bias>(&mut app, "Bias");
 
-        assert_eq!(app.world().resource::<ComponentDocRegistry>().entries.len(), 2);
+        assert_eq!(
+            app.world().resource::<ComponentDocRegistry>().entries.len(),
+            2
+        );
     }
 
     #[test]

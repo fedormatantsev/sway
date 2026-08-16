@@ -93,7 +93,12 @@ pub fn pick_on_click(
     let gizmo_meshes: HashSet<Entity> = gizmo_meshes.iter().collect();
 
     for event in &events.0 {
-        let ViewportInput::Down { button: ViewportButton::Primary, pos, modifiers } = event else {
+        let ViewportInput::Down {
+            button: ViewportButton::Primary,
+            pos,
+            modifiers,
+        } = event
+        else {
             continue;
         };
         if modifiers.alt {
@@ -123,7 +128,10 @@ pub fn pick_on_click(
             .with_filter(&filter)
             .always_early_exit();
 
-        let hit = ray_cast.cast_ray(ray, &settings).first().map(|(entity, _)| *entity);
+        let hit = ray_cast
+            .cast_ray(ray, &settings)
+            .first()
+            .map(|(entity, _)| *entity);
         if selection.0 != hit {
             selection.0 = hit;
         }
@@ -168,7 +176,10 @@ mod tests {
         }
 
         let world = app.world_mut();
-        let camera = world.get::<Camera>(entity).expect("camera component").clone();
+        let camera = world
+            .get::<Camera>(entity)
+            .expect("camera component")
+            .clone();
         let global_transform = *world
             .get::<GlobalTransform>(entity)
             .expect("transform propagation ran");
@@ -307,7 +318,10 @@ pub(crate) mod click_tests {
         tx.send(ViewportInput::Down {
             button: ViewportButton::Primary,
             pos: Vec2::splat(0.5),
-            modifiers: ViewportModifiers { alt: true, ..Default::default() },
+            modifiers: ViewportModifiers {
+                alt: true,
+                ..Default::default()
+            },
         })
         .unwrap();
         app.update();

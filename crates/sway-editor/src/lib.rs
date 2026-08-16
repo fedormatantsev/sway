@@ -28,6 +28,9 @@ use std::time::Instant;
 
 use crossbeam_channel::Sender;
 use imaging::record::replay_transformed;
+use masonry::kurbo::{Affine, Rect};
+use masonry::layout::AsUnit;
+use masonry::widgets::{Portal, Split};
 use masonry_core::app::{
     RenderRoot, RenderRootOptions, RenderRootSignal, VisualLayerKind, VisualLayerPlan,
     WindowSizePolicy,
@@ -35,9 +38,6 @@ use masonry_core::app::{
 use masonry_core::core::{
     CursorIcon, NewWidget, TextEvent, Widget, WidgetTag, WindowEvent as MasonryWindowEvent,
 };
-use masonry::kurbo::{Affine, Rect};
-use masonry::layout::AsUnit;
-use masonry::widgets::{Portal, Split};
 use masonry_core::kurbo::Axis;
 use sway_graph::{EditorCommand, ViewportInput};
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
@@ -121,13 +121,21 @@ fn graph_root(
     commands: Sender<EditorCommand>,
     viewport_input: Sender<ViewportInput>,
 ) -> NewWidget<dyn Widget> {
-    let tree = Portal::new(SceneTree::new(commands.clone()).prepare().with_tag(SCENE_TREE_TAG))
-        .constrain_horizontal(true)
-        .prepare();
+    let tree = Portal::new(
+        SceneTree::new(commands.clone())
+            .prepare()
+            .with_tag(SCENE_TREE_TAG),
+    )
+    .constrain_horizontal(true)
+    .prepare();
 
-    let inspector = Portal::new(Inspector::new(commands.clone()).prepare().with_tag(INSPECTOR_TAG))
-        .constrain_horizontal(true)
-        .prepare();
+    let inspector = Portal::new(
+        Inspector::new(commands.clone())
+            .prepare()
+            .with_tag(INSPECTOR_TAG),
+    )
+    .constrain_horizontal(true)
+    .prepare();
 
     let left = Split::new(tree, inspector)
         .split_axis(Axis::Vertical)
@@ -136,8 +144,12 @@ fn graph_root(
         .solid_bar(true)
         .prepare();
 
-    let viewport = Viewport::new(viewport_input).prepare().with_tag(VIEWPORT_TAG);
-    let canvas = GraphCanvas::new(commands).prepare().with_tag(GRAPH_CANVAS_TAG);
+    let viewport = Viewport::new(viewport_input)
+        .prepare()
+        .with_tag(VIEWPORT_TAG);
+    let canvas = GraphCanvas::new(commands)
+        .prepare()
+        .with_tag(GRAPH_CANVAS_TAG);
 
     let right = Split::new(viewport, canvas)
         .split_axis(Axis::Vertical)
@@ -301,16 +313,18 @@ impl EditorUi {
 
     /// What the toolbar has asked the shell to do since the last call.
     pub fn take_file_requests(&mut self) -> Vec<FileRequest> {
-        self.root.edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
-            TransportBar::take_file_requests(&mut bar)
-        })
+        self.root
+            .edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
+                TransportBar::take_file_requests(&mut bar)
+            })
     }
 
     /// What the toolbar has asked the shell to do since the last call.
     pub fn take_view_requests(&mut self) -> Vec<ViewRequest> {
-        self.root.edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
-            TransportBar::take_view_requests(&mut bar)
-        })
+        self.root
+            .edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
+                TransportBar::take_view_requests(&mut bar)
+            })
     }
 
     /// The window's current DPI scale factor (physical pixels per logical
@@ -354,15 +368,18 @@ impl EditorUi {
         self.root.edit_widget_with_tag(SCENE_TREE_TAG, |mut tree| {
             SceneTree::apply_snapshot(&mut tree, snap);
         });
-        self.root.edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
-            GraphCanvas::apply_snapshot(&mut canvas, snap);
-        });
-        self.root.edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
-            TransportBar::apply_snapshot(&mut bar, snap);
-        });
-        self.root.edit_widget_with_tag(INSPECTOR_TAG, |mut inspector| {
-            Inspector::apply_snapshot(&mut inspector, snap);
-        });
+        self.root
+            .edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
+                GraphCanvas::apply_snapshot(&mut canvas, snap);
+            });
+        self.root
+            .edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
+                TransportBar::apply_snapshot(&mut bar, snap);
+            });
+        self.root
+            .edit_widget_with_tag(INSPECTOR_TAG, |mut inspector| {
+                Inspector::apply_snapshot(&mut inspector, snap);
+            });
     }
 
     /// The Bevy viewport's current window-space (logical pixel) rectangle, or
@@ -458,9 +475,9 @@ mod tests {
     use bevy_ecs::entity::Entity;
     use imaging::Painter;
     use kurbo::{Affine, Point as KurboPoint, Rect};
+    use masonry::widgets::Label;
     use masonry_core::app::{RenderRootSignal, VisualLayer, VisualLayerKind, VisualLayerPlan};
     use masonry_core::core::{NewWidget, WidgetId};
-    use masonry::widgets::Label;
     use peniko::Color;
     use winit::dpi::PhysicalSize;
 
@@ -550,13 +567,21 @@ mod tests {
         // Settles layout/compose so the widget tree's geometry is current.
         ui.redraw();
 
-        let rect = ui.viewport_rect().expect("the viewport placeholder is in the tree");
+        let rect = ui
+            .viewport_rect()
+            .expect("the viewport placeholder is in the tree");
 
         // The tree pane is 260px wide (`graph_root`'s split_point_from_start),
         // so the viewport -- the right Split's top pane -- must start to its
         // right, not at the window origin.
-        assert!(rect.x0 >= 260.0, "viewport rect {rect:?} must sit right of the tree pane");
-        assert!(rect.width() > 0.0 && rect.height() > 0.0, "viewport rect {rect:?} must have real area");
+        assert!(
+            rect.x0 >= 260.0,
+            "viewport rect {rect:?} must sit right of the tree pane"
+        );
+        assert!(
+            rect.width() > 0.0 && rect.height() > 0.0,
+            "viewport rect {rect:?} must have real area"
+        );
         assert!(
             rect.y0 >= crate::transport_bar::TRANSPORT_BAR_HEIGHT,
             "viewport rect {rect:?} must sit below the transport strip"
@@ -589,8 +614,8 @@ mod tests {
         // dropdown could appear at all: ctx.create_layer only *emits*
         // NewLayer, and the layer does not exist until the host calls back
         // into RenderRoot.
-        use masonry_core::core::{LayerType, NewWidget};
         use masonry::widgets::Label;
+        use masonry_core::core::{LayerType, NewWidget};
 
         let (tx, _rx) = crossbeam_channel::unbounded();
         let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
@@ -599,7 +624,10 @@ mod tests {
 
         let popup = NewWidget::new(Label::new("popup"));
         let popup_id = popup.id();
-        assert!(!ui.root.has_widget(popup_id), "not in the tree before the signal");
+        assert!(
+            !ui.root.has_widget(popup_id),
+            "not in the tree before the signal"
+        );
 
         ui.signals.borrow_mut().push(RenderRootSignal::NewLayer(
             LayerType::Other,
@@ -608,13 +636,16 @@ mod tests {
         ));
         ui.drain_signals();
 
-        assert!(ui.root.has_widget(popup_id), "the layer signal was serviced");
+        assert!(
+            ui.root.has_widget(popup_id),
+            "the layer signal was serviced"
+        );
     }
 
     #[test]
     fn a_remove_layer_signal_takes_the_widget_back_out() {
-        use masonry_core::core::{LayerType, NewWidget};
         use masonry::widgets::Label;
+        use masonry_core::core::{LayerType, NewWidget};
 
         let (tx, _rx) = crossbeam_channel::unbounded();
         let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();

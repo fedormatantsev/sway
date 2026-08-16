@@ -53,13 +53,22 @@ mod tests {
         let mut app = asset_app();
         let entity = app
             .world_mut()
-            .spawn(MeshAsset { path: "cube.gltf#Mesh0/Primitive0".into() })
+            .spawn(MeshAsset {
+                path: "cube.gltf#Mesh0/Primitive0".into(),
+            })
             .id();
 
         app.update();
 
-        let handle = app.world().get::<Mesh3d>(entity).expect("#[require] supplies Mesh3d");
-        assert_ne!(handle.0, Handle::default(), "the load system replaced the default handle");
+        let handle = app
+            .world()
+            .get::<Mesh3d>(entity)
+            .expect("#[require] supplies Mesh3d");
+        assert_ne!(
+            handle.0,
+            Handle::default(),
+            "the load system replaced the default handle"
+        );
     }
 
     #[test]
@@ -88,7 +97,9 @@ mod tests {
         assert!(app.world().get::<Visibility>(entity).is_some());
         assert!(app.world().get::<Mesh3d>(entity).is_some());
         assert!(
-            app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).is_some(),
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                .is_some(),
             "the material wire needs a target component to write into"
         );
     }

@@ -145,7 +145,10 @@ pub fn inspect(world: &World, entity: Entity) -> InspectorView {
         });
     }
 
-    InspectorView { entity: Some(entity), components }
+    InspectorView {
+        entity: Some(entity),
+        components,
+    }
 }
 
 fn fields_of(value: &dyn PartialReflect) -> Vec<InspectorField> {
@@ -341,7 +344,9 @@ pub fn capture(world: &World) -> WorldSnapshot {
             .cloned()
             .unwrap_or_default(),
         transport: capture_transport(world),
-        inspector: selection.map(|entity| inspect(world, entity)).unwrap_or_default(),
+        inspector: selection
+            .map(|entity| inspect(world, entity))
+            .unwrap_or_default(),
         palette: capture_palette(world),
         selection,
     }
@@ -595,7 +600,11 @@ mod tests {
         recompile(&mut app);
 
         let snapshot = capture(app.world());
-        let node = snapshot.nodes.iter().find(|node| node.entity == entity).unwrap();
+        let node = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == entity)
+            .unwrap();
         assert_eq!(node.id, NodeId::of(entity));
         assert_eq!(node.name, "Emit");
         assert_eq!(node.pos, Some(Point::new(20.0, 140.0)));
@@ -620,7 +629,10 @@ mod tests {
     fn diagnostics_are_copied_into_the_snapshot() {
         let mut app = app();
         let entity = app.world_mut().spawn_empty().id();
-        app.world_mut().resource_mut::<GraphDiagnostics>().cycles.push(entity);
+        app.world_mut()
+            .resource_mut::<GraphDiagnostics>()
+            .cycles
+            .push(entity);
 
         assert_eq!(capture(app.world()).diagnostics.cycles, vec![entity]);
     }
@@ -633,7 +645,11 @@ mod tests {
         let recv = spawn_recv(app.world_mut(), 2, None);
         connect(app.world_mut(), emit, Emit::OUT_VALUE, recv, Recv::AMOUNT);
         recompile(&mut app);
-        let groups: Vec<_> = capture(app.world()).tree.iter().map(|row| row.group).collect();
+        let groups: Vec<_> = capture(app.world())
+            .tree
+            .iter()
+            .map(|row| row.group)
+            .collect();
         let mut sorted = groups.clone();
         sorted.sort();
         assert_eq!(groups, sorted);
@@ -659,7 +675,11 @@ mod tests {
         let mut app = app();
         let named = spawn_named_spatial(app.world_mut(), "key light");
         let snapshot = capture(app.world());
-        let row = snapshot.tree.iter().find(|row| row.entity == named).unwrap();
+        let row = snapshot
+            .tree
+            .iter()
+            .find(|row| row.entity == named)
+            .unwrap();
         assert_eq!(row.label, "key light");
     }
 
@@ -729,7 +749,10 @@ mod tests {
         let snap = capture(&world);
 
         assert!(
-            !snap.tree.iter().any(|row| row.entity == gizmo_a || row.entity == gizmo_b),
+            !snap
+                .tree
+                .iter()
+                .any(|row| row.entity == gizmo_a || row.entity == gizmo_b),
             "the gizmo's own meshes must not appear as scene rows: {:?}",
             snap.tree,
         );
@@ -834,7 +857,11 @@ mod tests {
         let both = spawn_double_source(app.world_mut());
         recompile(&mut app);
 
-        let node = capture(app.world()).nodes.into_iter().find(|n| n.entity == both).unwrap();
+        let node = capture(app.world())
+            .nodes
+            .into_iter()
+            .find(|n| n.entity == both)
+            .unwrap();
         assert_eq!(node.outlets, 1);
     }
 
@@ -846,8 +873,16 @@ mod tests {
         connect(app.world_mut(), emit, Emit::OUT_VALUE, recv, Recv::AMOUNT);
         recompile(&mut app);
 
-        let node = capture(app.world()).nodes.into_iter().find(|n| n.entity == recv).unwrap();
-        let amount = node.inlets.iter().find(|i| i.wire == "amount").expect("named inlet");
+        let node = capture(app.world())
+            .nodes
+            .into_iter()
+            .find(|n| n.entity == recv)
+            .unwrap();
+        let amount = node
+            .inlets
+            .iter()
+            .find(|i| i.wire == "amount")
+            .expect("named inlet");
         assert!(amount.connected);
     }
 
@@ -956,7 +991,9 @@ mod tests {
         let mut app = app();
         let both = spawn_double_target(app.world_mut(), None);
         // Give it a source too, so it would otherwise qualify for its own inlet.
-        app.world_mut().entity_mut(both).insert(bevy_transform::components::Transform::default());
+        app.world_mut()
+            .entity_mut(both)
+            .insert(bevy_transform::components::Transform::default());
         recompile(&mut app);
 
         let snapshot = capture(app.world());

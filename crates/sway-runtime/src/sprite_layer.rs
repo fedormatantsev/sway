@@ -39,7 +39,7 @@
 //!    buffer layout and no custom `Material::specialize` override is needed.
 
 use bevy::{
-    asset::{embedded_asset, embedded_path, AssetPath, RenderAssetUsages},
+    asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path},
     camera::visibility::NoFrustumCulling,
     prelude::*,
     reflect::TypePath,
@@ -270,8 +270,7 @@ pub fn spawn_demo_camera(mut commands: Commands) {
     );
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(stack_centre.x, stack_centre.y, 14.0)
-            .looking_at(stack_centre, Vec3::Y),
+        Transform::from_xyz(stack_centre.x, stack_centre.y, 14.0).looking_at(stack_centre, Vec3::Y),
     ));
 }
 
@@ -318,7 +317,10 @@ mod tests {
         assert!(a > 240, "centre alpha should be near-opaque, was {a}");
 
         let [.., corner_a] = pixel(0, 0);
-        assert!(corner_a < 15, "corner alpha should be near-transparent, was {corner_a}");
+        assert!(
+            corner_a < 15,
+            "corner alpha should be near-transparent, was {corner_a}"
+        );
     }
 
     #[test]
@@ -332,7 +334,10 @@ mod tests {
         for x in centre..size {
             let i = ((centre * size + x) * 4 + 3) as usize;
             let alpha = rgba[i];
-            assert!(alpha <= previous, "alpha rose from {previous} to {alpha} at x={x}");
+            assert!(
+                alpha <= previous,
+                "alpha rose from {previous} to {alpha} at x={x}"
+            );
             previous = alpha;
         }
     }

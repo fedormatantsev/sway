@@ -68,7 +68,7 @@ pub fn propagate_of<W: Wire>(world: &mut World, src: Entity, dst: Entity) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_wires::{spawn_float, spawn_gain, Gain, GainFrom};
+    use crate::test_wires::{Gain, GainFrom, spawn_float, spawn_gain};
     use bevy_ecs::world::World;
 
     #[test]

@@ -139,8 +139,7 @@ pub fn open_input(filter: &str, tx: Sender<TimedMidi>) -> Result<MidiInput, OSSt
     let mut dest: MIDIEndpointRef = 0;
     // SAFETY: same `refcon` lifetime as the input port; `dest` is a valid out
     // slot. On failure we dispose the port and client created above.
-    let st =
-        unsafe { MIDIDestinationCreate(client, dest_name.0, read_proc, refcon, &mut dest) };
+    let st = unsafe { MIDIDestinationCreate(client, dest_name.0, read_proc, refcon, &mut dest) };
     if st != 0 {
         unsafe {
             MIDIPortDispose(port);

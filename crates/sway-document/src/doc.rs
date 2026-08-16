@@ -130,7 +130,10 @@ Project(
         assert_eq!(doc.entities[0].components.len(), 2);
         assert!(doc.entities[0].components.contains_key("Lfo"));
         assert_eq!(
-            doc.entities[1].wires.get("translation.y").map(String::as_str),
+            doc.entities[1]
+                .wires
+                .get("translation.y")
+                .map(String::as_str),
             Some("lfoA")
         );
         assert_eq!(
@@ -151,8 +154,7 @@ Project(
 
     #[test]
     fn missing_maps_default_to_empty() {
-        let doc = parse(r#"Project(version: 1, entities: [Entity(id: "bare")])"#)
-            .expect("parses");
+        let doc = parse(r#"Project(version: 1, entities: [Entity(id: "bare")])"#).expect("parses");
         assert!(doc.entities[0].components.is_empty());
         assert!(doc.entities[0].wires.is_empty());
     }
@@ -173,10 +175,8 @@ Project(
     fn a_duplicate_id_rejects_the_document() {
         // Spec §4.3: nothing in the document can be resolved unambiguously,
         // so this is a whole-reload failure rather than a per-item one.
-        let error = parse(
-            r#"Project(version: 1, entities: [Entity(id: "a"), Entity(id: "a")])"#,
-        )
-        .expect_err("must fail");
+        let error = parse(r#"Project(version: 1, entities: [Entity(id: "a"), Entity(id: "a")])"#)
+            .expect_err("must fail");
         assert_eq!(error, ParseError::DuplicateId("a".to_string()));
     }
 

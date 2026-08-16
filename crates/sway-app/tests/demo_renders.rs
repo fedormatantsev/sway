@@ -126,7 +126,10 @@ fn the_demo_document_renders_its_cubes() {
     let mut converged = None;
     for updates in 1..=MAX_UPDATES {
         app.update();
-        cube_pixels = read_pixels(&gpu, &viewport).into_iter().filter(|p| is_cube(*p)).count();
+        cube_pixels = read_pixels(&gpu, &viewport)
+            .into_iter()
+            .filter(|p| is_cube(*p))
+            .count();
         // Two cubes of 1 unit at ~5 units from a 45-degree camera cover a few
         // percent of the frame. 1% is far above stray-pixel noise and far below
         // what the real coverage should be.

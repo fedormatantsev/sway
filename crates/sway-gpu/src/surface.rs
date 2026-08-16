@@ -32,7 +32,12 @@ impl WindowSurface {
     /// `instance` must be the same instance used to (or that will) request
     /// `adapter` — wgpu requires a surface and the adapter checked against it
     /// to come from one instance.
-    pub fn new(instance: &Instance, device: &Device, adapter: &Adapter, window: Arc<Window>) -> Self {
+    pub fn new(
+        instance: &Instance,
+        device: &Device,
+        adapter: &Adapter,
+        window: Arc<Window>,
+    ) -> Self {
         let size = window.inner_size();
         let surface = instance
             .create_surface(window)
@@ -109,9 +114,8 @@ impl WindowSurface {
     /// bare `wgpu::SurfaceTexture` and build its own view/encoder from it.
     fn acquire(&self) -> Option<SurfaceTexture> {
         match self.surface.get_current_texture() {
-            CurrentSurfaceTexture::Success(texture) | CurrentSurfaceTexture::Suboptimal(texture) => {
-                Some(texture)
-            }
+            CurrentSurfaceTexture::Success(texture)
+            | CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
             CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => None,
             CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
@@ -119,7 +123,9 @@ impl WindowSurface {
                     CurrentSurfaceTexture::Success(texture)
                     | CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
                     CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => None,
-                    other => panic!("could not acquire a surface texture after reconfigure: {other:?}"),
+                    other => {
+                        panic!("could not acquire a surface texture after reconfigure: {other:?}")
+                    }
                 }
             }
             other => panic!("could not acquire a surface texture: {other:?}"),

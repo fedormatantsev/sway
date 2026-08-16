@@ -16,10 +16,10 @@ use bevy_reflect::TypeRegistry;
 use bevy_reflect::serde::TypedReflectDeserializer;
 use serde::de::DeserializeSeed;
 
-use sway_graph::TopologyDirty;
 use crate::diagnostics::{DocId, ItemError, ProjectDiagnostics};
 use crate::doc::{EntityDoc, ProjectDoc};
 use sway_graph::ComponentDocRegistry;
+use sway_graph::TopologyDirty;
 use sway_graph::WireRegistry;
 
 /// Applies `doc` to `world` and returns what it could not do.
@@ -334,12 +334,12 @@ fn reconcile_entities(world: &mut World, doc: &ProjectDoc) -> HashMap<String, En
 mod tests {
     use super::*;
     use crate::doc::parse;
-    use sway_graph::register_authorable;
     use bevy_app::App;
     use bevy_ecs::component::Component;
     use bevy_ecs::query::Changed;
     use bevy_reflect::Reflect;
     use bevy_reflect::std_traits::ReflectDefault;
+    use sway_graph::register_authorable;
 
     fn doc(text: &str) -> ProjectDoc {
         parse(text).expect("test document parses")
@@ -374,7 +374,10 @@ mod tests {
 
         assert_eq!(ids(&mut world), vec!["a".to_string(), "b".to_string()]);
         let a = entity_of(&mut world, "a").expect("spawned");
-        assert_eq!(world.get::<Name>(a).map(|n| n.as_str().to_string()), Some("a".to_string()));
+        assert_eq!(
+            world.get::<Name>(a).map(|n| n.as_str().to_string()),
+            Some("a".to_string())
+        );
     }
 
     #[test]
@@ -384,7 +387,10 @@ mod tests {
         // attached all ride on this.
         let mut world = World::new();
         world.init_resource::<AppTypeRegistry>();
-        apply(&mut world, &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#));
+        apply(
+            &mut world,
+            &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#),
+        );
         let before = entity_of(&mut world, "a").expect("spawned");
 
         apply(
@@ -392,7 +398,11 @@ mod tests {
             &doc(r#"Project(version: 1, entities: [Entity(id: "a"), Entity(id: "b")])"#),
         );
 
-        assert_eq!(entity_of(&mut world, "a"), Some(before), "same Entity across reloads");
+        assert_eq!(
+            entity_of(&mut world, "a"),
+            Some(before),
+            "same Entity across reloads"
+        );
         assert!(entity_of(&mut world, "b").is_some(), "the new one arrived");
     }
 
@@ -406,7 +416,10 @@ mod tests {
         );
         let b = entity_of(&mut world, "b").expect("spawned");
 
-        apply(&mut world, &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#));
+        apply(
+            &mut world,
+            &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#),
+        );
 
         assert!(world.get_entity(b).is_err(), "b is gone");
         assert_eq!(ids(&mut world), vec!["a".to_string()]);
@@ -419,17 +432,26 @@ mod tests {
         world.init_resource::<AppTypeRegistry>();
         let runtime_owned = world.spawn(Name::new("camera")).id();
 
-        apply(&mut world, &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#));
+        apply(
+            &mut world,
+            &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#),
+        );
         apply(&mut world, &doc("Project(version: 1, entities: [])"));
 
-        assert!(world.get_entity(runtime_owned).is_ok(), "not ours, not despawned");
+        assert!(
+            world.get_entity(runtime_owned).is_ok(),
+            "not ours, not despawned"
+        );
     }
 
     #[test]
     fn an_empty_document_clears_the_authored_world() {
         let mut world = World::new();
         world.init_resource::<AppTypeRegistry>();
-        apply(&mut world, &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#));
+        apply(
+            &mut world,
+            &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#),
+        );
         apply(&mut world, &doc("Project(version: 1, entities: [])"));
 
         assert!(ids(&mut world).is_empty());
@@ -444,7 +466,10 @@ mod tests {
 
     impl Default for Osc {
         fn default() -> Self {
-            Self { hz: 1.0, amplitude: 0.5 }
+            Self {
+                hz: 1.0,
+                amplitude: 0.5,
+            }
         }
     }
 
@@ -486,7 +511,10 @@ mod tests {
         let entity = entity_of(app.world_mut(), "a").expect("spawned");
         assert_eq!(
             app.world().get::<Osc>(entity),
-            Some(&Osc { hz: 3.0, amplitude: 0.25 })
+            Some(&Osc {
+                hz: 3.0,
+                amplitude: 0.25
+            })
         );
     }
 
@@ -510,7 +538,10 @@ mod tests {
         );
         let entity = entity_of(app.world_mut(), "a").expect("spawned");
         // Something else — a wire — moves amplitude.
-        app.world_mut().get_mut::<Osc>(entity).expect("present").amplitude = 0.9;
+        app.world_mut()
+            .get_mut::<Osc>(entity)
+            .expect("present")
+            .amplitude = 0.9;
 
         apply(
             app.world_mut(),
@@ -521,7 +552,10 @@ mod tests {
 
         assert_eq!(
             app.world().get::<Osc>(entity),
-            Some(&Osc { hz: 4.0, amplitude: 0.5 })
+            Some(&Osc {
+                hz: 4.0,
+                amplitude: 0.5
+            })
         );
     }
 
@@ -557,7 +591,10 @@ mod tests {
         );
         let entity = entity_of(app.world_mut(), "a").expect("spawned");
 
-        apply(app.world_mut(), &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#));
+        apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#),
+        );
 
         assert!(app.world().get::<Osc>(entity).is_none());
     }
@@ -602,8 +639,14 @@ mod tests {
             ])"#),
         );
 
-        assert!(app.world().get::<Outlet>(entity).is_some(), "required, kept");
-        assert!(app.world().get::<Osc>(entity).is_none(), "not required, dropped");
+        assert!(
+            app.world().get::<Outlet>(entity).is_some(),
+            "required, kept"
+        );
+        assert!(
+            app.world().get::<Osc>(entity).is_none(),
+            "not required, dropped"
+        );
     }
 
     #[test]
@@ -614,7 +657,10 @@ mod tests {
         struct RuntimeOwned;
 
         let mut app = doc_app();
-        apply(app.world_mut(), &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#));
+        apply(
+            app.world_mut(),
+            &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#),
+        );
         let entity = entity_of(app.world_mut(), "a").expect("spawned");
         app.world_mut().entity_mut(entity).insert(RuntimeOwned);
 
@@ -683,7 +729,10 @@ mod tests {
         let entity = entity_of(app.world_mut(), "a").expect("spawned");
         assert_eq!(
             app.world().get::<Osc>(entity),
-            Some(&Osc { hz: 3.0, amplitude: 0.25 })
+            Some(&Osc {
+                hz: 3.0,
+                amplitude: 0.25
+            })
         );
 
         let diagnostics = apply(
@@ -700,7 +749,10 @@ mod tests {
         );
         assert_eq!(
             app.world().get::<Osc>(entity),
-            Some(&Osc { hz: 3.0, amplitude: 0.25 }),
+            Some(&Osc {
+                hz: 3.0,
+                amplitude: 0.25
+            }),
             "the live component must be left alone, not deleted"
         );
     }

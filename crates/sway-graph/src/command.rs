@@ -57,13 +57,35 @@ pub enum FieldValue {
 /// without carrying one.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditorCommand {
-    Create { component: &'static str, pos: Vec2 },
-    Delete { entity: Entity },
-    SetField { entity: Entity, component: &'static str, field: String, value: FieldValue },
-    MoveNode { entity: Entity, pos: Vec2 },
-    Connect { wire: &'static str, src: Entity, dst: Entity },
-    Disconnect { wire: &'static str, dst: Entity },
-    Select { entity: Option<Entity> },
+    Create {
+        component: &'static str,
+        pos: Vec2,
+    },
+    Delete {
+        entity: Entity,
+    },
+    SetField {
+        entity: Entity,
+        component: &'static str,
+        field: String,
+        value: FieldValue,
+    },
+    MoveNode {
+        entity: Entity,
+        pos: Vec2,
+    },
+    Connect {
+        wire: &'static str,
+        src: Entity,
+        dst: Entity,
+    },
+    Disconnect {
+        wire: &'static str,
+        dst: Entity,
+    },
+    Select {
+        entity: Option<Entity>,
+    },
 }
 
 /// The receiving half, held by the world. Present only in an editor build.
@@ -110,8 +132,7 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
             else {
                 return;
             };
-            let Some(reflect_default) = reflect_data_for::<ReflectDefault>(world, component)
-            else {
+            let Some(reflect_default) = reflect_data_for::<ReflectDefault>(world, component) else {
                 return;
             };
             let Some(type_registry) = world.get_resource::<AppTypeRegistry>().cloned() else {
@@ -166,7 +187,12 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
                 selection.0 = None;
             }
         }
-        EditorCommand::SetField { entity, component, field, value } => {
+        EditorCommand::SetField {
+            entity,
+            component,
+            field,
+            value,
+        } => {
             let Some(reflect_component) = reflect_data_for::<ReflectComponent>(world, component)
             else {
                 return;
@@ -184,9 +210,10 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
             };
             let existing = match reflected.reflect_ref() {
                 ReflectRef::Struct(target) => target.field(field),
-                ReflectRef::TupleStruct(target) => {
-                    field.parse::<usize>().ok().and_then(|index| target.field(index))
-                }
+                ReflectRef::TupleStruct(target) => field
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| target.field(index)),
                 _ => return,
             };
             let Some(existing) = existing else {
@@ -234,9 +261,10 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
             };
             let existing = match reflected.reflect_mut() {
                 ReflectMut::Struct(target) => target.field_mut(field),
-                ReflectMut::TupleStruct(target) => {
-                    field.parse::<usize>().ok().and_then(|index| target.field_mut(index))
-                }
+                ReflectMut::TupleStruct(target) => field
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| target.field_mut(index)),
                 _ => return,
             };
             let Some(existing) = existing else {
@@ -317,8 +345,11 @@ mod tests {
         let (mut app, tx) = command_app();
         let entity = app.world_mut().spawn(EditorPos(Vec2::ZERO)).id();
 
-        tx.send(EditorCommand::MoveNode { entity, pos: Vec2::new(40.0, 90.0) })
-            .expect("the receiver is alive in the world");
+        tx.send(EditorCommand::MoveNode {
+            entity,
+            pos: Vec2::new(40.0, 90.0),
+        })
+        .expect("the receiver is alive in the world");
         app.update();
 
         assert_eq!(
@@ -334,10 +365,20 @@ mod tests {
         let entity = app.world_mut().spawn(EditorPos(Vec2::new(7.0, 7.0))).id();
         app.update();
 
-        tx.send(EditorCommand::MoveNode { entity, pos: Vec2::new(7.0, 7.0) }).unwrap();
+        tx.send(EditorCommand::MoveNode {
+            entity,
+            pos: Vec2::new(7.0, 7.0),
+        })
+        .unwrap();
         app.update();
 
-        assert!(!app.world().entity(entity).get_ref::<EditorPos>().unwrap().is_changed());
+        assert!(
+            !app.world()
+                .entity(entity)
+                .get_ref::<EditorPos>()
+                .unwrap()
+                .is_changed()
+        );
     }
 
     #[test]
@@ -346,7 +387,11 @@ mod tests {
         let entity = app.world_mut().spawn(EditorPos(Vec2::ZERO)).id();
         app.world_mut().despawn(entity);
 
-        tx.send(EditorCommand::MoveNode { entity, pos: Vec2::ONE }).unwrap();
+        tx.send(EditorCommand::MoveNode {
+            entity,
+            pos: Vec2::ONE,
+        })
+        .unwrap();
         app.update();
     }
 
@@ -361,7 +406,9 @@ mod tests {
     #[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
     #[reflect(Component, Default, PartialEq)]
     #[require(Blip, EditorPos)]
-    struct Widget { size: f32 }
+    struct Widget {
+        size: f32,
+    }
 
     fn registry_app() -> App {
         let (_, rx) = crossbeam_channel::unbounded();
@@ -383,7 +430,10 @@ mod tests {
 
         apply_editor_command(
             app.world_mut(),
-            &EditorCommand::Create { component: "Widget", pos: Vec2::new(12.0, 34.0) },
+            &EditorCommand::Create {
+                component: "Widget",
+                pos: Vec2::new(12.0, 34.0),
+            },
         );
 
         let entity = app
@@ -391,7 +441,10 @@ mod tests {
             .query_filtered::<Entity, bevy_ecs::query::With<Widget>>()
             .single(app.world())
             .expect("exactly one Widget was created");
-        assert!(app.world().get::<Blip>(entity).is_some(), "#[require] supplied Blip");
+        assert!(
+            app.world().get::<Blip>(entity).is_some(),
+            "#[require] supplied Blip"
+        );
         assert_eq!(
             app.world().get::<EditorPos>(entity).map(|p| p.0),
             Some(Vec2::new(12.0, 34.0)),
@@ -404,7 +457,10 @@ mod tests {
         let mut app = registry_app();
         apply_editor_command(
             app.world_mut(),
-            &EditorCommand::Create { component: "Widget", pos: Vec2::ZERO },
+            &EditorCommand::Create {
+                component: "Widget",
+                pos: Vec2::ZERO,
+            },
         );
         let entity = app
             .world_mut()
@@ -420,7 +476,10 @@ mod tests {
         let before = app.world().entities().len();
         apply_editor_command(
             app.world_mut(),
-            &EditorCommand::Create { component: "Nonexistent", pos: Vec2::ZERO },
+            &EditorCommand::Create {
+                component: "Nonexistent",
+                pos: Vec2::ZERO,
+            },
         );
         assert_eq!(app.world().entities().len(), before);
     }
@@ -431,12 +490,21 @@ mod tests {
         // destroyed with its parent unless it is moved first.
         let mut app = registry_app();
         let grandparent = app.world_mut().spawn(EditorPos(Vec2::ZERO)).id();
-        let parent = app.world_mut().spawn((EditorPos(Vec2::ZERO), ChildOf(grandparent))).id();
-        let child = app.world_mut().spawn((EditorPos(Vec2::ZERO), ChildOf(parent))).id();
+        let parent = app
+            .world_mut()
+            .spawn((EditorPos(Vec2::ZERO), ChildOf(grandparent)))
+            .id();
+        let child = app
+            .world_mut()
+            .spawn((EditorPos(Vec2::ZERO), ChildOf(parent)))
+            .id();
 
         apply_editor_command(app.world_mut(), &EditorCommand::Delete { entity: parent });
 
-        assert!(app.world().get_entity(parent).is_err(), "the target despawned");
+        assert!(
+            app.world().get_entity(parent).is_err(),
+            "the target despawned"
+        );
         assert!(app.world().get_entity(child).is_ok(), "the child survived");
         assert_eq!(
             app.world().get::<ChildOf>(child).map(|c| c.0),
@@ -449,7 +517,10 @@ mod tests {
     fn deleting_a_root_makes_its_children_roots() {
         let mut app = registry_app();
         let parent = app.world_mut().spawn(EditorPos(Vec2::ZERO)).id();
-        let child = app.world_mut().spawn((EditorPos(Vec2::ZERO), ChildOf(parent))).id();
+        let child = app
+            .world_mut()
+            .spawn((EditorPos(Vec2::ZERO), ChildOf(parent)))
+            .id();
 
         apply_editor_command(app.world_mut(), &EditorCommand::Delete { entity: parent });
 
@@ -459,7 +530,11 @@ mod tests {
 
     #[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
     #[reflect(Component, Default, PartialEq)]
-    struct Knobs { gain: f32, steps: i64, on: bool }
+    struct Knobs {
+        gain: f32,
+        steps: i64,
+        on: bool,
+    }
 
     fn knobs_app() -> App {
         let mut app = registry_app();
@@ -490,12 +565,24 @@ mod tests {
         let mut app = knobs_app();
         let entity = app.world_mut().spawn(Knobs::default()).id();
 
-        apply_editor_command(app.world_mut(), &EditorCommand::SetField {
-            entity, component: "Knobs", field: "steps".to_string(), value: FieldValue::Int(9),
-        });
-        apply_editor_command(app.world_mut(), &EditorCommand::SetField {
-            entity, component: "Knobs", field: "on".to_string(), value: FieldValue::Bool(true),
-        });
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::SetField {
+                entity,
+                component: "Knobs",
+                field: "steps".to_string(),
+                value: FieldValue::Int(9),
+            },
+        );
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::SetField {
+                entity,
+                component: "Knobs",
+                field: "on".to_string(),
+                value: FieldValue::Bool(true),
+            },
+        );
 
         let knobs = app.world().get::<Knobs>(entity).copied().unwrap();
         assert_eq!(knobs.steps, 9);
@@ -505,27 +592,54 @@ mod tests {
     #[test]
     fn writing_an_equal_value_does_not_mark_the_component_changed() {
         let mut app = knobs_app();
-        let entity = app.world_mut().spawn(Knobs { gain: 0.5, ..Default::default() }).id();
+        let entity = app
+            .world_mut()
+            .spawn(Knobs {
+                gain: 0.5,
+                ..Default::default()
+            })
+            .id();
         app.update();
 
-        apply_editor_command(app.world_mut(), &EditorCommand::SetField {
-            entity, component: "Knobs", field: "gain".to_string(), value: FieldValue::Float(0.5),
-        });
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::SetField {
+                entity,
+                component: "Knobs",
+                field: "gain".to_string(),
+                value: FieldValue::Float(0.5),
+            },
+        );
 
-        assert!(!app.world().entity(entity).get_ref::<Knobs>().unwrap().is_changed());
+        assert!(
+            !app.world()
+                .entity(entity)
+                .get_ref::<Knobs>()
+                .unwrap()
+                .is_changed()
+        );
     }
 
     #[test]
     fn a_type_mismatch_leaves_the_field_alone() {
         let mut app = knobs_app();
-        let entity = app.world_mut().spawn(Knobs { gain: 0.25, ..Default::default() }).id();
+        let entity = app
+            .world_mut()
+            .spawn(Knobs {
+                gain: 0.25,
+                ..Default::default()
+            })
+            .id();
 
-        apply_editor_command(app.world_mut(), &EditorCommand::SetField {
-            entity,
-            component: "Knobs",
-            field: "gain".to_string(),
-            value: FieldValue::Bool(true),
-        });
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::SetField {
+                entity,
+                component: "Knobs",
+                field: "gain".to_string(),
+                value: FieldValue::Bool(true),
+            },
+        );
 
         assert_eq!(app.world().get::<Knobs>(entity).map(|k| k.gain), Some(0.25));
     }
@@ -534,9 +648,15 @@ mod tests {
     fn an_unknown_field_name_is_ignored() {
         let mut app = knobs_app();
         let entity = app.world_mut().spawn(Knobs::default()).id();
-        apply_editor_command(app.world_mut(), &EditorCommand::SetField {
-            entity, component: "Knobs", field: "nope".to_string(), value: FieldValue::Float(1.0),
-        });
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::SetField {
+                entity,
+                component: "Knobs",
+                field: "nope".to_string(),
+                value: FieldValue::Float(1.0),
+            },
+        );
     }
 
     // Mirrors `sway_nodes::FloatOut(pub f32)`: a tuple-struct authorable
@@ -590,7 +710,13 @@ mod tests {
             },
         );
 
-        assert!(!app.world().entity(entity).get_ref::<FloatOut>().unwrap().is_changed());
+        assert!(
+            !app.world()
+                .entity(entity)
+                .get_ref::<FloatOut>()
+                .unwrap()
+                .is_changed()
+        );
     }
 
     use crate::test_wires::{GainFrom, spawn_float, spawn_gain};
@@ -609,7 +735,11 @@ mod tests {
 
         apply_editor_command(
             app.world_mut(),
-            &EditorCommand::Connect { wire: "factor", src, dst },
+            &EditorCommand::Connect {
+                wire: "factor",
+                src,
+                dst,
+            },
         );
 
         assert_eq!(app.world().get::<GainFrom>(dst).map(|w| w.0), Some(src));
@@ -622,8 +752,22 @@ mod tests {
         let second = spawn_float(app.world_mut(), 2.0);
         let dst = spawn_gain(app.world_mut(), 0.0);
 
-        apply_editor_command(app.world_mut(), &EditorCommand::Connect { wire: "factor", src: first, dst });
-        apply_editor_command(app.world_mut(), &EditorCommand::Connect { wire: "factor", src: second, dst });
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::Connect {
+                wire: "factor",
+                src: first,
+                dst,
+            },
+        );
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::Connect {
+                wire: "factor",
+                src: second,
+                dst,
+            },
+        );
 
         assert_eq!(app.world().get::<GainFrom>(dst).map(|w| w.0), Some(second));
     }
@@ -636,10 +780,17 @@ mod tests {
 
         apply_editor_command(
             app.world_mut(),
-            &EditorCommand::Connect { wire: "factor", src: not_a_source, dst },
+            &EditorCommand::Connect {
+                wire: "factor",
+                src: not_a_source,
+                dst,
+            },
         );
 
-        assert!(app.world().get::<GainFrom>(dst).is_none(), "legality is enforced world-side too");
+        assert!(
+            app.world().get::<GainFrom>(dst).is_none(),
+            "legality is enforced world-side too"
+        );
     }
 
     #[test]
@@ -650,7 +801,11 @@ mod tests {
 
         apply_editor_command(
             app.world_mut(),
-            &EditorCommand::Connect { wire: "factor", src, dst: not_a_target },
+            &EditorCommand::Connect {
+                wire: "factor",
+                src,
+                dst: not_a_target,
+            },
         );
 
         assert!(app.world().get::<GainFrom>(not_a_target).is_none());
@@ -661,12 +816,31 @@ mod tests {
         let mut app = wired_app();
         let src = spawn_float(app.world_mut(), 1.0);
         let dst = spawn_gain(app.world_mut(), 0.0);
-        apply_editor_command(app.world_mut(), &EditorCommand::Connect { wire: "factor", src, dst });
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::Connect {
+                wire: "factor",
+                src,
+                dst,
+            },
+        );
 
-        apply_editor_command(app.world_mut(), &EditorCommand::Disconnect { wire: "factor", dst });
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::Disconnect {
+                wire: "factor",
+                dst,
+            },
+        );
         assert!(app.world().get::<GainFrom>(dst).is_none());
 
-        apply_editor_command(app.world_mut(), &EditorCommand::Disconnect { wire: "factor", dst });
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::Disconnect {
+                wire: "factor",
+                dst,
+            },
+        );
     }
 
     #[test]
@@ -680,7 +854,12 @@ mod tests {
         app.update();
         app.update();
 
-        tx.send(EditorCommand::Connect { wire: "factor", src, dst }).unwrap();
+        tx.send(EditorCommand::Connect {
+            wire: "factor",
+            src,
+            dst,
+        })
+        .unwrap();
         app.update();
 
         assert_eq!(
@@ -696,7 +875,12 @@ mod tests {
         world.init_resource::<crate::Selection>();
         let entity = world.spawn_empty().id();
 
-        apply_editor_command(&mut world, &EditorCommand::Select { entity: Some(entity) });
+        apply_editor_command(
+            &mut world,
+            &EditorCommand::Select {
+                entity: Some(entity),
+            },
+        );
 
         assert_eq!(world.resource::<crate::Selection>().0, Some(entity));
     }
@@ -719,7 +903,12 @@ mod tests {
         let mut world = World::new();
         world.init_resource::<crate::Selection>();
         let entity = world.spawn(EditorPos(Vec2::ZERO)).id();
-        apply_editor_command(&mut world, &EditorCommand::Select { entity: Some(entity) });
+        apply_editor_command(
+            &mut world,
+            &EditorCommand::Select {
+                entity: Some(entity),
+            },
+        );
 
         apply_editor_command(&mut world, &EditorCommand::Delete { entity });
 

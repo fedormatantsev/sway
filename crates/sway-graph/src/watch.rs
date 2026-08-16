@@ -37,7 +37,7 @@ mod tests {
     use super::*;
     use crate::registry_wires::register_wire;
     use crate::run::WiresPlugin;
-    use crate::test_wires::{spawn_float, spawn_gain, GainFrom};
+    use crate::test_wires::{GainFrom, spawn_float, spawn_gain};
     use bevy_app::App;
     use bevy_time::{Fixed, Time};
 
@@ -75,7 +75,10 @@ mod tests {
         app.update();
 
         assert_eq!(
-            app.world().resource::<crate::order::GraphOrder>().steps.len(),
+            app.world()
+                .resource::<crate::order::GraphOrder>()
+                .steps
+                .len(),
             1
         );
     }
@@ -91,7 +94,12 @@ mod tests {
         app.world_mut().entity_mut(dst).remove::<GainFrom>();
         app.update();
 
-        assert!(app.world().resource::<crate::order::GraphOrder>().steps.is_empty());
+        assert!(
+            app.world()
+                .resource::<crate::order::GraphOrder>()
+                .steps
+                .is_empty()
+        );
     }
 
     #[test]
@@ -105,7 +113,10 @@ mod tests {
         app.update();
 
         assert!(
-            app.world().resource::<crate::order::GraphOrder>().steps.is_empty(),
+            app.world()
+                .resource::<crate::order::GraphOrder>()
+                .steps
+                .is_empty(),
             "a show build does not notice authoring it cannot do"
         );
     }

@@ -156,9 +156,9 @@ field_wire!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::MathOp;
     use crate::outputs::{FloatOut, Vec3Out};
     use crate::wire_testing::assert_writes_only_on_change;
-    use crate::math::MathOp;
     use sway_graph::WiresPlugin;
 
     fn slice_app() -> App {
@@ -177,7 +177,11 @@ mod tests {
         let mut app = slice_app();
         let node = app
             .world_mut()
-            .spawn(Vec3Value { x: 1.0, y: 2.0, z: 3.0 })
+            .spawn(Vec3Value {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            })
             .id();
 
         app.update();
@@ -232,7 +236,11 @@ mod tests {
         let float = app.world_mut().spawn(FloatOut(3.0)).id();
         let node = app
             .world_mut()
-            .spawn(Math { op: MathOp::Mul, a: 0.0, b: 2.0 })
+            .spawn(Math {
+                op: MathOp::Mul,
+                a: 0.0,
+                b: 2.0,
+            })
             .id();
         app.world_mut().entity_mut(node).insert(MathAFrom(float));
 
@@ -256,7 +264,9 @@ mod tests {
                 clamp: true,
             })
             .id();
-        app.world_mut().entity_mut(node).insert(RemapInputFrom(float));
+        app.world_mut()
+            .entity_mut(node)
+            .insert(RemapInputFrom(float));
 
         app.update();
 
@@ -265,16 +275,8 @@ mod tests {
 
     #[test]
     fn the_math_and_remap_inlets_never_write_an_equal_value() {
-        assert_writes_only_on_change::<MathAFrom>(
-            FloatOut(1.0),
-            FloatOut(2.0),
-            Math::default(),
-        );
-        assert_writes_only_on_change::<MathBFrom>(
-            FloatOut(1.0),
-            FloatOut(2.0),
-            Math::default(),
-        );
+        assert_writes_only_on_change::<MathAFrom>(FloatOut(1.0), FloatOut(2.0), Math::default());
+        assert_writes_only_on_change::<MathBFrom>(FloatOut(1.0), FloatOut(2.0), Math::default());
         assert_writes_only_on_change::<RemapInputFrom>(
             FloatOut(1.0),
             FloatOut(2.0),

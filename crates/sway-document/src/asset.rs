@@ -215,9 +215,8 @@ mod tests {
             .collect();
         assert_eq!(before.len(), 1, "the first load must have already applied");
 
-        let next =
-            parse(r#"Project(version: 1, entities: [Entity(id: "a"), Entity(id: "b")])"#)
-                .expect("parses");
+        let next = parse(r#"Project(version: 1, entities: [Entity(id: "a"), Entity(id: "b")])"#)
+            .expect("parses");
         app.world_mut()
             .resource_mut::<Assets<ProjectAsset>>()
             .insert(&handle, ProjectAsset { doc: next })

@@ -149,12 +149,20 @@ mod tests {
         assert_eq!(a.host_time, 111);
         assert_eq!(
             a.message,
-            MidiMessage::NoteOn { channel: 0, note: 60, velocity: 100 }
+            MidiMessage::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100
+            }
         );
         assert_eq!(b.host_time, 222);
         assert_eq!(
             b.message,
-            MidiMessage::NoteOn { channel: 0, note: 64, velocity: 80 }
+            MidiMessage::NoteOn {
+                channel: 0,
+                note: 64,
+                velocity: 80
+            }
         );
         assert!(rx.try_recv().is_err(), "exactly two events expected");
     }
@@ -199,7 +207,11 @@ mod tests {
         let note = rx.try_recv().expect("the note packet must arrive");
         assert_eq!(
             note.message,
-            MidiMessage::NoteOn { channel: 0, note: 60, velocity: 100 }
+            MidiMessage::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100
+            }
         );
         assert!(rx.try_recv().is_err());
     }
@@ -238,8 +250,8 @@ mod tests {
     #[test]
     fn virtual_destination_receives_midisend_note_on() {
         use crate::ffi::{
-            MIDIClientCreate, MIDIClientDispose, MIDIOutputPortCreate, MIDIPacket,
-            MIDIPacketList, MIDIPortDispose, MIDISend, CfString,
+            CfString, MIDIClientCreate, MIDIClientDispose, MIDIOutputPortCreate, MIDIPacket,
+            MIDIPacketList, MIDIPortDispose, MIDISend,
         };
         use std::time::Duration;
 
@@ -283,7 +295,11 @@ mod tests {
             .expect("virtual destination must deliver MIDISend note-on to read_proc");
         assert_eq!(
             event.message,
-            MidiMessage::NoteOn { channel: 0, note: 60, velocity: 100 }
+            MidiMessage::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100
+            }
         );
 
         unsafe {

@@ -10,13 +10,13 @@ use std::sync::Arc;
 use bevy::asset::AssetPlugin;
 use bevy::camera::{ManualTextureViewHandle, RenderTarget};
 use bevy::prelude::*;
+use bevy::render::RenderPlugin;
 use bevy::render::render_resource::{TextureFormat, TextureView as BevyTextureView};
 use bevy::render::renderer::{
     RenderAdapter, RenderAdapterInfo, RenderDevice, RenderInstance, RenderQueue, WgpuWrapper,
 };
 use bevy::render::settings::RenderCreation;
 use bevy::render::texture::{ManualTextureView, ManualTextureViews};
-use bevy::render::RenderPlugin;
 use bevy::winit::WinitPlugin;
 
 /// The one manual texture view in the process: Bevy's render target.
@@ -259,7 +259,8 @@ mod tests {
                 .expect("buffer mapping failed");
 
             let data = slice.get_mapped_range();
-            let (mut min_red, mut max_green, mut max_blue, mut min_alpha) = (255u8, 0u8, 0u8, 255u8);
+            let (mut min_red, mut max_green, mut max_blue, mut min_alpha) =
+                (255u8, 0u8, 0u8, 255u8);
             for row in 0..size.y {
                 let row_start = (row * padded_bytes_per_row) as usize;
                 for col in 0..size.x {

@@ -14,8 +14,8 @@
 //! missing-feature panic deep inside a render pass.
 
 use wgpu::{
-    Adapter, Backends, Device, DeviceDescriptor, Instance, InstanceDescriptor, Queue,
-    PowerPreference, RequestAdapterOptions, Surface,
+    Adapter, Backends, Device, DeviceDescriptor, Instance, InstanceDescriptor, PowerPreference,
+    Queue, RequestAdapterOptions, Surface,
 };
 
 /// The one wgpu context in the process.
@@ -71,7 +71,12 @@ impl GpuContext {
         }))
         .expect("could not create the shared wgpu device");
 
-        Self { instance, adapter, device, queue }
+        Self {
+            instance,
+            adapter,
+            device,
+            queue,
+        }
     }
 }
 

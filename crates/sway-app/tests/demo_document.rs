@@ -65,7 +65,11 @@ fn demo_document_loads_and_reconciles_cleanly() {
     );
 
     let world = app.world_mut();
-    let mut ids: Vec<String> = world.query::<&DocId>().iter(world).map(|id| id.0.clone()).collect();
+    let mut ids: Vec<String> = world
+        .query::<&DocId>()
+        .iter(world)
+        .map(|id| id.0.clone())
+        .collect();
     ids.sort();
     assert_eq!(
         ids,
@@ -193,8 +197,14 @@ fn demo_document_survives_a_reload() {
 
     sway_document::apply(app.world_mut(), &document);
 
-    assert!(app.world().get::<Mesh3d>(cube).is_some(), "Mesh3d survived the reload");
-    assert!(app.world().get::<Transform>(cube).is_some(), "Transform survived the reload");
+    assert!(
+        app.world().get::<Mesh3d>(cube).is_some(),
+        "Mesh3d survived the reload"
+    );
+    assert!(
+        app.world().get::<Transform>(cube).is_some(),
+        "Transform survived the reload"
+    );
 }
 
 #[test]
@@ -206,7 +216,11 @@ fn demo_document_round_trips_through_the_world() {
 
     let mut second = demo_app();
     let diagnostics = sway_document::apply(second.world_mut(), &once);
-    assert!(diagnostics.is_clean(), "re-apply of emitted doc: {:?}", diagnostics.items);
+    assert!(
+        diagnostics.is_clean(),
+        "re-apply of emitted doc: {:?}",
+        diagnostics.items
+    );
     let twice = to_document(second.world_mut());
 
     assert_eq!(once, twice);

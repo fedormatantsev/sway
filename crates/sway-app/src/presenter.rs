@@ -8,7 +8,9 @@ use bevy::app::App;
 use bevy::math::UVec2;
 use crossbeam_channel::Sender;
 use masonry_core::core::CursorIcon;
-use sway_gpu::{Compositor, GpuContext, Quad, UiRenderer, UiTexture, ViewportTexture, WindowSurface};
+use sway_gpu::{
+    Compositor, GpuContext, Quad, UiRenderer, UiTexture, ViewportTexture, WindowSurface,
+};
 use sway_graph::{EditorCommand, ViewportInput};
 use winit::dpi::PhysicalSize;
 
@@ -130,7 +132,8 @@ impl EditorPresenter {
     /// load-bearing. A one-frame lag in a diagnostic view is invisible;
     /// reordering `present` for it would not be.
     fn apply_snapshot(&mut self, app: &App) {
-        self.editor.apply_snapshot(&sway_editor::snapshot::capture(app.world()));
+        self.editor
+            .apply_snapshot(&sway_editor::snapshot::capture(app.world()));
     }
 
     /// One frame, in the fixed, load-bearing order (controller dispatch
@@ -166,9 +169,10 @@ impl EditorPresenter {
         // `None` is a legitimate state -- the widget isn't in the tree --
         // not an error (R2); in that case the viewport texture is left alone
         // and no viewport quad is drawn below.
-        let rect = self.editor.viewport_rect().map(|logical| {
-            kurbo::Affine::scale(scale).transform_rect_bbox(logical)
-        });
+        let rect = self
+            .editor
+            .viewport_rect()
+            .map(|logical| kurbo::Affine::scale(scale).transform_rect_bbox(logical));
         if let Some(rect) = rect {
             let rect_width = rect.width().round().max(1.0) as u32;
             let rect_height = rect.height().round().max(1.0) as u32;

@@ -27,7 +27,11 @@ fn the_cube_asset_loads_as_a_mesh() {
     for updates in 1..=300 {
         app.update();
         if let Some(mesh) = app.world().resource::<Assets<Mesh>>().get(&handle) {
-            loaded = Some((updates, mesh.count_vertices(), mesh.indices().map(|i| i.len())));
+            loaded = Some((
+                updates,
+                mesh.count_vertices(),
+                mesh.indices().map(|i| i.len()),
+            ));
             break;
         }
     }

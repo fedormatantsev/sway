@@ -103,7 +103,15 @@ impl StreamParser {
             return None;
         }
 
-        let message = (status, self.data[0], if data_len(status) == 2 { self.data[1] } else { 0 });
+        let message = (
+            status,
+            self.data[0],
+            if data_len(status) == 2 {
+                self.data[1]
+            } else {
+                0
+            },
+        );
         self.have = 0;
         // A channel status stays current (running status); System Common
         // does not repeat.
@@ -154,7 +162,10 @@ mod tests {
     fn two_byte_messages_complete_after_one_data_byte() {
         // Program Change and Channel Pressure carry one data byte. The old
         // stride would have eaten the following status byte as data.
-        assert_eq!(parse(&[0xC0, 5, 0xD0, 64]), vec![(0xC0, 5, 0), (0xD0, 64, 0)]);
+        assert_eq!(
+            parse(&[0xC0, 5, 0xD0, 64]),
+            vec![(0xC0, 5, 0), (0xD0, 64, 0)]
+        );
     }
 
     #[test]
@@ -166,10 +177,10 @@ mod tests {
     #[test]
     fn system_common_clears_running_status() {
         // After a Song Select, a bare data byte is not a note-on.
-        assert_eq!(parse(&[0x90, 60, 100, 0xF3, 2, 62, 90]), vec![
-            (0x90, 60, 100),
-            (0xF3, 2, 0),
-        ]);
+        assert_eq!(
+            parse(&[0x90, 60, 100, 0xF3, 2, 62, 90]),
+            vec![(0x90, 60, 100), (0xF3, 2, 0),]
+        );
     }
 
     #[test]
@@ -183,10 +194,7 @@ mod tests {
     #[test]
     fn real_time_bytes_pass_through_a_sysex_block() {
         // A clock inside a SysEx dump still has to reach the transport.
-        assert_eq!(
-            parse(&[0xF0, 1, CLOCK, 2, 0xF7]),
-            vec![(CLOCK, 0, 0)]
-        );
+        assert_eq!(parse(&[0xF0, 1, CLOCK, 2, 0xF7]), vec![(CLOCK, 0, 0)]);
     }
 
     #[test]

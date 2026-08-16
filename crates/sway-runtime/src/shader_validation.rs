@@ -26,8 +26,11 @@
 /// Only referenced by the validation test below (naga is a dev-dependency),
 /// so it is `cfg(test)` to avoid a dead-code warning in normal builds.
 #[cfg(test)]
-const PREPROCESSOR_SHADERS: &[&str] =
-    &["point_cloud.wgsl", "sprite_layer.wgsl", "sprite_depth_spike.wgsl"];
+const PREPROCESSOR_SHADERS: &[&str] = &[
+    "point_cloud.wgsl",
+    "sprite_layer.wgsl",
+    "sprite_depth_spike.wgsl",
+];
 
 #[cfg(test)]
 mod tests {
@@ -125,7 +128,11 @@ mod tests {
             println!("NOT VALIDATED (allowlisted bevy preprocessor imports): {seen_allowlisted:?}");
         }
         println!("validated {checked} shader(s)");
-        assert!(failures.is_empty(), "shader validation failed:\n{}", failures.join("\n\n"));
+        assert!(
+            failures.is_empty(),
+            "shader validation failed:\n{}",
+            failures.join("\n\n")
+        );
     }
 
     #[test]

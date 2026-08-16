@@ -42,7 +42,10 @@ pub struct Viewport {
 
 impl Viewport {
     pub fn new(input: Sender<ViewportInput>) -> Self {
-        Self { input, size: Size::ZERO }
+        Self {
+            input,
+            size: Size::ZERO,
+        }
     }
 
     fn normalized(&self, ctx: &EventCtx<'_>, position: PhysicalPosition<f64>) -> bevy_math::Vec2 {
@@ -88,7 +91,12 @@ impl Widget for Viewport {
         }
     }
 
-    fn on_anim_frame(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, _interval: u64) {
+    fn on_anim_frame(
+        &mut self,
+        ctx: &mut UpdateCtx<'_>,
+        _props: &mut PropertiesMut<'_>,
+        _interval: u64,
+    ) {
         ctx.request_anim_frame();
         ctx.request_paint_only();
     }
@@ -113,12 +121,19 @@ impl Widget for Viewport {
                 // which orbit and gizmo drags both rely on.
                 ctx.capture_pointer();
                 let pos = self.normalized(ctx, state.position);
-                self.send(ViewportInput::Down { button, pos, modifiers: modifiers_of(state) });
+                self.send(ViewportInput::Down {
+                    button,
+                    pos,
+                    modifiers: modifiers_of(state),
+                });
                 ctx.set_handled();
             }
             PointerEvent::Move(PointerUpdate { current, .. }) => {
                 let pos = self.normalized(ctx, current.position);
-                self.send(ViewportInput::Move { pos, modifiers: modifiers_of(current) });
+                self.send(ViewportInput::Move {
+                    pos,
+                    modifiers: modifiers_of(current),
+                });
             }
             PointerEvent::Up(PointerButtonEvent { button, state, .. }) => {
                 let Some(button) = button_of(*button) else {
@@ -138,8 +153,14 @@ impl Widget for Viewport {
                 // scale in and convert back.
                 let scale = state.scale_factor.max(f64::EPSILON);
                 let physical = delta.to_pixel_delta(
-                    PhysicalPosition { x: 32.0 * scale, y: 32.0 * scale },
-                    PhysicalPosition { x: 800.0 * scale, y: 800.0 * scale },
+                    PhysicalPosition {
+                        x: 32.0 * scale,
+                        y: 32.0 * scale,
+                    },
+                    PhysicalPosition {
+                        x: 800.0 * scale,
+                        y: 800.0 * scale,
+                    },
                 );
                 let logical: LogicalPosition<f64> = physical.to_logical(scale);
                 let pos = self.normalized(ctx, state.position);
@@ -154,7 +175,9 @@ impl Widget for Viewport {
                 gesture: PointerGesture::Pinch(delta),
                 ..
             }) => {
-                self.send(ViewportInput::Pinch { delta: *delta as f32 });
+                self.send(ViewportInput::Pinch {
+                    delta: *delta as f32,
+                });
                 ctx.set_handled();
             }
             _ => {}
@@ -216,7 +239,12 @@ impl Widget for Viewport {
         ctx.set_clip_path(size.to_rect());
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _painter: &mut Painter<'_>) {
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
         ctx.set_paint_layer_mode(masonry::core::PaintLayerMode::External);
     }
 
@@ -224,7 +252,13 @@ impl Widget for Viewport {
         Role::GenericContainer
     }
 
-    fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, _node: &mut Node) {}
+    fn accessibility(
+        &mut self,
+        _ctx: &mut AccessCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _node: &mut Node,
+    ) {
+    }
 
     fn children_ids(&self) -> ChildrenIds {
         ChildrenIds::new()
@@ -262,7 +296,9 @@ mod tests {
         harness.mouse_move((100.0, 50.0));
         harness.mouse_button_press(Some(PointerButton::Primary));
 
-        let event = rx.try_iter().find(|e| matches!(e, ViewportInput::Down { .. }));
+        let event = rx
+            .try_iter()
+            .find(|e| matches!(e, ViewportInput::Down { .. }));
         let Some(ViewportInput::Down { button, pos, .. }) = event else {
             panic!("no Down reached the channel");
         };
@@ -322,8 +358,10 @@ mod tests {
         )));
 
         assert!(
-            rx.try_iter()
-                .any(|e| e == ViewportInput::Key { key: ViewportKey::Rotate }),
+            rx.try_iter().any(|e| e
+                == ViewportInput::Key {
+                    key: ViewportKey::Rotate
+                }),
             "E must reach the world as a rotate-mode key",
         );
     }
@@ -353,12 +391,17 @@ mod tests {
             state,
         }));
 
-        let Some(ViewportInput::Scroll { delta, .. }) =
-            rx.try_iter().find(|e| matches!(e, ViewportInput::Scroll { .. }))
+        let Some(ViewportInput::Scroll { delta, .. }) = rx
+            .try_iter()
+            .find(|e| matches!(e, ViewportInput::Scroll { .. }))
         else {
             panic!("no Scroll reached the channel");
         };
-        assert!(delta.y > 0.0, "a forward wheel tick must forward a positive delta.y; got {}", delta.y);
+        assert!(
+            delta.y > 0.0,
+            "a forward wheel tick must forward a positive delta.y; got {}",
+            delta.y
+        );
     }
 
     #[test]
@@ -383,12 +426,16 @@ mod tests {
             state,
         }));
 
-        let Some(ViewportInput::Pinch { delta }) =
-            rx.try_iter().find(|e| matches!(e, ViewportInput::Pinch { .. }))
+        let Some(ViewportInput::Pinch { delta }) = rx
+            .try_iter()
+            .find(|e| matches!(e, ViewportInput::Pinch { .. }))
         else {
             panic!("no Pinch reached the channel");
         };
-        assert!(delta > 0.0, "fingers spreading apart must forward a positive delta; got {delta}");
+        assert!(
+            delta > 0.0,
+            "fingers spreading apart must forward a positive delta; got {delta}"
+        );
     }
 
     #[test]

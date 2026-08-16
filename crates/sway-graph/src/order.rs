@@ -20,7 +20,7 @@ struct AscendingEntity(Entity);
 
 impl Ord for AscendingEntity {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.0.cmp(&other.0)  // Uses Entity's descending-index Ord; max-heap pops ascending
+        self.0.cmp(&other.0) // Uses Entity's descending-index Ord; max-heap pops ascending
     }
 }
 
@@ -88,7 +88,11 @@ pub fn topological_order(vertices: &[Entity], links: &[Link]) -> Sorted {
     }
 
     let placed: HashSet<Entity> = order.iter().copied().collect();
-    let mut cycles: Vec<Entity> = vertices.iter().copied().filter(|e| !placed.contains(e)).collect();
+    let mut cycles: Vec<Entity> = vertices
+        .iter()
+        .copied()
+        .filter(|e| !placed.contains(e))
+        .collect();
     // Compensate for Entity::Ord being descending-in-index: reverse the sort to get
     // ascending raw-index order, consistent with the main order's tie-breaking.
     cycles.sort_by(|a, b| b.cmp(a));
@@ -114,7 +118,10 @@ pub enum Step {
         dst: Entity,
         wire: &'static str,
     },
-    Run { run: BehaviourFn, entity: Entity },
+    Run {
+        run: BehaviourFn,
+        entity: Entity,
+    },
 }
 
 #[derive(Resource, Default)]
@@ -140,7 +147,9 @@ pub fn rebuild_order(world: &mut World) {
     }
 
     let wires = world.remove_resource::<WireRegistry>().unwrap_or_default();
-    let behaviours = world.remove_resource::<BehaviourRegistry>().unwrap_or_default();
+    let behaviours = world
+        .remove_resource::<BehaviourRegistry>()
+        .unwrap_or_default();
 
     let mut links: Vec<Link> = Vec::new();
     for entry in &wires.entries {
@@ -167,7 +176,10 @@ pub fn rebuild_order(world: &mut World) {
 
     let sorted = topological_order(&vertices, &links);
 
-    let mut diagnostics = GraphDiagnostics { cycles: sorted.cycles.clone(), ..Default::default() };
+    let mut diagnostics = GraphDiagnostics {
+        cycles: sorted.cycles.clone(),
+        ..Default::default()
+    };
     for entry in &wires.entries {
         let mut instances: Vec<Link> = Vec::new();
         (entry.collect)(world, &mut instances);
@@ -227,7 +239,12 @@ mod tests {
     fn noop(_: &mut World, _: Entity, _: Entity) {}
 
     fn link(src: Entity, dst: Entity) -> Link {
-        Link { src, dst, run: noop, wire: "test" }
+        Link {
+            src,
+            dst,
+            run: noop,
+            wire: "test",
+        }
     }
 
     #[test]
@@ -295,14 +312,17 @@ mod tests {
         // Pins the bevy_ecs quirk AscendingEntity and the cycle sort both
         // compensate for. If a Bevy upgrade changes this, this test fails
         // loudly instead of silently flipping topological_order's determinism.
-        assert!(e(1) > e(2), "if this fails, Entity::Ord's encoding changed -- \
-            re-verify AscendingEntity and the cycles.sort_by direction");
+        assert!(
+            e(1) > e(2),
+            "if this fails, Entity::Ord's encoding changed -- \
+            re-verify AscendingEntity and the cycles.sort_by direction"
+        );
     }
 
     // --- rebuild_order ------------------------------------------------
 
     use crate::registry_wires::{register_behaviour, register_wire};
-    use crate::test_wires::{spawn_float, spawn_gain, FloatOut, Gain, GainFrom};
+    use crate::test_wires::{FloatOut, Gain, GainFrom, spawn_float, spawn_gain};
     use bevy_app::App;
 
     fn rebuild_app() -> App {
@@ -416,7 +436,9 @@ mod tests {
 
         rebuild_order(app.world_mut());
 
-        let diagnostics = app.world().resource::<crate::diagnostics::GraphDiagnostics>();
+        let diagnostics = app
+            .world()
+            .resource::<crate::diagnostics::GraphDiagnostics>();
         let mut cycles = diagnostics.cycles.clone();
         cycles.sort();
         let mut want = vec![a, b];
@@ -435,7 +457,9 @@ mod tests {
 
         rebuild_order(app.world_mut());
 
-        let diagnostics = app.world().resource::<crate::diagnostics::GraphDiagnostics>();
+        let diagnostics = app
+            .world()
+            .resource::<crate::diagnostics::GraphDiagnostics>();
         assert_eq!(diagnostics.missing_source, vec![(bare, "factor")]);
     }
 
@@ -449,6 +473,10 @@ mod tests {
 
         rebuild_order(app.world_mut());
 
-        assert!(app.world().resource::<crate::diagnostics::GraphDiagnostics>().is_clean());
+        assert!(
+            app.world()
+                .resource::<crate::diagnostics::GraphDiagnostics>()
+                .is_clean()
+        );
     }
 }

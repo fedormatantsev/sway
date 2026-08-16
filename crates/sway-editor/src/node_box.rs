@@ -421,7 +421,9 @@ impl Widget for NodeBox {
                     self.gesture = Gesture::Connecting;
                     ctx.submit_action::<Self::Action>(NodeBoxAction::SocketPressed(kind));
                 } else {
-                    self.gesture = Gesture::Dragging { last_window: window_point(state) };
+                    self.gesture = Gesture::Dragging {
+                        last_window: window_point(state),
+                    };
                     ctx.submit_action::<Self::Action>(NodeBoxAction::Selected);
                 }
                 // Stop this from also bubbling to `GraphCanvas::on_pointer_event`,
@@ -504,10 +506,14 @@ impl Widget for NodeBox {
         // somewhere on the box rather than at its unmarked centre.
         let socket_fill = Color::from_rgb8(220, 220, 230);
         for pos in inlet_socket_positions(&self.inlets) {
-            painter.fill(Circle::new(pos, SOCKET_RADIUS), socket_fill).draw();
+            painter
+                .fill(Circle::new(pos, SOCKET_RADIUS), socket_fill)
+                .draw();
         }
         for pos in outlet_socket_positions(self.outlets) {
-            painter.fill(Circle::new(pos, SOCKET_RADIUS), socket_fill).draw();
+            painter
+                .fill(Circle::new(pos, SOCKET_RADIUS), socket_fill)
+                .draw();
         }
     }
 
@@ -515,7 +521,12 @@ impl Widget for NodeBox {
         Role::GenericContainer
     }
 
-    fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, node: &mut Node) {
+    fn accessibility(
+        &mut self,
+        _ctx: &mut AccessCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        node: &mut Node,
+    ) {
         node.set_description(self.label_text.as_str());
     }
 

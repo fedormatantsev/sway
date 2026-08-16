@@ -12,10 +12,24 @@ pub struct DocId(pub String);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ItemError {
-    UnknownComponent { entity: String, name: String },
-    BadPayload { entity: String, name: String, message: String },
-    UnknownWire { entity: String, wire: String },
-    UnresolvedTarget { entity: String, wire: String, target: String },
+    UnknownComponent {
+        entity: String,
+        name: String,
+    },
+    BadPayload {
+        entity: String,
+        name: String,
+        message: String,
+    },
+    UnknownWire {
+        entity: String,
+        wire: String,
+    },
+    UnresolvedTarget {
+        entity: String,
+        wire: String,
+        target: String,
+    },
 }
 
 impl core::fmt::Display for ItemError {
@@ -24,13 +38,21 @@ impl core::fmt::Display for ItemError {
             Self::UnknownComponent { entity, name } => {
                 write!(f, "{entity}: no component is registered as \"{name}\"")
             }
-            Self::BadPayload { entity, name, message } => {
+            Self::BadPayload {
+                entity,
+                name,
+                message,
+            } => {
                 write!(f, "{entity}.{name}: {message}")
             }
             Self::UnknownWire { entity, wire } => {
                 write!(f, "{entity}: no wire is registered as \"{wire}\"")
             }
-            Self::UnresolvedTarget { entity, wire, target } => {
+            Self::UnresolvedTarget {
+                entity,
+                wire,
+                target,
+            } => {
                 write!(f, "{entity}.{wire}: no entity has the id \"{target}\"")
             }
         }

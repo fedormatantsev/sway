@@ -28,7 +28,10 @@ mod tests {
         assert!(world.get::<Camera3d>(entity).is_some());
         assert!(world.get::<Camera>(entity).is_some());
         assert!(world.get::<Projection>(entity).is_some());
-        assert!(world.get::<Transform>(entity).is_some(), "authored by the document");
+        assert!(
+            world.get::<Transform>(entity).is_some(),
+            "authored by the document"
+        );
     }
 
     #[test]
@@ -39,7 +42,10 @@ mod tests {
 
         let registry = app.world().resource::<sway_graph::ComponentDocRegistry>();
         for name in ["SceneCamera", "DirectionalLight", "PointLight"] {
-            assert!(registry.by_name(name).is_some(), "{name} must be authorable");
+            assert!(
+                registry.by_name(name).is_some(),
+                "{name} must be authorable"
+            );
         }
     }
 }

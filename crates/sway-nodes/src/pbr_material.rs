@@ -90,8 +90,8 @@ field_wire!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::asset::AssetPlugin;
     use crate::wire_testing::assert_writes_only_on_change;
+    use bevy::asset::AssetPlugin;
     use sway_graph::propagate_of;
 
     fn material_app() -> App {
@@ -124,7 +124,12 @@ mod tests {
 
         app.update();
 
-        let handle = app.world().get::<MaterialOut>(node).expect("required").0.clone();
+        let handle = app
+            .world()
+            .get::<MaterialOut>(node)
+            .expect("required")
+            .0
+            .clone();
         assert_ne!(handle, Handle::default(), "an asset was created");
         let material = app
             .world()
@@ -141,12 +146,25 @@ mod tests {
         let mut app = material_app();
         let node = app.world_mut().spawn(PbrMaterial::default()).id();
         app.update();
-        let before = app.world().get::<MaterialOut>(node).expect("required").0.clone();
+        let before = app
+            .world()
+            .get::<MaterialOut>(node)
+            .expect("required")
+            .0
+            .clone();
 
-        app.world_mut().get_mut::<PbrMaterial>(node).expect("present").metallic = 1.0;
+        app.world_mut()
+            .get_mut::<PbrMaterial>(node)
+            .expect("present")
+            .metallic = 1.0;
         app.update();
 
-        let after = app.world().get::<MaterialOut>(node).expect("required").0.clone();
+        let after = app
+            .world()
+            .get::<MaterialOut>(node)
+            .expect("required")
+            .0
+            .clone();
         assert_eq!(before, after, "the handle must not change under an edit");
         assert_eq!(
             app.world()
@@ -177,15 +195,28 @@ mod tests {
 
         app.update();
 
-        let handle_a = app.world().get::<MaterialOut>(a).expect("required").0.clone();
-        let handle_b = app.world().get::<MaterialOut>(b).expect("required").0.clone();
+        let handle_a = app
+            .world()
+            .get::<MaterialOut>(a)
+            .expect("required")
+            .0
+            .clone();
+        let handle_b = app
+            .world()
+            .get::<MaterialOut>(b)
+            .expect("required")
+            .0
+            .clone();
         assert_ne!(
             handle_a,
             Handle::default(),
             "must allocate its own asset, not reuse the engine default"
         );
         assert_ne!(handle_b, Handle::default());
-        assert_ne!(handle_a, handle_b, "two material nodes must not share one asset");
+        assert_ne!(
+            handle_a, handle_b,
+            "two material nodes must not share one asset"
+        );
         let assets = app.world().resource::<Assets<StandardMaterial>>();
         assert_eq!(assets.get(&handle_a).map(|m| m.metallic), Some(0.1));
         assert_eq!(assets.get(&handle_b).map(|m| m.metallic), Some(0.9));
@@ -208,13 +239,22 @@ mod tests {
         propagate_of::<MaterialFrom>(app.world_mut(), node, a);
         propagate_of::<MaterialFrom>(app.world_mut(), node, b);
 
-        let expected = app.world().get::<MaterialOut>(node).expect("required").0.clone();
+        let expected = app
+            .world()
+            .get::<MaterialOut>(node)
+            .expect("required")
+            .0
+            .clone();
         assert_eq!(
-            app.world().get::<MeshMaterial3d<StandardMaterial>>(a).map(|m| m.0.clone()),
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(a)
+                .map(|m| m.0.clone()),
             Some(expected.clone())
         );
         assert_eq!(
-            app.world().get::<MeshMaterial3d<StandardMaterial>>(b).map(|m| m.0.clone()),
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(b)
+                .map(|m| m.0.clone()),
             Some(expected)
         );
     }

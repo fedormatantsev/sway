@@ -102,7 +102,12 @@ enum NavigationMode {
 /// transform, which the next Alt-drag or camera-toggle silently overwrites.
 pub fn spawn_editor_camera(mut commands: Commands) {
     let cam = EditorCamera::default();
-    commands.spawn((cam, orbit_transform(&cam), ViewportCameraRole::Editor, HiddenFromEditor));
+    commands.spawn((
+        cam,
+        orbit_transform(&cam),
+        ViewportCameraRole::Editor,
+        HiddenFromEditor,
+    ));
 }
 
 /// Turns this frame's viewport events into camera motion.
@@ -121,7 +126,11 @@ pub fn navigate_editor_camera(
     let mut changed = false;
     for event in &events.0 {
         match event {
-            ViewportInput::Down { button, pos, modifiers } if modifiers.alt => {
+            ViewportInput::Down {
+                button,
+                pos,
+                modifiers,
+            } if modifiers.alt => {
                 drag.mode = Some(match button {
                     ViewportButton::Primary => NavigationMode::Orbit,
                     ViewportButton::Secondary => NavigationMode::Pan,
@@ -267,7 +276,10 @@ mod tests {
         // Looking at the pivot means forward points from eye to pivot.
         let forward = tf.forward().as_vec3();
         let to_pivot = (cam.pivot - tf.translation).normalize();
-        assert!((forward - to_pivot).length() < 1e-4, "{forward:?} vs {to_pivot:?}");
+        assert!(
+            (forward - to_pivot).length() < 1e-4,
+            "{forward:?} vs {to_pivot:?}"
+        );
     }
 
     #[test]
@@ -304,7 +316,10 @@ mod tests {
         let right = orbit_transform(&cam).right().as_vec3();
         pan(&mut cam, Vec2::new(0.1, 0.0));
         let moved = (cam.pivot - Vec3::ZERO).normalize();
-        assert!(moved.dot(right).abs() > 0.99, "moved {moved:?}, right {right:?}");
+        assert!(
+            moved.dot(right).abs() > 0.99,
+            "moved {moved:?}, right {right:?}"
+        );
     }
 
     #[test]
@@ -329,8 +344,12 @@ mod tests {
         app.add_systems(Startup, spawn_editor_camera);
         app.update();
 
-        let mut query = app.world_mut().query_filtered::<Entity, With<EditorCamera>>();
-        let camera = query.single(app.world()).expect("spawn_editor_camera should spawn one");
+        let mut query = app
+            .world_mut()
+            .query_filtered::<Entity, With<EditorCamera>>();
+        let camera = query
+            .single(app.world())
+            .expect("spawn_editor_camera should spawn one");
         assert!(app.world().get::<HiddenFromEditor>(camera).is_some());
     }
 
@@ -366,7 +385,11 @@ mod active_camera_tests {
             .add_systems(Update, apply_active_camera);
         let editor = app
             .world_mut()
-            .spawn((EditorCamera::default(), Camera::default(), ViewportCameraRole::Editor))
+            .spawn((
+                EditorCamera::default(),
+                Camera::default(),
+                ViewportCameraRole::Editor,
+            ))
             .id();
         let scene = app
             .world_mut()
@@ -391,7 +414,13 @@ mod active_camera_tests {
         let mut app = App::new();
         app.init_resource::<ViewportCamera>()
             .add_systems(Update, apply_active_camera);
-        let overlay = app.world_mut().spawn(Camera { order: 1, ..Default::default() }).id();
+        let overlay = app
+            .world_mut()
+            .spawn(Camera {
+                order: 1,
+                ..Default::default()
+            })
+            .id();
 
         app.update();
         assert!(
@@ -414,7 +443,10 @@ mod tag_scene_cameras_tests {
 
         app.update();
 
-        assert_eq!(app.world().get::<ViewportCameraRole>(camera), Some(&ViewportCameraRole::Scene));
+        assert_eq!(
+            app.world().get::<ViewportCameraRole>(camera),
+            Some(&ViewportCameraRole::Scene)
+        );
     }
 
     #[test]
@@ -426,7 +458,10 @@ mod tag_scene_cameras_tests {
         // why that is a safe, public discriminator for "not a scene camera".
         let mut app = App::new();
         app.add_systems(Update, tag_scene_cameras);
-        let overlay = app.world_mut().spawn((Camera::default(), RenderLayers::layer(15))).id();
+        let overlay = app
+            .world_mut()
+            .spawn((Camera::default(), RenderLayers::layer(15)))
+            .id();
 
         app.update();
 
@@ -441,14 +476,18 @@ mod nav_tests {
     use sway_graph::{ViewportButton, ViewportInput, ViewportModifiers};
 
     fn alt() -> ViewportModifiers {
-        ViewportModifiers { alt: true, ..Default::default() }
+        ViewportModifiers {
+            alt: true,
+            ..Default::default()
+        }
     }
 
     fn app_with_camera() -> App {
         let mut app = App::new();
         app.init_resource::<ViewportEvents>()
             .add_systems(Update, navigate_editor_camera);
-        app.world_mut().spawn((EditorCamera::default(), Transform::default()));
+        app.world_mut()
+            .spawn((EditorCamera::default(), Transform::default()));
         app
     }
 
@@ -460,11 +499,25 @@ mod nav_tests {
     #[test]
     fn alt_drag_orbits() {
         let mut app = app_with_camera();
-        feed(&mut app, vec![
-            ViewportInput::Down { button: ViewportButton::Primary, pos: Vec2::new(0.5, 0.5), modifiers: alt() },
-            ViewportInput::Move { pos: Vec2::new(0.75, 0.5), modifiers: alt() },
-        ]);
-        let cam = app.world_mut().query::<&EditorCamera>().single(app.world()).unwrap();
+        feed(
+            &mut app,
+            vec![
+                ViewportInput::Down {
+                    button: ViewportButton::Primary,
+                    pos: Vec2::new(0.5, 0.5),
+                    modifiers: alt(),
+                },
+                ViewportInput::Move {
+                    pos: Vec2::new(0.75, 0.5),
+                    modifiers: alt(),
+                },
+            ],
+        );
+        let cam = app
+            .world_mut()
+            .query::<&EditorCamera>()
+            .single(app.world())
+            .unwrap();
         assert_ne!(cam.yaw, EditorCamera::default().yaw);
     }
 
@@ -473,62 +526,126 @@ mod nav_tests {
         // Without Alt the gesture belongs to picking and the gizmo. If this
         // regresses, every click drags the view instead of selecting.
         let mut app = app_with_camera();
-        feed(&mut app, vec![
-            ViewportInput::Down { button: ViewportButton::Primary, pos: Vec2::new(0.5, 0.5), modifiers: ViewportModifiers::default() },
-            ViewportInput::Move { pos: Vec2::new(0.9, 0.9), modifiers: ViewportModifiers::default() },
-        ]);
-        let cam = *app.world_mut().query::<&EditorCamera>().single(app.world()).unwrap();
+        feed(
+            &mut app,
+            vec![
+                ViewportInput::Down {
+                    button: ViewportButton::Primary,
+                    pos: Vec2::new(0.5, 0.5),
+                    modifiers: ViewportModifiers::default(),
+                },
+                ViewportInput::Move {
+                    pos: Vec2::new(0.9, 0.9),
+                    modifiers: ViewportModifiers::default(),
+                },
+            ],
+        );
+        let cam = *app
+            .world_mut()
+            .query::<&EditorCamera>()
+            .single(app.world())
+            .unwrap();
         assert_eq!(cam, EditorCamera::default());
     }
 
     #[test]
     fn a_move_with_no_press_is_ignored() {
         let mut app = app_with_camera();
-        feed(&mut app, vec![
-            ViewportInput::Move { pos: Vec2::new(0.9, 0.9), modifiers: alt() },
-        ]);
-        let cam = *app.world_mut().query::<&EditorCamera>().single(app.world()).unwrap();
+        feed(
+            &mut app,
+            vec![ViewportInput::Move {
+                pos: Vec2::new(0.9, 0.9),
+                modifiers: alt(),
+            }],
+        );
+        let cam = *app
+            .world_mut()
+            .query::<&EditorCamera>()
+            .single(app.world())
+            .unwrap();
         assert_eq!(cam, EditorCamera::default());
     }
 
     #[test]
     fn a_cancel_ends_the_gesture() {
         let mut app = app_with_camera();
-        feed(&mut app, vec![
-            ViewportInput::Down { button: ViewportButton::Primary, pos: Vec2::new(0.5, 0.5), modifiers: alt() },
-            ViewportInput::Cancel,
-        ]);
-        let before = *app.world_mut().query::<&EditorCamera>().single(app.world()).unwrap();
-        feed(&mut app, vec![
-            ViewportInput::Move { pos: Vec2::new(0.9, 0.9), modifiers: alt() },
-        ]);
-        let after = *app.world_mut().query::<&EditorCamera>().single(app.world()).unwrap();
+        feed(
+            &mut app,
+            vec![
+                ViewportInput::Down {
+                    button: ViewportButton::Primary,
+                    pos: Vec2::new(0.5, 0.5),
+                    modifiers: alt(),
+                },
+                ViewportInput::Cancel,
+            ],
+        );
+        let before = *app
+            .world_mut()
+            .query::<&EditorCamera>()
+            .single(app.world())
+            .unwrap();
+        feed(
+            &mut app,
+            vec![ViewportInput::Move {
+                pos: Vec2::new(0.9, 0.9),
+                modifiers: alt(),
+            }],
+        );
+        let after = *app
+            .world_mut()
+            .query::<&EditorCamera>()
+            .single(app.world())
+            .unwrap();
         assert_eq!(before, after, "a cancelled drag must not keep orbiting");
     }
 
     #[test]
     fn scroll_and_pinch_both_dolly() {
         let mut app = app_with_camera();
-        feed(&mut app, vec![ViewportInput::Scroll {
-            delta: Vec2::new(0.0, 10.0),
-            pos: Vec2::splat(0.5),
-            modifiers: ViewportModifiers::default(),
-        }]);
-        let scrolled = app.world_mut().query::<&EditorCamera>().single(app.world()).unwrap().distance;
+        feed(
+            &mut app,
+            vec![ViewportInput::Scroll {
+                delta: Vec2::new(0.0, 10.0),
+                pos: Vec2::splat(0.5),
+                modifiers: ViewportModifiers::default(),
+            }],
+        );
+        let scrolled = app
+            .world_mut()
+            .query::<&EditorCamera>()
+            .single(app.world())
+            .unwrap()
+            .distance;
         assert_ne!(scrolled, EditorCamera::default().distance);
 
         feed(&mut app, vec![ViewportInput::Pinch { delta: 0.5 }]);
-        let pinched = app.world_mut().query::<&EditorCamera>().single(app.world()).unwrap().distance;
+        let pinched = app
+            .world_mut()
+            .query::<&EditorCamera>()
+            .single(app.world())
+            .unwrap()
+            .distance;
         assert_ne!(pinched, scrolled);
     }
 
     #[test]
     fn navigating_writes_the_transform() {
         let mut app = app_with_camera();
-        feed(&mut app, vec![
-            ViewportInput::Down { button: ViewportButton::Primary, pos: Vec2::new(0.5, 0.5), modifiers: alt() },
-            ViewportInput::Move { pos: Vec2::new(0.75, 0.5), modifiers: alt() },
-        ]);
+        feed(
+            &mut app,
+            vec![
+                ViewportInput::Down {
+                    button: ViewportButton::Primary,
+                    pos: Vec2::new(0.5, 0.5),
+                    modifiers: alt(),
+                },
+                ViewportInput::Move {
+                    pos: Vec2::new(0.75, 0.5),
+                    modifiers: alt(),
+                },
+            ],
+        );
         let (cam, tf) = app
             .world_mut()
             .query::<(&EditorCamera, &Transform)>()

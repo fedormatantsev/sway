@@ -14,7 +14,7 @@ use bevy_ecs::world::World;
 
 use crate::ctx::TickCtx;
 use crate::order::Link;
-use crate::wire::{propagate_of, Wire};
+use crate::wire::{Wire, propagate_of};
 
 /// Ordered logic attached to a component type. Spec §2.4: only for components
 /// whose output depends on a wired inlet within the same tick.
@@ -89,7 +89,10 @@ fn collect_behaviour_of<C: Component>(world: &mut World, out: &mut Vec<Entity>) 
 }
 
 pub fn register_wire<W: Wire>(app: &mut App) {
-    app.add_systems(bevy_app::PreUpdate, crate::watch::watch::<W>.in_set(crate::watch::WatchSet));
+    app.add_systems(
+        bevy_app::PreUpdate,
+        crate::watch::watch::<W>.in_set(crate::watch::WatchSet),
+    );
     app.init_resource::<WireRegistry>();
     app.world_mut()
         .resource_mut::<WireRegistry>()
@@ -98,10 +101,14 @@ pub fn register_wire<W: Wire>(app: &mut App) {
             name: W::NAME,
             collect: collect_wire_of::<W>,
             has_source: |world, entity| {
-                world.get_entity(entity).is_ok_and(|e| e.contains::<W::Source>())
+                world
+                    .get_entity(entity)
+                    .is_ok_and(|e| e.contains::<W::Source>())
             },
             has_target: |world, entity| {
-                world.get_entity(entity).is_ok_and(|e| e.contains::<W::Target>())
+                world
+                    .get_entity(entity)
+                    .is_ok_and(|e| e.contains::<W::Target>())
             },
             insert: insert_wire_of::<W>,
             remove: remove_wire_of::<W>,
@@ -125,7 +132,7 @@ pub fn register_behaviour<C: Component>(app: &mut App, run: BehaviourFn) {
 mod tests {
     use super::*;
     use crate::ctx::TickCtx;
-    use crate::test_wires::{spawn_float, spawn_gain, Gain, GainFrom};
+    use crate::test_wires::{Gain, GainFrom, spawn_float, spawn_gain};
     use bevy_app::App;
 
     fn noop_behaviour(_: &mut World, _: Entity, _: &TickCtx) {}

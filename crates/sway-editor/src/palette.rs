@@ -246,7 +246,12 @@ impl Widget for Palette {
         ctx.set_clip_path(size.to_rect());
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         // An opaque backing, or the canvas and its edges show through the
         // gaps between the children.
         painter.fill_rect(
@@ -259,7 +264,13 @@ impl Widget for Palette {
         Role::ListBox
     }
 
-    fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, _node: &mut Node) {}
+    fn accessibility(
+        &mut self,
+        _ctx: &mut AccessCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _node: &mut Node,
+    ) {
+    }
 
     fn children_ids(&self) -> ChildrenIds {
         std::iter::once(self.input.id())
@@ -287,9 +298,9 @@ impl Layer for Palette {
         event: &PointerEvent,
     ) {
         let dismiss = match event {
-            PointerEvent::Down(PointerButtonEvent { state, .. }) => {
-                !ctx.border_box().contains(ctx.local_position(state.position))
-            }
+            PointerEvent::Down(PointerButtonEvent { state, .. }) => !ctx
+                .border_box()
+                .contains(ctx.local_position(state.position)),
             PointerEvent::Cancel(..) => true,
             _ => false,
         };

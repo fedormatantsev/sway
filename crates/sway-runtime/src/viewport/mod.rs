@@ -4,7 +4,9 @@ pub mod camera;
 pub mod gizmo;
 pub mod pick;
 
-use bevy::gizmos::transform_gizmo::{TransformGizmoSettings, TransformGizmoSpace, TransformGizmoState};
+use bevy::gizmos::transform_gizmo::{
+    TransformGizmoSettings, TransformGizmoSpace, TransformGizmoState,
+};
 use bevy::prelude::*;
 use sway_graph::{ViewportInput, ViewportInputRx};
 

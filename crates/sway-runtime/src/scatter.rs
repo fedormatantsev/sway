@@ -79,6 +79,7 @@ use bevy::core_pipeline::schedule::camera_driver;
 use bevy::platform::collections::HashSet as BevyHashSet;
 use bevy::prelude::*;
 use bevy::render::{
+    Render, RenderApp, RenderStartup,
     extract_component::{ExtractComponent, ExtractComponentPlugin},
     gpu_readback::{Readback, ReadbackComplete},
     render_asset::RenderAssets,
@@ -88,7 +89,6 @@ use bevy::render::{
     },
     renderer::{RenderContext, RenderGraph, RenderQueue},
     storage::{GpuShaderBuffer, ShaderBuffer},
-    Render, RenderApp, RenderStartup,
 };
 
 /// Point count for the hardcoded demo scatter. Kept small (unlike the point
@@ -279,12 +279,13 @@ fn dispatch_scatter(
             )),
         );
 
-        let mut pass = render_context
-            .command_encoder()
-            .begin_compute_pass(&ComputePassDescriptor {
-                label: Some("scatter compute pass"),
-                ..default()
-            });
+        let mut pass =
+            render_context
+                .command_encoder()
+                .begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("scatter compute pass"),
+                    ..default()
+                });
         pass.set_bind_group(0, &bind_group, &[]);
         pass.set_pipeline(compute_pipeline);
         pass.dispatch_workgroups(workgroup_count(params.count, 64), 1, 1);

@@ -30,8 +30,8 @@ use masonry::core::{
 };
 use masonry::dpi::PhysicalPosition;
 use masonry::imaging::Painter;
-use masonry_core::kurbo::{Affine, Axis, BezPath, Circle, Point, Size, Stroke, Vec2};
 use masonry::layout::{LenReq, Length};
+use masonry_core::kurbo::{Affine, Axis, BezPath, Circle, Point, Size, Stroke, Vec2};
 use peniko::Color;
 use sway_graph::EditorCommand;
 
@@ -210,14 +210,20 @@ impl GraphCanvas {
                     slot.inlets.len() as u16,
                 );
                 if outlet.distance(local) <= SOCKET_HIT_RADIUS {
-                    return Some(SocketRef { node: *id, kind: SocketKind::Outlet });
+                    return Some(SocketRef {
+                        node: *id,
+                        kind: SocketKind::Outlet,
+                    });
                 }
             }
 
             for ordinal in 0..slot.inlets.len() as u16 {
                 let inlet = node_box::inlet_socket_local(&slot.inlets, ordinal, 0);
                 if inlet.distance(local) <= SOCKET_HIT_RADIUS {
-                    return Some(SocketRef { node: *id, kind: SocketKind::Inlet(ordinal) });
+                    return Some(SocketRef {
+                        node: *id,
+                        kind: SocketKind::Inlet(ordinal),
+                    });
                 }
             }
         }
@@ -308,16 +314,25 @@ impl Widget for GraphCanvas {
     /// `apply_snapshot` mirrors onto `NodeSlot` (see that struct's doc
     /// comment for why `paint` can't read them off the live `NodeBox`
     /// instead).
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         for edge in &self.edges {
             let (Some(from_slot), Some(to_slot)) =
                 (self.slots.get(&edge.from), self.slots.get(&edge.to))
             else {
                 continue;
             };
-            let from_local =
-                node_box::outlet_socket_local(from_slot.inlets.len() as u16, from_slot.outlets, edge.from_field);
-            let to_local = node_box::inlet_socket_local(&to_slot.inlets, edge.to_field, edge.to_index);
+            let from_local = node_box::outlet_socket_local(
+                from_slot.inlets.len() as u16,
+                from_slot.outlets,
+                edge.from_field,
+            );
+            let to_local =
+                node_box::inlet_socket_local(&to_slot.inlets, edge.to_field, edge.to_index);
             let from = self.to_visual(from_slot.pos + from_local.to_vec2());
             let to = self.to_visual(to_slot.pos + to_local.to_vec2());
             let (brush, width) = edge_style(edge);
@@ -348,10 +363,14 @@ impl Widget for GraphCanvas {
         painter: &mut Painter<'_>,
     ) {
         let Some(drag) = &self.drag else { return };
-        let Some(src) = self.entity_of(drag.from.node) else { return };
+        let Some(src) = self.entity_of(drag.from.node) else {
+            return;
+        };
 
         for id in &self.nodes {
-            let Some(slot) = self.slots.get(id) else { continue };
+            let Some(slot) = self.slots.get(id) else {
+                continue;
+            };
             for (ordinal, inlet) in slot.inlet_views.iter().enumerate() {
                 let legal = inlet.accepts_from.contains(&src);
                 let local = node_box::inlet_socket_local(&slot.inlets, ordinal as u16, 0);
@@ -362,7 +381,10 @@ impl Widget for GraphCanvas {
                     Color::from_rgb8(70, 72, 80)
                 };
                 painter
-                    .fill(Circle::new(centre, node_box::SOCKET_RADIUS * 1.6 * self.zoom), colour)
+                    .fill(
+                        Circle::new(centre, node_box::SOCKET_RADIUS * 1.6 * self.zoom),
+                        colour,
+                    )
                     .draw();
             }
         }
@@ -497,12 +519,11 @@ impl Widget for GraphCanvas {
         // not a descendant, so a pick cannot bubble here as an action --
         // see `finish_palette_pick` and `palette.rs`'s module doc for the
         // `mutate_later`-based path that actually carries it back.
-        let Some(id) = self
-            .nodes
-            .iter()
-            .copied()
-            .find(|id| self.slots.get(id).is_some_and(|slot| slot.pod.id() == source))
-        else {
+        let Some(id) = self.nodes.iter().copied().find(|id| {
+            self.slots
+                .get(id)
+                .is_some_and(|slot| slot.pod.id() == source)
+        }) else {
             return;
         };
         let Some(&action) = action.downcast_ref::<NodeBoxAction>() else {
@@ -595,7 +616,13 @@ impl Widget for GraphCanvas {
         Role::GenericContainer
     }
 
-    fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, _node: &mut Node) {}
+    fn accessibility(
+        &mut self,
+        _ctx: &mut AccessCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _node: &mut Node,
+    ) {
+    }
 
     fn children_ids(&self) -> ChildrenIds {
         self.nodes
@@ -828,7 +855,9 @@ impl GraphCanvas {
                 continue;
             }
             let transform = this.widget.child_transform(id);
-            let mut child = this.ctx.get_mut(&mut this.widget.slots.get_mut(&id).unwrap().pod);
+            let mut child = this
+                .ctx
+                .get_mut(&mut this.widget.slots.get_mut(&id).unwrap().pod);
             child.set_transform(transform);
         }
     }
@@ -895,11 +924,22 @@ impl GraphCanvas {
         Affine::translate(self.pan) * Affine::scale(self.zoom) * Affine::translate(pos.to_vec2())
     }
 
-    fn paint_edge(&self, painter: &mut Painter<'_>, from: Point, to: Point, brush: Color, width: f64) {
+    fn paint_edge(
+        &self,
+        painter: &mut Painter<'_>,
+        from: Point,
+        to: Point,
+        brush: Color,
+        width: f64,
+    ) {
         let dx = ((to.x - from.x) * 0.5).abs().max(30.0);
         let mut path = BezPath::new();
         path.move_to(from);
-        path.curve_to(Point::new(from.x + dx, from.y), Point::new(to.x - dx, to.y), to);
+        path.curve_to(
+            Point::new(from.x + dx, from.y),
+            Point::new(to.x - dx, to.y),
+            to,
+        );
         painter.stroke(&path, &Stroke::new(width), brush).draw();
     }
 
@@ -935,7 +975,9 @@ impl GraphCanvas {
         if self.selected == Some(id) {
             return;
         }
-        let _ = self.commands.send(EditorCommand::Select { entity: self.entity_of(id) });
+        let _ = self.commands.send(EditorCommand::Select {
+            entity: self.entity_of(id),
+        });
     }
 
     /// A socket was pressed. An outlet starts an edge drag; a *connected*
@@ -943,12 +985,23 @@ impl GraphCanvas {
     fn socket_pressed(&mut self, node: NodeId, kind: SocketKind) {
         match kind {
             SocketKind::Outlet => {
-                let cursor = self.slots.get(&node).map(|slot| slot.pos).unwrap_or_default();
-                self.drag = Some(EdgeDrag { from: SocketRef { node, kind }, cursor });
+                let cursor = self
+                    .slots
+                    .get(&node)
+                    .map(|slot| slot.pos)
+                    .unwrap_or_default();
+                self.drag = Some(EdgeDrag {
+                    from: SocketRef { node, kind },
+                    cursor,
+                });
             }
             SocketKind::Inlet(ordinal) => {
-                let Some(slot) = self.slots.get(&node) else { return };
-                let Some(inlet) = slot.inlet_views.get(ordinal as usize) else { return };
+                let Some(slot) = self.slots.get(&node) else {
+                    return;
+                };
+                let Some(inlet) = slot.inlet_views.get(ordinal as usize) else {
+                    return;
+                };
                 if !inlet.connected {
                     return;
                 }
@@ -964,13 +1017,22 @@ impl GraphCanvas {
     /// that accepts the drag's origin connects; anything else cancels.
     fn connect_released(&mut self, point: Point) {
         let Some(drag) = self.drag.take() else { return };
-        let Some(src) = self.entity_of(drag.from.node) else { return };
-        let Some(SocketRef { node, kind: SocketKind::Inlet(ordinal) }) = self.socket_at(point)
+        let Some(src) = self.entity_of(drag.from.node) else {
+            return;
+        };
+        let Some(SocketRef {
+            node,
+            kind: SocketKind::Inlet(ordinal),
+        }) = self.socket_at(point)
         else {
             return; // released over empty canvas or over an outlet
         };
-        let Some(slot) = self.slots.get(&node) else { return };
-        let Some(inlet) = slot.inlet_views.get(ordinal as usize) else { return };
+        let Some(slot) = self.slots.get(&node) else {
+            return;
+        };
+        let Some(inlet) = slot.inlet_views.get(ordinal as usize) else {
+            return;
+        };
         // Legality is re-checked here even though `paint` only highlighted
         // legal inlets: the highlight is a hint, this is the rule.
         if !inlet.accepts_from.contains(&src) {
@@ -1092,9 +1154,16 @@ fn edge_style(edge: &EdgeSlot) -> (Color, f64) {
     let Some(t) = normalised(edge) else {
         return (base, 2.0);
     };
-    let lift = |c: u8| (c as f32 + (255.0 - c as f32) * t).round().clamp(0.0, 255.0) as u8;
+    let lift = |c: u8| {
+        (c as f32 + (255.0 - c as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
     let [r, g, b, _] = base.to_rgba8().to_u8_array();
-    (Color::from_rgb8(lift(r), lift(g), lift(b)), 2.0 + 3.0 * t as f64)
+    (
+        Color::from_rgb8(lift(r), lift(g), lift(b)),
+        2.0 + 3.0 * t as f64,
+    )
 }
 
 /// Colour by wire name. Local editor policy.
@@ -1156,11 +1225,24 @@ mod tests {
         wire: &'static str,
         activity: Option<f32>,
     ) -> EdgeView {
-        EdgeView { from, from_field, from_index, to, to_field, to_index, wire, activity }
+        EdgeView {
+            from,
+            from_field,
+            from_index,
+            to,
+            to_field,
+            to_index,
+            wire,
+            activity,
+        }
     }
 
     fn snapshot(nodes: Vec<NodeView>, edges: Vec<EdgeView>) -> WorldSnapshot {
-        WorldSnapshot { nodes, edges, ..Default::default() }
+        WorldSnapshot {
+            nodes,
+            edges,
+            ..Default::default()
+        }
     }
 
     fn harness_with(snap: WorldSnapshot) -> TestHarness<GraphCanvas> {
@@ -1175,7 +1257,10 @@ mod tests {
 
     fn harness_and_rx(
         snap: WorldSnapshot,
-    ) -> (TestHarness<GraphCanvas>, crossbeam_channel::Receiver<EditorCommand>) {
+    ) -> (
+        TestHarness<GraphCanvas>,
+        crossbeam_channel::Receiver<EditorCommand>,
+    ) {
         let (tx, rx) = crossbeam_channel::unbounded();
         let mut harness =
             TestHarness::create(DefaultProperties::default(), GraphCanvas::new(tx).prepare());
@@ -1326,7 +1411,10 @@ mod tests {
     fn the_delete_key_deletes_the_selected_node() {
         let entity = Entity::from_raw_u32(4).expect("valid entity id");
         let (mut harness, rx) = harness_and_rx(snapshot(
-            vec![NodeView { entity, ..node(4, "a", Some(Point::new(10.0, 10.0))) }],
+            vec![NodeView {
+                entity,
+                ..node(4, "a", Some(Point::new(10.0, 10.0)))
+            }],
             vec![],
         ));
         harness.edit_root_widget(|mut canvas| {
@@ -1362,7 +1450,10 @@ mod tests {
     #[test]
     fn a_real_click_then_delete_key_deletes_the_selected_node() {
         let entity = Entity::from_raw_u32(4).expect("valid entity id");
-        let nodes = vec![NodeView { entity, ..node(4, "a", Some(Point::new(10.0, 10.0))) }];
+        let nodes = vec![NodeView {
+            entity,
+            ..node(4, "a", Some(Point::new(10.0, 10.0)))
+        }];
         let (mut harness, rx) = harness_and_rx(snapshot(nodes.clone(), vec![]));
 
         harness.mouse_move(Point::new(20.0, 20.0));
@@ -1374,7 +1465,9 @@ mod tests {
         // what this test checks, so only `Select` is looked for here.
         let commands: Vec<_> = rx.try_iter().collect();
         assert!(
-            commands.contains(&EditorCommand::Select { entity: Some(entity) }),
+            commands.contains(&EditorCommand::Select {
+                entity: Some(entity)
+            }),
             "the click must have asked the world to select the node; got {commands:?}",
         );
 
@@ -1416,7 +1509,10 @@ mod tests {
         // widget and was lost on exit.
         let entity = Entity::from_raw_u32(4).expect("valid entity id");
         let (mut harness, rx) = harness_and_rx(snapshot(
-            vec![NodeView { entity, ..node(4, "a", Some(Point::new(100.0, 100.0))) }],
+            vec![NodeView {
+                entity,
+                ..node(4, "a", Some(Point::new(100.0, 100.0)))
+            }],
             vec![],
         ));
 
@@ -1470,7 +1566,9 @@ mod tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![EditorCommand::Select { entity: Some(entity_0) }],
+            vec![EditorCommand::Select {
+                entity: Some(entity_0)
+            }],
         );
     }
 
@@ -1489,7 +1587,10 @@ mod tests {
 
         let canvas_point = Point::new(123.0, 45.0);
         let visual_point = harness.root_widget().to_visual(canvas_point);
-        assert_ne!(visual_point, canvas_point, "pan/zoom must actually be in effect");
+        assert_ne!(
+            visual_point, canvas_point,
+            "pan/zoom must actually be in effect"
+        );
 
         assert_eq!(harness.root_widget().to_canvas(visual_point), canvas_point);
     }
@@ -1652,7 +1753,10 @@ mod tests {
             "one wheel tick must zoom by 1 - 32*0.002; got {zoom_1x}"
         );
         assert_eq!(zoom_1x, zoom_2x, "zoom factor must not depend on DPR");
-        assert_eq!(pan_1x, pan_2x, "cursor-anchored pan must be in logical space");
+        assert_eq!(
+            pan_1x, pan_2x,
+            "cursor-anchored pan must be in logical space"
+        );
         assert_ne!(zoom_1x, 1.0);
     }
 
@@ -1741,7 +1845,11 @@ mod tests {
         harness.mouse_move(Point::new(200.0, 180.0));
         harness.mouse_button_release(Some(PointerButton::Primary));
         let dragged = harness.root_widget().position_of(NodeId(0)).unwrap();
-        assert_ne!(dragged, Point::new(100.0, 100.0), "the drag must have moved it");
+        assert_ne!(
+            dragged,
+            Point::new(100.0, 100.0),
+            "the drag must have moved it"
+        );
 
         harness.edit_root_widget(|mut canvas| {
             GraphCanvas::apply_snapshot(&mut canvas, &snap);
@@ -1807,7 +1915,16 @@ mod tests {
     fn edges_are_kept_only_when_both_endpoints_exist() {
         let harness = harness_with(snapshot(
             vec![node(0, "a", None), node(1, "b", None)],
-            vec![edge(NodeId(0), 0, 0, NodeId(1), 0, 0, "translation.y", Some(0.5))],
+            vec![edge(
+                NodeId(0),
+                0,
+                0,
+                NodeId(1),
+                0,
+                0,
+                "translation.y",
+                Some(0.5),
+            )],
         ));
         assert_eq!(harness.root_widget().edge_count(), 1);
 
@@ -1817,7 +1934,16 @@ mod tests {
                 &mut canvas,
                 &snapshot(
                     vec![node(0, "a", None)],
-                    vec![edge(NodeId(0), 0, 0, NodeId(9), 0, 0, "translation.y", None)],
+                    vec![edge(
+                        NodeId(0),
+                        0,
+                        0,
+                        NodeId(9),
+                        0,
+                        0,
+                        "translation.y",
+                        None,
+                    )],
                 ),
             );
         });
@@ -1832,8 +1958,16 @@ mod tests {
         use crate::snapshot::InletView;
         let view = NodeView {
             inlets: vec![
-                InletView { wire: "amount", connected: true, accepts_from: Vec::new() },
-                InletView { wire: "parent", connected: false, accepts_from: Vec::new() },
+                InletView {
+                    wire: "amount",
+                    connected: true,
+                    accepts_from: Vec::new(),
+                },
+                InletView {
+                    wire: "parent",
+                    connected: false,
+                    accepts_from: Vec::new(),
+                },
             ],
             outlets: 1,
             ..node(0, "Recv", None)
@@ -1854,8 +1988,16 @@ mod tests {
         use crate::snapshot::InletView;
         NodeView {
             inlets: vec![
-                InletView { wire: "amount", connected: false, accepts_from: Vec::new() },
-                InletView { wire: "parent", connected: false, accepts_from: Vec::new() },
+                InletView {
+                    wire: "amount",
+                    connected: false,
+                    accepts_from: Vec::new(),
+                },
+                InletView {
+                    wire: "parent",
+                    connected: false,
+                    accepts_from: Vec::new(),
+                },
             ],
             outlets: 1,
             ..node(0, "n", Some(pos))
@@ -1874,7 +2016,10 @@ mod tests {
 
         assert_eq!(
             harness.root_widget().socket_at(probe),
-            Some(SocketRef { node: NodeId(0), kind: SocketKind::Outlet }),
+            Some(SocketRef {
+                node: NodeId(0),
+                kind: SocketKind::Outlet
+            }),
         );
     }
 
@@ -1887,15 +2032,24 @@ mod tests {
 
         let first = origin + node_box::inlet_socket_local(&[1, 1], 0, 0).to_vec2();
         let second = origin + node_box::inlet_socket_local(&[1, 1], 1, 0).to_vec2();
-        assert_ne!(first, second, "the two sockets must be at different heights");
+        assert_ne!(
+            first, second,
+            "the two sockets must be at different heights"
+        );
 
         assert_eq!(
             harness.root_widget().socket_at(first),
-            Some(SocketRef { node: NodeId(0), kind: SocketKind::Inlet(0) }),
+            Some(SocketRef {
+                node: NodeId(0),
+                kind: SocketKind::Inlet(0)
+            }),
         );
         assert_eq!(
             harness.root_widget().socket_at(second),
-            Some(SocketRef { node: NodeId(0), kind: SocketKind::Inlet(1) }),
+            Some(SocketRef {
+                node: NodeId(0),
+                kind: SocketKind::Inlet(1)
+            }),
         );
     }
 
@@ -1905,14 +2059,18 @@ mod tests {
         let (harness, _rx) = harness_and_rx(snapshot(vec![socket_node(origin)], vec![]));
 
         // The middle of the box: no socket is anywhere near it.
-        let middle = origin + kurbo::Vec2::new(node_box::SIZE.width / 2.0, node_box::SIZE.height / 2.0);
+        let middle =
+            origin + kurbo::Vec2::new(node_box::SIZE.width / 2.0, node_box::SIZE.height / 2.0);
         assert_eq!(harness.root_widget().socket_at(middle), None);
     }
 
     #[test]
     fn a_point_far_from_every_node_hits_nothing() {
         let (harness, _rx) = harness_and_rx(snapshot(vec![socket_node(Point::ZERO)], vec![]));
-        assert_eq!(harness.root_widget().socket_at(Point::new(-500.0, -500.0)), None);
+        assert_eq!(
+            harness.root_widget().socket_at(Point::new(-500.0, -500.0)),
+            None
+        );
     }
 
     #[test]
@@ -1923,7 +2081,10 @@ mod tests {
         harness.edit_root_widget(|mut canvas| {
             GraphCanvas::socket_pressed_for_test(
                 &mut canvas,
-                SocketRef { node: NodeId(0), kind: SocketKind::Outlet },
+                SocketRef {
+                    node: NodeId(0),
+                    kind: SocketKind::Outlet,
+                },
             );
         });
         assert!(harness.root_widget().edge_drag_origin().is_some());
@@ -1969,7 +2130,10 @@ mod tests {
 
         assert_eq!(
             harness.root_widget().edge_drag_origin(),
-            Some(SocketRef { node: NodeId(0), kind: SocketKind::Outlet }),
+            Some(SocketRef {
+                node: NodeId(0),
+                kind: SocketKind::Outlet
+            }),
             "a real press on the outlet's own screen position must start the drag",
         );
         // A socket press must not also select the node -- `Selected` is the
@@ -2055,7 +2219,10 @@ mod tests {
         harness.edit_root_widget(|mut canvas| {
             GraphCanvas::socket_pressed_for_test(
                 &mut canvas,
-                SocketRef { node: NodeId(1), kind: SocketKind::Outlet },
+                SocketRef {
+                    node: NodeId(1),
+                    kind: SocketKind::Outlet,
+                },
             );
             GraphCanvas::connect_released_for_test(
                 &mut canvas,
@@ -2065,7 +2232,11 @@ mod tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![EditorCommand::Connect { wire: "amount", src, dst }],
+            vec![EditorCommand::Connect {
+                wire: "amount",
+                src,
+                dst
+            }],
         );
     }
 
@@ -2078,7 +2249,10 @@ mod tests {
         harness.edit_root_widget(|mut canvas| {
             GraphCanvas::socket_pressed_for_test(
                 &mut canvas,
-                SocketRef { node: NodeId(1), kind: SocketKind::Outlet },
+                SocketRef {
+                    node: NodeId(1),
+                    kind: SocketKind::Outlet,
+                },
             );
             GraphCanvas::connect_released_for_test(
                 &mut canvas,
@@ -2102,13 +2276,19 @@ mod tests {
         harness.edit_root_widget(|mut canvas| {
             GraphCanvas::socket_pressed_for_test(
                 &mut canvas,
-                SocketRef { node: NodeId(2), kind: SocketKind::Inlet(0) },
+                SocketRef {
+                    node: NodeId(2),
+                    kind: SocketKind::Inlet(0),
+                },
             );
         });
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![EditorCommand::Disconnect { wire: "amount", dst }],
+            vec![EditorCommand::Disconnect {
+                wire: "amount",
+                dst
+            }],
         );
     }
 
@@ -2120,7 +2300,10 @@ mod tests {
         harness.edit_root_widget(|mut canvas| {
             GraphCanvas::socket_pressed_for_test(
                 &mut canvas,
-                SocketRef { node: NodeId(2), kind: SocketKind::Inlet(0) },
+                SocketRef {
+                    node: NodeId(2),
+                    kind: SocketKind::Inlet(0),
+                },
             );
         });
 
@@ -2158,7 +2341,11 @@ mod tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![EditorCommand::Connect { wire: "amount", src, dst }],
+            vec![EditorCommand::Connect {
+                wire: "amount",
+                src,
+                dst
+            }],
         );
     }
 }

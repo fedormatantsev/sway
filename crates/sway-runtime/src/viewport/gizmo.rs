@@ -46,11 +46,11 @@
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::gizmos::transform_gizmo::{
-    axis_direction, effective_space, gizmo_rotation, intersect_plane, point_to_ring_screen_dist,
-    point_to_segment_dist, translation_plane_normal, TransformGizmoAxis, TransformGizmoCamera,
-    TransformGizmoFocus, TransformGizmoMeshMarker, TransformGizmoMode, TransformGizmoRoot,
-    TransformGizmoSettings, TransformGizmoState, AXIS_START_OFFSET, VIEW_CIRCLE_MAJOR,
-    VIEW_RING_MAJOR,
+    AXIS_START_OFFSET, TransformGizmoAxis, TransformGizmoCamera, TransformGizmoFocus,
+    TransformGizmoMeshMarker, TransformGizmoMode, TransformGizmoRoot, TransformGizmoSettings,
+    TransformGizmoState, VIEW_CIRCLE_MAJOR, VIEW_RING_MAJOR, axis_direction, effective_space,
+    gizmo_rotation, intersect_plane, point_to_ring_screen_dist, point_to_segment_dist,
+    translation_plane_normal,
 };
 use bevy::prelude::*;
 use sway_graph::{HiddenFromEditor, Selection, ViewportButton, ViewportInput, ViewportKey};
@@ -91,8 +91,13 @@ pub fn mark_gizmo_camera(
     let wanted = cameras.iter().find_map(|(entity, role)| {
         matches!(
             (*active, role),
-            (crate::viewport::ViewportCamera::Editor, crate::viewport::ViewportCameraRole::Editor)
-                | (crate::viewport::ViewportCamera::Scene, crate::viewport::ViewportCameraRole::Scene)
+            (
+                crate::viewport::ViewportCamera::Editor,
+                crate::viewport::ViewportCameraRole::Editor
+            ) | (
+                crate::viewport::ViewportCamera::Scene,
+                crate::viewport::ViewportCameraRole::Scene
+            )
         )
         .then_some(entity)
     });
@@ -143,7 +148,11 @@ pub fn hide_gizmo_meshes_from_editor(
     meshes: Query<Entity, (With<TransformGizmoMeshMarker>, Without<HiddenFromEditor>)>,
     overlay_cameras: Query<Entity, (With<Camera>, With<RenderLayers>, Without<HiddenFromEditor>)>,
 ) {
-    for entity in roots.iter().chain(meshes.iter()).chain(overlay_cameras.iter()) {
+    for entity in roots
+        .iter()
+        .chain(meshes.iter())
+        .chain(overlay_cameras.iter())
+    {
         commands.entity(entity).insert(HiddenFromEditor);
     }
 }
@@ -569,7 +578,10 @@ mod tests {
 
         app.world_mut().resource_mut::<Selection>().0 = Some(b);
         app.update();
-        assert!(app.world().get::<TransformGizmoFocus>(a).is_none(), "only one focus at a time");
+        assert!(
+            app.world().get::<TransformGizmoFocus>(a).is_none(),
+            "only one focus at a time"
+        );
         assert!(app.world().get::<TransformGizmoFocus>(b).is_some());
 
         app.world_mut().resource_mut::<Selection>().0 = None;
@@ -593,7 +605,11 @@ mod tests {
     fn the_plugin_initialises_what_the_renderer_needs() {
         let mut app = App::new();
         app.add_plugins(crate::viewport::EditorViewportPlugin);
-        assert!(app.world().get_resource::<TransformGizmoSettings>().is_some());
+        assert!(
+            app.world()
+                .get_resource::<TransformGizmoSettings>()
+                .is_some()
+        );
         assert!(app.world().get_resource::<TransformGizmoState>().is_some());
         assert!(
             !app.is_plugin_added::<bevy::gizmos::transform_gizmo::TransformGizmoPlugin>(),
@@ -634,14 +650,20 @@ mod tests {
         let overlay = app
             .world_mut()
             .spawn((
-                Camera { order: 1, ..Default::default() },
+                Camera {
+                    order: 1,
+                    ..Default::default()
+                },
                 Transform::default(),
                 RenderLayers::layer(GIZMO_RENDER_LAYER),
             ))
             .id();
         // A scene camera, carrying no `RenderLayers`, must be left alone —
         // the same discriminator `tag_scene_cameras` relies on.
-        let scene = app.world_mut().spawn((Camera::default(), Transform::default())).id();
+        let scene = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default()))
+            .id();
 
         app.update();
 
@@ -655,10 +677,19 @@ mod tests {
         app.add_systems(Update, disable_gizmo_camera_clear);
         let overlay = app
             .world_mut()
-            .spawn((Camera { order: 1, ..Default::default() }, RenderLayers::layer(GIZMO_RENDER_LAYER)))
+            .spawn((
+                Camera {
+                    order: 1,
+                    ..Default::default()
+                },
+                RenderLayers::layer(GIZMO_RENDER_LAYER),
+            ))
             .id();
         // A camera on a different layer must be left alone.
-        let scene = app.world_mut().spawn((Camera::default(), RenderLayers::layer(0))).id();
+        let scene = app
+            .world_mut()
+            .spawn((Camera::default(), RenderLayers::layer(0)))
+            .id();
 
         app.update();
 
@@ -743,7 +774,10 @@ mod tests {
         app.world()
             .resource::<HoverChannel>()
             .0
-            .send(ViewportInput::Move { pos, modifiers: sway_graph::ViewportModifiers::default() })
+            .send(ViewportInput::Move {
+                pos,
+                modifiers: sway_graph::ViewportModifiers::default(),
+            })
             .unwrap();
         app.update();
     }
@@ -760,10 +794,14 @@ mod tests {
             (ViewportKey::Scale, TransformGizmoMode::Scale),
             (ViewportKey::Translate, TransformGizmoMode::Translate),
         ] {
-            app.world_mut().resource_mut::<crate::viewport::ViewportEvents>().0 =
-                vec![ViewportInput::Key { key }];
+            app.world_mut()
+                .resource_mut::<crate::viewport::ViewportEvents>()
+                .0 = vec![ViewportInput::Key { key }];
             app.update();
-            assert_eq!(app.world().resource::<TransformGizmoSettings>().mode, expected);
+            assert_eq!(
+                app.world().resource::<TransformGizmoSettings>().mode,
+                expected
+            );
         }
     }
 
@@ -783,7 +821,10 @@ mod tests {
     fn hovering_empty_space_reports_nothing() {
         let (mut app, _focus) = app_with_a_focused_gizmo();
         hover(&mut app, Vec2::new(0.05, 0.95));
-        assert_eq!(app.world().resource::<TransformGizmoState>().hovered_axis, None);
+        assert_eq!(
+            app.world().resource::<TransformGizmoState>().hovered_axis,
+            None
+        );
     }
 
     #[test]
@@ -792,7 +833,9 @@ mod tests {
         // too, or the axis would change under the cursor mid-drag.
         let (mut app, _focus) = app_with_a_focused_gizmo();
         app.world_mut().resource_mut::<TransformGizmoState>().active = true;
-        app.world_mut().resource_mut::<TransformGizmoState>().hovered_axis = Some(TransformGizmoAxis::Y);
+        app.world_mut()
+            .resource_mut::<TransformGizmoState>()
+            .hovered_axis = Some(TransformGizmoAxis::Y);
         hover(&mut app, Vec2::new(0.62, 0.5));
         assert_eq!(
             app.world().resource::<TransformGizmoState>().hovered_axis,
@@ -826,7 +869,13 @@ mod tests {
     /// drag" branch does not read the position an `Up` carries — Bevy's own
     /// version does not either — so `Vec2::ZERO` is not load-bearing here.
     fn release(app: &mut App) {
-        feed(app, vec![ViewportInput::Up { button: ViewportButton::Primary, pos: Vec2::ZERO }]);
+        feed(
+            app,
+            vec![ViewportInput::Up {
+                button: ViewportButton::Primary,
+                pos: Vec2::ZERO,
+            }],
+        );
     }
 
     /// Hovers `pos` (setting `TransformGizmoState::hovered_axis`, exactly as
@@ -842,11 +891,14 @@ mod tests {
             Some(axis),
             "test setup: cursor at {pos:?} is not over the {axis:?} handle",
         );
-        feed(app, vec![ViewportInput::Down {
-            button: ViewportButton::Primary,
-            pos,
-            modifiers: sway_graph::ViewportModifiers::default(),
-        }]);
+        feed(
+            app,
+            vec![ViewportInput::Down {
+                button: ViewportButton::Primary,
+                pos,
+                modifiers: sway_graph::ViewportModifiers::default(),
+            }],
+        );
     }
 
     /// The screen position of the focused entity's handle for `axis`, in
@@ -937,7 +989,9 @@ mod tests {
                 gizmo_pos + perp * (rotate_ring_radius * scale) + nudge
             }
         };
-        let screen = camera.world_to_viewport(cam_tf, world_point).expect("point in front of the camera");
+        let screen = camera
+            .world_to_viewport(cam_tf, world_point)
+            .expect("point in front of the camera");
         screen / camera.logical_viewport_size().expect("a sized viewport")
     }
 
@@ -961,9 +1015,21 @@ mod tests {
         drag_to(&mut app, start + Vec2::new(0.10, 0.0));
 
         let tf = app.world().get::<Transform>(cube).unwrap();
-        assert!(tf.translation.x.abs() > 0.01, "x did not move: {:?}", tf.translation);
-        assert!(tf.translation.y.abs() < 1e-4, "y moved: {:?}", tf.translation);
-        assert!(tf.translation.z.abs() < 1e-4, "z moved: {:?}", tf.translation);
+        assert!(
+            tf.translation.x.abs() > 0.01,
+            "x did not move: {:?}",
+            tf.translation
+        );
+        assert!(
+            tf.translation.y.abs() < 1e-4,
+            "y moved: {:?}",
+            tf.translation
+        );
+        assert!(
+            tf.translation.z.abs() < 1e-4,
+            "z moved: {:?}",
+            tf.translation
+        );
     }
 
     #[test]
@@ -1004,7 +1070,10 @@ mod tests {
         let (mut app, _cube) = app_with_a_focused_gizmo();
         let start = cursor_over_axis(&mut app, TransformGizmoAxis::X);
         press_on_axis(&mut app, TransformGizmoAxis::X, start);
-        assert!(app.world().resource::<TransformGizmoState>().active, "test setup: drag did not start");
+        assert!(
+            app.world().resource::<TransformGizmoState>().active,
+            "test setup: drag did not start"
+        );
 
         // Remove the marker from every camera, simulating the camera
         // vanishing (or `mark_gizmo_camera` finding nothing to mark)
@@ -1015,7 +1084,9 @@ mod tests {
             .iter(app.world())
             .collect();
         for entity in marked {
-            app.world_mut().entity_mut(entity).remove::<TransformGizmoCamera>();
+            app.world_mut()
+                .entity_mut(entity)
+                .remove::<TransformGizmoCamera>();
         }
 
         feed(&mut app, vec![ViewportInput::Cancel]);
@@ -1029,7 +1100,9 @@ mod tests {
     #[test]
     fn rotate_mode_turns_the_object_without_moving_it() {
         let (mut app, cube) = app_with_a_focused_gizmo();
-        app.world_mut().resource_mut::<TransformGizmoSettings>().mode = TransformGizmoMode::Rotate;
+        app.world_mut()
+            .resource_mut::<TransformGizmoSettings>()
+            .mode = TransformGizmoMode::Rotate;
         let before = *app.world().get::<Transform>(cube).unwrap();
         let ring_pos = ring_point_for_y(&mut app);
         press_on_axis(&mut app, TransformGizmoAxis::Y, ring_pos);
@@ -1050,7 +1123,9 @@ mod tests {
         // `gizmo_pos + dir * (axis_length * scale)`" formula -- so no
         // extension was needed there.
         let (mut app, cube) = app_with_a_focused_gizmo();
-        app.world_mut().resource_mut::<TransformGizmoSettings>().mode = TransformGizmoMode::Scale;
+        app.world_mut()
+            .resource_mut::<TransformGizmoSettings>()
+            .mode = TransformGizmoMode::Scale;
         let before = *app.world().get::<Transform>(cube).unwrap();
         let start = cursor_over_axis(&mut app, TransformGizmoAxis::X);
         press_on_axis(&mut app, TransformGizmoAxis::X, start);
@@ -1060,11 +1135,30 @@ mod tests {
         drag_to(&mut app, start + Vec2::new(0.10, 0.0));
 
         let after = app.world().get::<Transform>(cube).unwrap();
-        assert!(after.scale.x > before.scale.x + 1e-3, "x scale did not grow: {:?}", after.scale);
-        assert!((after.scale.y - before.scale.y).abs() < 1e-4, "y scale changed: {:?}", after.scale);
-        assert!((after.scale.z - before.scale.z).abs() < 1e-4, "z scale changed: {:?}", after.scale);
-        assert!(after.scale.x >= MIN_SCALE, "scale must respect the MIN_SCALE floor: {:?}", after.scale);
-        assert_eq!(after.translation, before.translation, "scale must not move the object");
+        assert!(
+            after.scale.x > before.scale.x + 1e-3,
+            "x scale did not grow: {:?}",
+            after.scale
+        );
+        assert!(
+            (after.scale.y - before.scale.y).abs() < 1e-4,
+            "y scale changed: {:?}",
+            after.scale
+        );
+        assert!(
+            (after.scale.z - before.scale.z).abs() < 1e-4,
+            "z scale changed: {:?}",
+            after.scale
+        );
+        assert!(
+            after.scale.x >= MIN_SCALE,
+            "scale must respect the MIN_SCALE floor: {:?}",
+            after.scale
+        );
+        assert_eq!(
+            after.translation, before.translation,
+            "scale must not move the object"
+        );
     }
 
     #[test]
@@ -1095,7 +1189,15 @@ mod tests {
         press_on_axis(&mut app, TransformGizmoAxis::X, start);
         drag_to(&mut app, start + Vec2::new(0.10, 0.0));
 
-        let world_x = app.world().get::<GlobalTransform>(cube).unwrap().translation().x;
-        assert!(world_x > 5.0, "the child must move in world space: {world_x}");
+        let world_x = app
+            .world()
+            .get::<GlobalTransform>(cube)
+            .unwrap()
+            .translation()
+            .x;
+        assert!(
+            world_x > 5.0,
+            "the child must move in world space: {world_x}"
+        );
     }
 }
