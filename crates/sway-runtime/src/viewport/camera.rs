@@ -3,6 +3,7 @@
 //! Navigation is a pure function of four numbers, which is what makes it
 //! testable with no window, no app and no render device.
 
+use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use sway_graph::{ViewportButton, ViewportInput};
 
@@ -95,7 +96,7 @@ enum NavigationMode {
 /// Spawns the one editor camera. `Startup`, editor builds only.
 pub fn spawn_editor_camera(mut commands: Commands) {
     let cam = EditorCamera::default();
-    commands.spawn((cam, orbit_transform(&cam)));
+    commands.spawn((cam, orbit_transform(&cam), ViewportCameraRole::Editor));
 }
 
 /// Turns this frame's viewport events into camera motion.
@@ -152,6 +153,90 @@ pub fn navigate_editor_camera(
         if *transform != next {
             *transform = next;
         }
+    }
+}
+
+/// Which camera the viewport shows.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ViewportCamera {
+    #[default]
+    Editor,
+    Scene,
+}
+
+/// Tags a camera as one of the two the toggle switches between.
+///
+/// A marker rather than a query over `EditorCamera` and `sway_nodes::SceneCamera`
+/// because `sway-runtime` does not depend on `sway-nodes` — `sway-app` composes
+/// the two. It is also what keeps the gizmo renderer's own overlay camera out
+/// of this system's reach.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewportCameraRole {
+    Editor,
+    Scene,
+}
+
+/// Sets exactly one camera's `Camera::is_active` per frame: the one whose
+/// `ViewportCameraRole` matches the current `ViewportCamera`.
+///
+/// **Why this is needed (read `retarget_cameras` in `headless.rs` first):**
+/// `retarget_cameras` points *every* camera at the one viewport texture each
+/// `Update` and never touches `is_active`. With two cameras targeting the
+/// same texture, whichever renders last simply overwrites the other's
+/// pixels — both would appear to "work" until a second camera existed.
+/// `Camera::is_active` is the actual off switch: `bevy_render::camera`'s
+/// `extract_cameras` checks `if !camera.is_active` first thing and, when
+/// true, removes `ExtractedCamera`/`ExtractedView`/etc. from the render
+/// entity and `continue`s past the rest of extraction for that camera —
+/// no `ExtractedView` means the camera driver node never runs a render
+/// graph pass for it, so an inactive camera neither draws nor clears.
+pub fn apply_active_camera(
+    active: Res<ViewportCamera>,
+    mut cameras: Query<(&ViewportCameraRole, &mut Camera)>,
+) {
+    for (role, mut camera) in &mut cameras {
+        let should_be_active = matches!(
+            (*active, role),
+            (ViewportCamera::Editor, ViewportCameraRole::Editor)
+                | (ViewportCamera::Scene, ViewportCameraRole::Scene)
+        );
+        // Never write an equal value (architecture §7): `Camera` is extracted
+        // every frame and a needless write dirties it.
+        if camera.is_active != should_be_active {
+            camera.is_active = should_be_active;
+        }
+    }
+}
+
+/// Attaches `ViewportCameraRole::Scene` to any camera the document authored
+/// (i.e. any camera `sway-app` didn't already tag itself, such as
+/// `sway_nodes::SceneCamera`). Runs every `Update` because a camera can
+/// arrive with a reload.
+///
+/// Excludes the gizmo renderer's own overlay camera, which must stay active
+/// unconditionally. `GizmoOverlayCamera` (the marker
+/// `bevy_gizmos_render::transform_gizmo_render` tags it with) is private to
+/// that crate, so this filters on what is public instead: reading that
+/// crate's `spawn_gizmo_meshes` (registered in `Startup`), the overlay camera
+/// is spawned with `RenderLayers::layer(15)` (`GIZMO_RENDER_LAYER`) and
+/// nothing else in this codebase ever attaches a `RenderLayers` to a camera,
+/// so "carries no `RenderLayers`" is a safe, public stand-in for "is not the
+/// gizmo overlay camera".
+#[allow(clippy::type_complexity)] // an ECS query filter tuple, not a type to simplify
+pub fn tag_scene_cameras(
+    mut commands: Commands,
+    cameras: Query<
+        Entity,
+        (
+            With<Camera>,
+            Without<ViewportCameraRole>,
+            Without<EditorCamera>,
+            Without<RenderLayers>,
+        ),
+    >,
+) {
+    for entity in &cameras {
+        commands.entity(entity).insert(ViewportCameraRole::Scene);
     }
 }
 
@@ -237,6 +322,95 @@ mod tests {
         }
         assert!(cam.distance >= MIN_DISTANCE, "distance {}", cam.distance);
         assert!(cam.distance.is_finite());
+    }
+}
+
+#[cfg(test)]
+mod active_camera_tests {
+    use super::*;
+
+    /// Stands in for `SceneCamera`, which lives in `sway-nodes` — a crate
+    /// `sway-runtime` deliberately does not depend on. See `apply_active_camera`.
+    ///
+    /// Never constructed: it documents the shape being stood in for, not
+    /// behaviour under test, so it is `#[allow(dead_code)]` rather than
+    /// dropped, to keep `cargo test` output warning-free.
+    #[derive(Component)]
+    #[allow(dead_code)]
+    struct TestSceneCamera;
+
+    #[test]
+    fn exactly_one_of_the_two_cameras_is_active_in_either_position() {
+        let mut app = App::new();
+        app.init_resource::<ViewportCamera>()
+            .add_systems(Update, apply_active_camera);
+        let editor = app
+            .world_mut()
+            .spawn((EditorCamera::default(), Camera::default(), ViewportCameraRole::Editor))
+            .id();
+        let scene = app
+            .world_mut()
+            .spawn((Camera::default(), ViewportCameraRole::Scene))
+            .id();
+
+        app.update();
+        assert!(app.world().get::<Camera>(editor).unwrap().is_active);
+        assert!(!app.world().get::<Camera>(scene).unwrap().is_active);
+
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
+        app.update();
+        assert!(!app.world().get::<Camera>(editor).unwrap().is_active);
+        assert!(app.world().get::<Camera>(scene).unwrap().is_active);
+    }
+
+    #[test]
+    fn a_camera_with_no_role_is_left_alone() {
+        // The gizmo renderer spawns its own overlay camera (spec M7-8). If
+        // this system deactivated every camera it did not recognise, the
+        // gizmo would vanish from the screen.
+        let mut app = App::new();
+        app.init_resource::<ViewportCamera>()
+            .add_systems(Update, apply_active_camera);
+        let overlay = app.world_mut().spawn(Camera { order: 1, ..Default::default() }).id();
+
+        app.update();
+        assert!(
+            app.world().get::<Camera>(overlay).unwrap().is_active,
+            "an unrelated camera must keep rendering",
+        );
+    }
+}
+
+#[cfg(test)]
+mod tag_scene_cameras_tests {
+    use super::*;
+    use bevy::camera::visibility::RenderLayers;
+
+    #[test]
+    fn an_untagged_camera_is_tagged_as_scene() {
+        let mut app = App::new();
+        app.add_systems(Update, tag_scene_cameras);
+        let camera = app.world_mut().spawn(Camera::default()).id();
+
+        app.update();
+
+        assert_eq!(app.world().get::<ViewportCameraRole>(camera), Some(&ViewportCameraRole::Scene));
+    }
+
+    #[test]
+    fn a_camera_carrying_the_gizmo_render_layer_is_not_tagged() {
+        // The gizmo renderer's own overlay camera (spec M7-8, spawned by
+        // `bevy_gizmos_render::transform_gizmo_render::spawn_gizmo_meshes` in
+        // `Startup`) carries `RenderLayers::layer(15)`
+        // (`GIZMO_RENDER_LAYER`). See `tag_scene_cameras`'s doc comment for
+        // why that is a safe, public discriminator for "not a scene camera".
+        let mut app = App::new();
+        app.add_systems(Update, tag_scene_cameras);
+        let overlay = app.world_mut().spawn((Camera::default(), RenderLayers::layer(15))).id();
+
+        app.update();
+
+        assert_eq!(app.world().get::<ViewportCameraRole>(overlay), None);
     }
 }
 
