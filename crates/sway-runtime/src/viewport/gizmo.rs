@@ -108,29 +108,45 @@ pub fn mark_gizmo_camera(
     }
 }
 
-/// Tags every gizmo mesh entity as [`HiddenFromEditor`] as it appears.
-///
-/// The renderer spawns `TransformGizmoRoot` and its `TransformGizmoMeshMarker`
-/// children once, in `Startup` — but this runs in `Update` rather than
-/// ordered after that private system, because ordering against a system this
-/// crate cannot name is not possible; `With<T>, Without<HiddenFromEditor>`
-/// makes running every frame both correct and (after the first frame) free.
-pub fn hide_gizmo_meshes_from_editor(
-    mut commands: Commands,
-    roots: Query<Entity, (With<TransformGizmoRoot>, Without<HiddenFromEditor>)>,
-    meshes: Query<Entity, (With<TransformGizmoMeshMarker>, Without<HiddenFromEditor>)>,
-) {
-    for entity in roots.iter().chain(meshes.iter()) {
-        commands.entity(entity).insert(HiddenFromEditor);
-    }
-}
-
 /// The gizmo overlay camera's own render layer (`GIZMO_RENDER_LAYER` in
 /// `bevy_gizmos_render::transform_gizmo_render`, private to that crate).
 /// Nothing else in this codebase attaches a `RenderLayers` to a camera — see
 /// `camera::tag_scene_cameras` — so this literal is the same public
 /// stand-in used there.
 const GIZMO_RENDER_LAYER: usize = 15;
+
+/// Tags every gizmo mesh entity, and the gizmo overlay camera itself, as
+/// [`HiddenFromEditor`] as they appear.
+///
+/// The renderer spawns `TransformGizmoRoot` and its `TransformGizmoMeshMarker`
+/// children, and its own overlay camera (carrying `RenderLayers::layer(
+/// GIZMO_RENDER_LAYER)` — the same discriminator `camera::tag_scene_cameras`
+/// uses to *exclude* it from scene-camera tagging), once, in `Startup` — but
+/// this runs in `Update` rather than ordered after that private system,
+/// because ordering against a system this crate cannot name is not possible;
+/// `With<T>, Without<HiddenFromEditor>` makes running every frame both
+/// correct and (after the first frame) free.
+///
+/// The overlay camera needs this too: like `spawn_editor_camera`'s camera, it
+/// carries a `Transform` and no `Transform`-carrying parent, so `capture_tree`
+/// (`sway-editor`, `snapshot.rs`) would otherwise list it as a selectable
+/// scene row, and a gizmo drag on it would corrupt a transform the renderer
+/// silently overwrites every frame. Matched by `With<Camera>, With<RenderLayers>`
+/// — the same "carries a `RenderLayers`" discriminator `tag_scene_cameras`
+/// already uses, rather than by the exact `GIZMO_RENDER_LAYER` value, since
+/// (per that discriminator's own doc comment) nothing else in this codebase
+/// ever attaches a `RenderLayers` to a camera.
+#[allow(clippy::type_complexity)] // an ECS query filter tuple, not a type to simplify
+pub fn hide_gizmo_meshes_from_editor(
+    mut commands: Commands,
+    roots: Query<Entity, (With<TransformGizmoRoot>, Without<HiddenFromEditor>)>,
+    meshes: Query<Entity, (With<TransformGizmoMeshMarker>, Without<HiddenFromEditor>)>,
+    overlay_cameras: Query<Entity, (With<Camera>, With<RenderLayers>, Without<HiddenFromEditor>)>,
+) {
+    for entity in roots.iter().chain(meshes.iter()).chain(overlay_cameras.iter()) {
+        commands.entity(entity).insert(HiddenFromEditor);
+    }
+}
 
 /// Stops the gizmo overlay camera from blanking the scene beneath it.
 ///
@@ -605,6 +621,32 @@ mod tests {
         assert!(app.world().get::<HiddenFromEditor>(root).is_some());
         assert!(app.world().get::<HiddenFromEditor>(mesh).is_some());
         assert!(app.world().get::<HiddenFromEditor>(other).is_none());
+    }
+
+    #[test]
+    fn the_gizmo_overlay_camera_is_hidden_from_the_editor_tree() {
+        // Same hazard `spawn_editor_camera` has (see its doc comment in
+        // `camera.rs`): the overlay camera carries `Transform` and no
+        // `Transform`-carrying parent, so without this it would satisfy
+        // `capture_tree`'s walk and show up as a selectable scene row.
+        let mut app = App::new();
+        app.add_systems(Update, hide_gizmo_meshes_from_editor);
+        let overlay = app
+            .world_mut()
+            .spawn((
+                Camera { order: 1, ..Default::default() },
+                Transform::default(),
+                RenderLayers::layer(GIZMO_RENDER_LAYER),
+            ))
+            .id();
+        // A scene camera, carrying no `RenderLayers`, must be left alone —
+        // the same discriminator `tag_scene_cameras` relies on.
+        let scene = app.world_mut().spawn((Camera::default(), Transform::default())).id();
+
+        app.update();
+
+        assert!(app.world().get::<HiddenFromEditor>(overlay).is_some());
+        assert!(app.world().get::<HiddenFromEditor>(scene).is_none());
     }
 
     #[test]

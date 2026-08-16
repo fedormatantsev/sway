@@ -5,7 +5,7 @@
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
-use sway_graph::{ViewportButton, ViewportInput};
+use sway_graph::{HiddenFromEditor, ViewportButton, ViewportInput};
 
 /// How far a full-viewport drag turns the camera. Deltas arrive normalized
 /// to the viewport rect (spec M7-1), so this is radians per viewport width —
@@ -94,9 +94,15 @@ enum NavigationMode {
 }
 
 /// Spawns the one editor camera. `Startup`, editor builds only.
+///
+/// Carries `HiddenFromEditor`: it has a `Transform` and no `Transform`-carrying
+/// parent, so without this it would satisfy `capture_tree`'s (`sway-editor`,
+/// `snapshot.rs`) walk and show up as a selectable scene-tree row — selecting
+/// it and dragging a gizmo handle would then corrupt the editor camera's own
+/// transform, which the next Alt-drag or camera-toggle silently overwrites.
 pub fn spawn_editor_camera(mut commands: Commands) {
     let cam = EditorCamera::default();
-    commands.spawn((cam, orbit_transform(&cam), ViewportCameraRole::Editor));
+    commands.spawn((cam, orbit_transform(&cam), ViewportCameraRole::Editor, HiddenFromEditor));
 }
 
 /// Turns this frame's viewport events into camera motion.
@@ -312,6 +318,20 @@ mod tests {
         pan(&mut near, Vec2::new(0.1, 0.0));
         pan(&mut far, Vec2::new(0.1, 0.0));
         assert!(far.pivot.length() > near.pivot.length() * 10.0);
+    }
+
+    #[test]
+    fn the_editor_camera_is_hidden_from_the_editor_tree() {
+        // Without this, `capture_tree` (`sway-editor`, `snapshot.rs`) would
+        // show the editor camera as a selectable scene row, and a gizmo drag
+        // on it would corrupt a transform the renderer silently overwrites.
+        let mut app = App::new();
+        app.add_systems(Startup, spawn_editor_camera);
+        app.update();
+
+        let mut query = app.world_mut().query_filtered::<Entity, With<EditorCamera>>();
+        let camera = query.single(app.world()).expect("spawn_editor_camera should spawn one");
+        assert!(app.world().get::<HiddenFromEditor>(camera).is_some());
     }
 
     #[test]
