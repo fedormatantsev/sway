@@ -1,0 +1,75 @@
+schema: spec-driven
+
+context: |
+  Sway is a Rust workspace: an audiovisual instrument (MIDI in, HDMI out).
+  The editor authors scenes before a show; on stage the graph is already ordered
+  and MIDI is the only input.
+
+  Tech stack: Rust 2024, Bevy 0.19 (non-render ECS/time/transform), wgpu, winit,
+  masonry/Vello. Rendering is headless in sway-runtime; sway-app owns the window
+  and presents editor or fullscreen HDMI.
+
+  Crates → likely spec domains (create the domain on first use, do not pre-create):
+    sway-app        → app
+    sway-editor     → editor
+    sway-graph      → graph
+    sway-runtime    → runtime
+    sway-midi + sway-midi-core → midi
+    sway-document   → document
+    sway-nodes      → nodes
+    sway-gpu        → gpu
+    sway-geo        → geo
+
+  Cross-cutting domains (create on first use):
+    architecture — layers, crate ownership, operating model
+    concepts     — wires, behaviours, events, tick, cook rules
+    direction    — MVP, milestones, out of scope
+
+  Until those domains exist, current-state architecture is docs/architecture.md
+  and the roadmap is docs/superpowers/specs/2026-07-25-sway-design.md.
+  Historical Superpowers plans/specs/reports stay as history; new work uses
+  OpenSpec changes.
+
+  Testing: cargo tests per crate; graph/MIDI golden traces at a fixed tick delta.
+  No pixel-diff tests.
+
+rules:
+  proposal:
+    - Name the spec domain(s) this change will touch, using existing folders
+      under openspec/specs/ when they already cover the subject.
+    - If no existing domain fits, name the new kebab-case domain and why.
+  specs:
+    - Each delta lives at openspec/changes/<change>/specs/<domain>/spec.md and
+      archives into openspec/specs/<domain>/spec.md.
+    - Select an existing domain under openspec/specs/ when one already describes
+      that subject. Reuse it; do not invent a parallel name (not sway-graph if
+      graph exists, not ui if editor exists).
+    - If nothing fits, create a new domain folder. Prefer crate-aligned names
+      (app, editor, graph, runtime, midi, document, nodes, gpu, geo) or the
+      cross-cutting names architecture, concepts, direction.
+    - architecture, concepts, and direction are for high-level architecture,
+      design concepts, and development direction. Do not dump subject behavior
+      into them, and do not mix those concerns into a subject spec.
+    - A change may touch multiple domains; split deltas accordingly.
+    - Do not create empty domain stubs or spec.md files ahead of a real
+      requirement. Domains appear when a change first needs them.
+    - Use ### Requirement: and #### Scenario: with Given/When/Then.
+    - Specs describe behavior, not the implementation plan (that is design.md).
+  design:
+    - Follow existing crate boundaries and the wire/behaviour/event split in
+      docs/architecture.md unless this change explicitly revises them.
+  tasks:
+    - Group tasks by crate. Prefer focused cargo test commands over a full
+      workspace run when the change is local.
+
+operations:
+  apply:
+    guidance:
+      - Run the focused crate tests that cover the change before a broader suite.
+      - Do not invent new spec domains during apply; if the design needs a new
+        domain, update the change artifacts first.
+  archive:
+    guidance:
+      - Merge deltas into the matching openspec/specs/<domain>/spec.md paths.
+      - Create a main spec file only for domains this change actually specified.
+      - Keep the completion summary concise.
