@@ -6,6 +6,7 @@
 //! would otherwise leave the suite green and only surface when a human ran the
 //! app.
 //!
+//!   midiTime ──time──▶ lfoA, lfoB
 //!   lfoA ──amplitude──▶ lfoB
 //!   lfoA ──vec3.y────▶ vec3A ──translation──▶ cubeA ─┐
 //!   lfoB ──vec3.y────▶ vec3B ──translation──▶ cubeB ─┤─parent─▶ group
@@ -15,14 +16,19 @@ use bevy::ecs::hierarchy::ChildOf;
 use bevy::prelude::*;
 use sway_document::{DocId, to_document};
 use sway_nodes::{
-    AmplitudeFrom, MaterialFrom, MaterialOut, Oscillator, TranslationFrom, Vec3YFrom,
+    AmplitudeFrom, MaterialFrom, MaterialOut, Oscillator, TimeFrom, TranslationFrom, Vec3YFrom,
 };
 
 const DEMO_DOCUMENT: &str = include_str!("../assets/demo.sway.ron");
 
 fn demo_app() -> App {
     let mut app = App::new();
-    app.add_plugins((sway_graph::WiresPlugin, sway_nodes::WireNodesPlugin));
+    let (_tx, rx) = crossbeam_channel::unbounded();
+    app.add_plugins((
+        sway_graph::WiresPlugin,
+        sway_nodes::WireNodesPlugin,
+        sway_midi::MidiPlugin { rx },
+    ));
     app
 }
 
@@ -66,13 +72,15 @@ fn demo_document_loads_and_reconciles_cleanly() {
             "lfoA".to_string(),
             "lfoB".to_string(),
             "mat".to_string(),
+            "midiTime".to_string(),
             "sun".to_string(),
             "vec3A".to_string(),
             "vec3B".to_string(),
         ],
-        "exactly the demo's 10 entities should carry a DocId"
+        "exactly the demo's 11 entities should carry a DocId"
     );
 
+    let midi_time = entity_named(world, "midiTime");
     let lfo_a = entity_named(world, "lfoA");
     let lfo_b = entity_named(world, "lfoB");
     let vec3_a = entity_named(world, "vec3A");
@@ -84,6 +92,9 @@ fn demo_document_loads_and_reconciles_cleanly() {
     let camera = entity_named(world, "camera");
     let sun = entity_named(world, "sun");
 
+    assert!(world.get::<sway_midi::MidiTime>(midi_time).is_some());
+    assert_eq!(world.get::<TimeFrom>(lfo_a).map(|w| w.0), Some(midi_time));
+    assert_eq!(world.get::<TimeFrom>(lfo_b).map(|w| w.0), Some(midi_time));
     assert_eq!(world.get::<AmplitudeFrom>(lfo_b).map(|w| w.0), Some(lfo_a));
     assert_eq!(world.get::<Vec3YFrom>(vec3_a).map(|w| w.0), Some(lfo_a));
     assert_eq!(world.get::<Vec3YFrom>(vec3_b).map(|w| w.0), Some(lfo_b));

@@ -1,6 +1,7 @@
 // The wire-model demo, as a document. Nothing about this scene is set up in
 // Rust: the camera, the light, the mesh and the material are all nodes.
 //
+//   midiTime ──time──▶ lfoA, lfoB
 //   lfoA ──amplitude──▶ lfoB
 //   lfoA ──vec3.y────▶ vec3A ──translation──▶ cubeA ─┐
 //   lfoB ──vec3.y────▶ vec3B ──translation──▶ cubeB ─┤─parent─▶ group
@@ -48,11 +49,19 @@ Project(
             },
         ),
         Entity(
+            id: "midiTime",
+            components: {
+                "MidiTime": (),
+                "EditorPos": ((-700.0, 100.0)),
+            },
+        ),
+        Entity(
             id: "lfoA",
             components: {
                 "Oscillator": (time: 0.0, period: 8.0, shape: Sine, phase: 0.0, amplitude: 0.5),
                 "EditorPos": ((-460.0, 40.0)),
             },
+            wires: { "time": "midiTime" },
         ),
         Entity(
             id: "lfoB",
@@ -60,7 +69,7 @@ Project(
                 "Oscillator": (time: 0.0, period: 2.0, shape: Sine, phase: 0.0, amplitude: 0.0),
                 "EditorPos": ((-460.0, 160.0)),
             },
-            wires: { "amplitude": "lfoA" },
+            wires: { "amplitude": "lfoA", "time": "midiTime" },
         ),
         Entity(
             id: "vec3A",

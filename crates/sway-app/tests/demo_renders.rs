@@ -99,7 +99,12 @@ fn the_demo_document_renders_its_cubes() {
     let size = UVec2::new(VIEWPORT, VIEWPORT);
     let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);
     let mut app = sway_runtime::headless::build_app(&gpu, &viewport, size);
-    app.add_plugins((sway_graph::WiresPlugin, sway_nodes::WireNodesPlugin));
+    let (_tx, rx) = crossbeam_channel::unbounded();
+    app.add_plugins((
+        sway_graph::WiresPlugin,
+        sway_nodes::WireNodesPlugin,
+        sway_midi::MidiPlugin { rx },
+    ));
     app.finish();
     app.cleanup();
 

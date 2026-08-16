@@ -5724,6 +5724,7 @@ dependencies = [
  "crossbeam-channel",
  "sway-graph",
  "sway-midi-core",
+ "sway-nodes",
 ]
 
 [[package]]

@@ -1,4 +1,3 @@
-mod midi_feed;
 mod presenter;
 mod shell;
 
@@ -6,8 +5,6 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::math::UVec2;
 use bevy::prelude::*;
 use bevy::window::Monitor;
-use midi_feed::{MidiClockOffset, MidiRx, feed_midi};
-
 /// Provisional graph tick rate pending the measurements specified in spec §11.
 const TICK_HZ: f64 = 120.0;
 
@@ -211,12 +208,9 @@ fn main() {
             sway_graph::WiresPlugin,
             sway_document::ProjectPlugin,
             sway_nodes::WireNodesPlugin,
-            sway_nodes::MidiPlugin,
+            sway_midi::MidiPlugin { rx },
         ))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
-        .insert_resource(MidiRx(rx))
-        .init_resource::<MidiClockOffset>()
-        .add_systems(PreUpdate, feed_midi)
         .add_systems(Update, (log_monitors, log_fps));
 
         // Camera-collision hazard: the project document now authors its own

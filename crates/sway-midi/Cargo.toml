@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 sway-midi-core.workspace = true
 sway-graph.workspace = true
+sway-nodes.workspace = true
 bevy.workspace = true
 bevy_app.workspace = true
 bevy_ecs.workspace = true
