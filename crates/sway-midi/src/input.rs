@@ -2,20 +2,10 @@
 //! high-priority thread, so the only thing done there is a channel send.
 
 use crate::ffi::*;
+use crate::message::{MidiMessage, TimedMidi};
 use crate::parser::StreamParser;
 use crossbeam_channel::Sender;
 use std::ffi::c_void;
-
-/// A single three-byte MIDI message with the host time CoreMIDI reported.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MidiEvent {
-    pub status: u8,
-    pub data1: u8,
-    pub data2: u8,
-    /// CoreMIDI host time, in mach absolute time units. Convert with
-    /// [`crate::host_time_to_secs`] before feeding the graph's MIDI inbox.
-    pub host_time: u64,
-}
 
 /// Walks to the next packet in a `MIDIPacketList`.
 ///
@@ -49,7 +39,7 @@ pub(crate) extern "C" fn read_proc(
     // only run while those are alive, the pointer is valid here. `list` is
     // owned by CoreMIDI for the duration of the call.
     unsafe {
-        let tx = &*(refcon as *const Sender<MidiEvent>);
+        let tx = &*(refcon as *const Sender<TimedMidi>);
         let n = (*list).num_packets;
         let mut pkt = (&raw const (*list).packet) as *const MIDIPacket;
         for _ in 0..n {
@@ -66,7 +56,10 @@ pub(crate) extern "C" fn read_proc(
                     // grow the internal buffer) and this runs on CoreMIDI's
                     // high-priority real-time thread (see module doc).
                     // Acceptable through M3; revisit if this ever glitches.
-                    let _ = tx.send(MidiEvent { status, data1, data2, host_time });
+                    let _ = tx.send(TimedMidi {
+                        host_time,
+                        message: MidiMessage::from_bytes(status, data1, data2),
+                    });
                 }
             }
             pkt = next_packet(pkt);
@@ -94,7 +87,7 @@ pub struct MidiInput {
     _client: MIDIClientRef,
     _port: MIDIPortRef,
     _dest: MIDIEndpointRef,
-    _tx: Box<Sender<MidiEvent>>,
+    _tx: Box<Sender<TimedMidi>>,
 }
 
 impl Drop for MidiInput {
@@ -118,7 +111,7 @@ impl Drop for MidiInput {
 /// [`VIRTUAL_DESTINATION_NAME`], connects every source whose display name
 /// contains `filter`, and streams events into `tx`. An empty filter connects
 /// every source.
-pub fn open_input(filter: &str, tx: Sender<MidiEvent>) -> Result<MidiInput, OSStatus> {
+pub fn open_input(filter: &str, tx: Sender<TimedMidi>) -> Result<MidiInput, OSStatus> {
     let client_name = CfString::new("sway");
     let port_name = CfString::new("sway-in");
     let dest_name = CfString::new(VIRTUAL_DESTINATION_NAME);
@@ -131,7 +124,7 @@ pub fn open_input(filter: &str, tx: Sender<MidiEvent>) -> Result<MidiInput, OSSt
     }
 
     let tx = Box::new(tx);
-    let refcon = (&*tx) as *const Sender<MidiEvent> as *mut c_void;
+    let refcon = (&*tx) as *const Sender<TimedMidi> as *mut c_void;
     let mut port: MIDIPortRef = 0;
     // SAFETY: `refcon` points into the Box returned inside `MidiInput`, which
     // the caller must keep alive for the lifetime of the port and destination.

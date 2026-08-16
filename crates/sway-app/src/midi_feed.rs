@@ -16,12 +16,42 @@
 use bevy::prelude::*;
 use crossbeam_channel::Receiver;
 use std::collections::VecDeque;
-use sway_midi::MidiEvent;
+use sway_midi::{MidiMessage, TimedMidi};
 use sway_nodes::{MidiInbox, RawMidi};
 
 /// The receiving end of the CoreMIDI channel.
 #[derive(Resource)]
-pub struct MidiRx(pub Receiver<MidiEvent>);
+pub struct MidiRx(pub Receiver<TimedMidi>);
+
+fn raw_midi(message: MidiMessage) -> RawMidi {
+    match message {
+        MidiMessage::NoteOn { channel, note, velocity } => RawMidi {
+            status: 0x90 | channel,
+            data1: note,
+            data2: velocity,
+        },
+        MidiMessage::NoteOff { channel, note, velocity } => RawMidi {
+            status: 0x80 | channel,
+            data1: note,
+            data2: velocity,
+        },
+        MidiMessage::Control { channel, cc, value } => RawMidi {
+            status: 0xB0 | channel,
+            data1: cc,
+            data2: value,
+        },
+        MidiMessage::Clock => RawMidi { status: 0xF8, data1: 0, data2: 0 },
+        MidiMessage::Start => RawMidi { status: 0xFA, data1: 0, data2: 0 },
+        MidiMessage::Continue => RawMidi { status: 0xFB, data1: 0, data2: 0 },
+        MidiMessage::Stop => RawMidi { status: 0xFC, data1: 0, data2: 0 },
+        MidiMessage::SongPosition { sixteenths } => RawMidi {
+            status: 0xF2,
+            data1: (sixteenths & 0x7F) as u8,
+            data2: ((sixteenths >> 7) & 0x7F) as u8,
+        },
+        MidiMessage::Other { status, data1, data2 } => RawMidi { status, data1, data2 },
+    }
+}
 
 /// How many drains the offset estimate spans. At 60 fps this is about four
 /// seconds — long enough to see past a timestep of sampling noise, short
@@ -110,11 +140,7 @@ pub fn feed_midi(
         clock.last_enqueued = t;
         inbox.push(
             t,
-            RawMidi {
-                status: event.status,
-                data1: event.data1,
-                data2: event.data2,
-            },
+            raw_midi(event.message),
         );
     }
 }
@@ -129,18 +155,22 @@ mod tests {
     #[test]
     fn feed_midi_drains_every_event_into_the_inbox() {
         let (tx, rx) = crossbeam_channel::unbounded();
-        tx.send(sway_midi::MidiEvent {
-            status: 0x90,
-            data1: 60,
-            data2: 100,
+        tx.send(sway_midi::TimedMidi {
             host_time: 1,
+            message: sway_midi::MidiMessage::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            },
         })
         .unwrap();
-        tx.send(sway_midi::MidiEvent {
-            status: 0x80,
-            data1: 60,
-            data2: 0,
+        tx.send(sway_midi::TimedMidi {
             host_time: 2,
+            message: sway_midi::MidiMessage::NoteOff {
+                channel: 0,
+                note: 60,
+                velocity: 0,
+            },
         })
         .unwrap();
 
@@ -162,11 +192,13 @@ mod tests {
     #[test]
     fn zero_host_time_maps_to_current_fixed_elapsed() {
         let (tx, rx) = crossbeam_channel::unbounded();
-        tx.send(sway_midi::MidiEvent {
-            status: 0x90,
-            data1: 60,
-            data2: 100,
+        tx.send(sway_midi::TimedMidi {
             host_time: 0,
+            message: sway_midi::MidiMessage::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            },
         })
         .unwrap();
 
@@ -286,11 +318,9 @@ mod tests {
         // Task 1 made clock reachable; nothing between the callback and the
         // inbox may filter it out.
         let (tx, rx) = crossbeam_channel::unbounded();
-        tx.send(sway_midi::MidiEvent {
-            status: sway_midi::CLOCK,
-            data1: 0,
-            data2: 0,
+        tx.send(sway_midi::TimedMidi {
             host_time: 0,
+            message: sway_midi::MidiMessage::Clock,
         })
         .unwrap();
 
@@ -305,5 +335,43 @@ mod tests {
         let inbox = app.world().resource::<MidiInbox>();
         assert_eq!(inbox.events.len(), 1);
         assert_eq!(inbox.events[0].1.status, sway_midi::CLOCK);
+    }
+
+    #[test]
+    fn typed_messages_map_back_to_raw_midi() {
+        let cases = [
+            (sway_midi::MidiMessage::Clock, RawMidi { status: 0xF8, data1: 0, data2: 0 }),
+            (sway_midi::MidiMessage::Start, RawMidi { status: 0xFA, data1: 0, data2: 0 }),
+            (sway_midi::MidiMessage::Continue, RawMidi { status: 0xFB, data1: 0, data2: 0 }),
+            (sway_midi::MidiMessage::Stop, RawMidi { status: 0xFC, data1: 0, data2: 0 }),
+            (
+                sway_midi::MidiMessage::SongPosition { sixteenths: 0x108 },
+                RawMidi { status: 0xF2, data1: 8, data2: 2 },
+            ),
+            (
+                sway_midi::MidiMessage::NoteOn { channel: 3, note: 64, velocity: 100 },
+                RawMidi { status: 0x93, data1: 64, data2: 100 },
+            ),
+            (
+                sway_midi::MidiMessage::NoteOff { channel: 4, note: 65, velocity: 12 },
+                RawMidi { status: 0x84, data1: 65, data2: 12 },
+            ),
+            (
+                sway_midi::MidiMessage::Control { channel: 5, cc: 7, value: 99 },
+                RawMidi { status: 0xB5, data1: 7, data2: 99 },
+            ),
+            (
+                sway_midi::MidiMessage::Other { status: 0xE1, data1: 2, data2: 3 },
+                RawMidi { status: 0xE1, data1: 2, data2: 3 },
+            ),
+        ];
+
+        for (message, expected) in cases {
+            let actual = raw_midi(message);
+            assert_eq!(
+                (actual.status, actual.data1, actual.data2),
+                (expected.status, expected.data1, expected.data2)
+            );
+        }
     }
 }

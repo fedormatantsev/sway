@@ -4,11 +4,14 @@ pub mod ffi;
 
 pub mod input;
 
+pub mod message;
+
 pub mod parser;
 
 pub mod transport;
 
-pub use input::{MidiEvent, MidiInput, VIRTUAL_DESTINATION_NAME, open_input};
+pub use input::{MidiInput, VIRTUAL_DESTINATION_NAME, open_input};
+pub use message::{MidiMessage, TimedMidi};
 pub use parser::{CLOCK, CONTINUE, SONG_POSITION, START, STOP, StreamParser};
 pub use transport::{ClockEstimator, PULSES_PER_QUARTER};
 
@@ -98,7 +101,7 @@ mod tests {
     /// the only part of the FFI that silently produces garbage when wrong.
     #[test]
     fn read_proc_parses_multiple_packets() {
-        let (tx, rx) = crossbeam_channel::unbounded::<MidiEvent>();
+        let (tx, rx) = crossbeam_channel::unbounded::<TimedMidi>();
         let tx = Box::new(tx);
 
         // Backed by a `Vec<u32>` rather than `Vec<u8>` so the allocation is
@@ -133,20 +136,22 @@ mod tests {
 
             crate::input::read_proc(
                 list,
-                (&*tx) as *const crossbeam_channel::Sender<MidiEvent> as *mut c_void,
+                (&*tx) as *const crossbeam_channel::Sender<TimedMidi> as *mut c_void,
                 std::ptr::null_mut(),
             );
         }
 
         let a = rx.try_recv().expect("first packet");
         let b = rx.try_recv().expect("second packet");
+        assert_eq!(a.host_time, 111);
         assert_eq!(
-            (a.status, a.data1, a.data2, a.host_time),
-            (0x90, 60, 100, 111)
+            a.message,
+            MidiMessage::NoteOn { channel: 0, note: 60, velocity: 100 }
         );
+        assert_eq!(b.host_time, 222);
         assert_eq!(
-            (b.status, b.data1, b.data2, b.host_time),
-            (0x90, 64, 80, 222)
+            b.message,
+            MidiMessage::NoteOn { channel: 0, note: 64, velocity: 80 }
         );
         assert!(rx.try_recv().is_err(), "exactly two events expected");
     }
@@ -156,7 +161,7 @@ mod tests {
     /// is the shape every MIDI clock pulse arrives in.
     #[test]
     fn read_proc_delivers_a_one_byte_clock_packet() {
-        let (tx, rx) = crossbeam_channel::unbounded::<MidiEvent>();
+        let (tx, rx) = crossbeam_channel::unbounded::<TimedMidi>();
         let tx = Box::new(tx);
         let mut buf_u32 = vec![0u32; 1024];
         let buf = unsafe {
@@ -181,15 +186,18 @@ mod tests {
 
             crate::input::read_proc(
                 list,
-                (&*tx) as *const crossbeam_channel::Sender<MidiEvent> as *mut c_void,
+                (&*tx) as *const crossbeam_channel::Sender<TimedMidi> as *mut c_void,
                 std::ptr::null_mut(),
             );
         }
 
         let clock = rx.try_recv().expect("the clock packet must arrive");
-        assert_eq!((clock.status, clock.host_time), (crate::parser::CLOCK, 10));
+        assert_eq!((clock.message, clock.host_time), (MidiMessage::Clock, 10));
         let note = rx.try_recv().expect("the note packet must arrive");
-        assert_eq!((note.status, note.data1, note.data2), (0x90, 60, 100));
+        assert_eq!(
+            note.message,
+            MidiMessage::NoteOn { channel: 0, note: 60, velocity: 100 }
+        );
         assert!(rx.try_recv().is_err());
     }
 
@@ -200,7 +208,7 @@ mod tests {
     /// ever reaching `read_proc` since nothing is connected.
     #[test]
     fn dropping_an_unmatched_input_does_not_crash() {
-        let (tx, _rx) = crossbeam_channel::unbounded::<MidiEvent>();
+        let (tx, _rx) = crossbeam_channel::unbounded::<TimedMidi>();
         let input = crate::input::open_input("no-such-source-xyz", tx).expect("open_input");
         drop(input);
     }
@@ -209,7 +217,7 @@ mod tests {
     /// CoreMIDI's destination list under [`VIRTUAL_DESTINATION_NAME`].
     #[test]
     fn open_input_publishes_virtual_destination() {
-        let (tx, _rx) = crossbeam_channel::unbounded::<MidiEvent>();
+        let (tx, _rx) = crossbeam_channel::unbounded::<TimedMidi>();
         let input = crate::input::open_input("no-such-source-xyz", tx).expect("open_input");
         let destinations = list_destinations();
         assert!(
@@ -232,7 +240,7 @@ mod tests {
         };
         use std::time::Duration;
 
-        let (tx, rx) = crossbeam_channel::unbounded::<MidiEvent>();
+        let (tx, rx) = crossbeam_channel::unbounded::<TimedMidi>();
         let input = crate::input::open_input("no-such-source-xyz", tx).expect("open_input");
 
         let dest = list_destinations()
@@ -270,7 +278,10 @@ mod tests {
         let event = rx
             .recv_timeout(Duration::from_secs(2))
             .expect("virtual destination must deliver MIDISend note-on to read_proc");
-        assert_eq!((event.status, event.data1, event.data2), (0x90, 60, 100));
+        assert_eq!(
+            event.message,
+            MidiMessage::NoteOn { channel: 0, note: 60, velocity: 100 }
+        );
 
         unsafe {
             MIDIPortDispose(port);
