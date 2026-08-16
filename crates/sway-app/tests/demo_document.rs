@@ -14,7 +14,9 @@
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::prelude::*;
 use sway_document::{DocId, to_document};
-use sway_nodes::{AmplitudeFrom, MaterialFrom, MaterialOut, TranslationFrom, Vec3YFrom};
+use sway_nodes::{
+    AmplitudeFrom, MaterialFrom, MaterialOut, Oscillator, TranslationFrom, Vec3YFrom,
+};
 
 const DEMO_DOCUMENT: &str = include_str!("../assets/demo.sway.ron");
 
@@ -85,22 +87,61 @@ fn demo_document_loads_and_reconciles_cleanly() {
     assert_eq!(world.get::<AmplitudeFrom>(lfo_b).map(|w| w.0), Some(lfo_a));
     assert_eq!(world.get::<Vec3YFrom>(vec3_a).map(|w| w.0), Some(lfo_a));
     assert_eq!(world.get::<Vec3YFrom>(vec3_b).map(|w| w.0), Some(lfo_b));
-    assert_eq!(world.get::<TranslationFrom>(cube_a).map(|w| w.0), Some(vec3_a));
-    assert_eq!(world.get::<TranslationFrom>(cube_b).map(|w| w.0), Some(vec3_b));
-    assert_eq!(world.get::<MaterialFrom>(cube_a).map(|w| w.0), Some(material));
-    assert_eq!(world.get::<MaterialFrom>(cube_b).map(|w| w.0), Some(material));
-    assert_eq!(world.get::<ChildOf>(cube_a).map(|c| c.parent()), Some(group));
-    assert_eq!(world.get::<ChildOf>(cube_b).map(|c| c.parent()), Some(group));
+    assert_eq!(
+        world.get::<TranslationFrom>(cube_a).map(|w| w.0),
+        Some(vec3_a)
+    );
+    assert_eq!(
+        world.get::<TranslationFrom>(cube_b).map(|w| w.0),
+        Some(vec3_b)
+    );
+    assert_eq!(
+        world.get::<MaterialFrom>(cube_a).map(|w| w.0),
+        Some(material)
+    );
+    assert_eq!(
+        world.get::<MaterialFrom>(cube_b).map(|w| w.0),
+        Some(material)
+    );
+    assert_eq!(
+        world.get::<ChildOf>(cube_a).map(|c| c.parent()),
+        Some(group)
+    );
+    assert_eq!(
+        world.get::<ChildOf>(cube_b).map(|c| c.parent()),
+        Some(group)
+    );
 
     // D4: the document names one component per node and Bevy supplies the rest.
     // None of these appear in the file.
-    assert!(world.get::<sway_nodes::FloatOut>(lfo_a).is_some(), "Lfo requires FloatOut");
-    assert!(world.get::<Mesh3d>(cube_a).is_some(), "MeshAsset requires Mesh3d");
-    assert!(world.get::<Visibility>(cube_a).is_some(), "MeshAsset requires Visibility");
-    assert!(world.get::<Transform>(cube_a).is_some(), "Mesh3d requires Transform");
-    assert!(world.get::<MaterialOut>(material).is_some(), "PbrMaterial requires MaterialOut");
-    assert!(world.get::<Camera3d>(camera).is_some(), "SceneCamera requires Camera3d");
-    assert!(world.get::<Transform>(sun).is_some(), "DirectionalLight requires Transform");
+    assert!(
+        world.get::<Oscillator>(lfo_a).is_some(),
+        "demo uses Oscillator"
+    );
+    assert!(
+        world.get::<Mesh3d>(cube_a).is_some(),
+        "MeshAsset requires Mesh3d"
+    );
+    assert!(
+        world.get::<Visibility>(cube_a).is_some(),
+        "MeshAsset requires Visibility"
+    );
+    assert!(
+        world.get::<Transform>(cube_a).is_some(),
+        "Mesh3d requires Transform"
+    );
+    assert!(
+        world.get::<MaterialOut>(material).is_some(),
+        "PbrMaterial requires MaterialOut"
+    );
+    assert!(
+        world.get::<Camera3d>(camera).is_some(),
+        "SceneCamera requires Camera3d"
+    );
+    assert!(
+        world.get::<Transform>(sun).is_some(),
+        "DirectionalLight requires Transform"
+    );
 }
 
 #[test]

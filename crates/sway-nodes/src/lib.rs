@@ -37,7 +37,8 @@ pub struct WireNodesPlugin;
 
 impl bevy_app::Plugin for WireNodesPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        sway_graph::register_behaviour::<Lfo>(app, lfo_behaviour);
+        sway_graph::register_behaviour::<Oscillator>(app, oscillator_behaviour);
+        sway_graph::register_wire::<TimeFrom>(app);
         sway_graph::register_wire::<AmplitudeFrom>(app);
         sway_graph::register_wire::<TranslationFrom>(app);
         sway_graph::register_wire::<RotationFrom>(app);
@@ -56,7 +57,7 @@ impl bevy_app::Plugin for WireNodesPlugin {
         // What a project document may name (M4). Short names, not type paths.
         app.register_type::<Waveform>();
         app.register_type::<MathOp>();
-        sway_graph::register_authorable::<Lfo>(app, "Lfo");
+        sway_graph::register_authorable::<Oscillator>(app, "Oscillator");
         sway_graph::register_authorable::<FloatOut>(app, "FloatOut");
         sway_graph::register_authorable::<Vec3Out>(app, "Vec3Out");
         sway_graph::register_authorable::<bevy::prelude::Transform>(app, "Transform");
@@ -117,9 +118,9 @@ mod tests {
                 "DirectionalLight",
                 "EditorPos",
                 "FloatOut",
-                "Lfo",
                 "Math",
                 "MeshAsset",
+                "Oscillator",
                 "PbrMaterial",
                 "PointLight",
                 "Remap",

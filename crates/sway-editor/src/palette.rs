@@ -318,7 +318,13 @@ mod tests {
     use masonry_testing::TestHarness;
 
     fn names() -> Vec<&'static str> {
-        vec!["Lfo", "Math", "MeshAsset", "DirectionalLight", "FloatOut"]
+        vec![
+            "Oscillator",
+            "Math",
+            "MeshAsset",
+            "DirectionalLight",
+            "FloatOut",
+        ]
     }
 
     #[test]
@@ -357,15 +363,22 @@ mod tests {
 
     #[test]
     fn picking_a_row_emits_that_components_name() {
-        let mut harness =
-            TestHarness::create(DefaultProperties::default(), Palette::new(names()).prepare());
-        let row_id = harness.root_widget().row_id(0).expect("five rows are listed");
+        let mut harness = TestHarness::create(
+            DefaultProperties::default(),
+            Palette::new(names()).prepare(),
+        );
+        let row_id = harness
+            .root_widget()
+            .row_id(0)
+            .expect("five rows are listed");
 
         harness.mouse_click_on(row_id, Some(PointerButton::Primary));
 
         assert_eq!(
-            harness.pop_action::<PaletteAction>().map(|(action, _)| action),
-            Some(PaletteAction::Picked("Lfo")),
+            harness
+                .pop_action::<PaletteAction>()
+                .map(|(action, _)| action),
+            Some(PaletteAction::Picked("Oscillator")),
         );
     }
 
@@ -373,18 +386,25 @@ mod tests {
     fn picking_addresses_the_filtered_row_not_the_underlying_one() {
         // The defect this guards against: indexing the pick into `names`
         // rather than into `visible()`, so filtering to "FloatOut" and clicking
-        // the only row would create an `Lfo`.
-        let mut harness =
-            TestHarness::create(DefaultProperties::default(), Palette::new(names()).prepare());
+        // the only row would create an `Oscillator`.
+        let mut harness = TestHarness::create(
+            DefaultProperties::default(),
+            Palette::new(names()).prepare(),
+        );
         harness.edit_root_widget(|mut palette| {
             Palette::apply_filter(&mut palette, "float");
         });
-        let row_id = harness.root_widget().row_id(0).expect("one row survives the filter");
+        let row_id = harness
+            .root_widget()
+            .row_id(0)
+            .expect("one row survives the filter");
 
         harness.mouse_click_on(row_id, Some(PointerButton::Primary));
 
         assert_eq!(
-            harness.pop_action::<PaletteAction>().map(|(action, _)| action),
+            harness
+                .pop_action::<PaletteAction>()
+                .map(|(action, _)| action),
             Some(PaletteAction::Picked("FloatOut")),
         );
     }

@@ -684,20 +684,33 @@ mod tests {
             .add_plugins(sway_nodes::WireNodesPlugin);
         let entity = app
             .world_mut()
-            .spawn(sway_nodes::Lfo { beats: 4.0, shape: sway_nodes::Waveform::Saw, phase: 0.25, amplitude: 0.5 })
+            .spawn(sway_nodes::Oscillator {
+                time: 0.0,
+                period: 4.0,
+                shape: sway_nodes::Waveform::Saw,
+                phase: 0.25,
+                amplitude: 0.5,
+            })
             .id();
 
         let view = inspect(app.world(), entity);
 
-        let lfo = view
+        let oscillator = view
             .components
             .iter()
-            .find(|c| c.name == "Lfo")
-            .expect("Lfo is authorable and present");
-        assert_eq!(lfo.fields.len(), 4);
-        assert_eq!(lfo.fields[0].name, "beats");
-        assert_eq!(lfo.fields[0].value, "4.000");
-        assert!(lfo.fields.iter().any(|f| f.name == "shape" && f.value == "Saw"));
+            .find(|c| c.name == "Oscillator")
+            .expect("Oscillator is authorable and present");
+        assert_eq!(oscillator.fields.len(), 5);
+        assert_eq!(oscillator.fields[0].name, "time");
+        assert_eq!(oscillator.fields[0].value, "0.000");
+        assert_eq!(oscillator.fields[1].name, "period");
+        assert_eq!(oscillator.fields[1].value, "4.000");
+        assert!(
+            oscillator
+                .fields
+                .iter()
+                .any(|f| f.name == "shape" && f.value == "Saw")
+        );
     }
 
     #[test]
@@ -745,12 +758,17 @@ mod tests {
         let runtime_owned = app.world_mut().spawn_empty().id();
         recompile(&mut app);
 
-        assert!(!capture(app.world()).nodes.iter().any(|n| n.entity == runtime_owned));
+        assert!(
+            !capture(app.world())
+                .nodes
+                .iter()
+                .any(|n| n.entity == runtime_owned)
+        );
     }
 
     #[test]
     fn an_entity_sourcing_several_wires_reports_exactly_one_outlet() {
-        // M6-6. Counting per wire drew seven dots on an Lfo; only socket 0 has
+        // M6-6. Counting per wire drew seven dots on an Oscillator; only socket 0 has
         // ever had an edge attached, because capture_edges hardcodes from_field.
         // `spawn_double_source` sources both `amount` and `parent`, so the old
         // `count()` reported 2 here and the new `any()` reports 1.
@@ -814,8 +832,9 @@ mod tests {
             .add_plugins(sway_nodes::WireNodesPlugin);
         let entity = app
             .world_mut()
-            .spawn(sway_nodes::Lfo {
-                beats: 4.0,
+            .spawn(sway_nodes::Oscillator {
+                time: 0.0,
+                period: 4.0,
                 shape: sway_nodes::Waveform::Saw,
                 phase: 0.25,
                 amplitude: 0.5,
@@ -823,16 +842,31 @@ mod tests {
             .id();
 
         let view = inspect(app.world(), entity);
-        let lfo = view.components.iter().find(|c| c.name == "Lfo").unwrap();
+        let oscillator = view
+            .components
+            .iter()
+            .find(|c| c.name == "Oscillator")
+            .unwrap();
 
-        let beats = lfo.fields.iter().find(|f| f.name == "beats").unwrap();
-        assert_eq!(beats.kind, FieldKind::Float);
+        let period = oscillator
+            .fields
+            .iter()
+            .find(|f| f.name == "period")
+            .unwrap();
+        assert_eq!(period.kind, FieldKind::Float);
 
-        let shape = lfo.fields.iter().find(|f| f.name == "shape").unwrap();
+        let shape = oscillator
+            .fields
+            .iter()
+            .find(|f| f.name == "shape")
+            .unwrap();
         match &shape.kind {
             FieldKind::Enum(variants) => {
                 assert!(variants.iter().any(|v| v == "Saw"), "got {variants:?}");
-                assert!(variants.len() > 1, "every variant is offered, not just the current one");
+                assert!(
+                    variants.len() > 1,
+                    "every variant is offered, not just the current one"
+                );
             }
             other => panic!("expected an enum kind, got {other:?}"),
         }

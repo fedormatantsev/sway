@@ -1193,7 +1193,11 @@ mod tests {
         let (mut harness, rx) = harness_and_rx(snapshot(vec![], vec![]));
 
         harness.edit_root_widget(|mut canvas| {
-            GraphCanvas::palette_picked_for_test(&mut canvas, "Lfo", Point::new(120.0, 60.0));
+            GraphCanvas::palette_picked_for_test(
+                &mut canvas,
+                "Oscillator",
+                Point::new(120.0, 60.0),
+            );
         });
 
         let commands: Vec<_> = rx.try_iter().collect();
@@ -1201,7 +1205,7 @@ mod tests {
         assert!(
             matches!(
                 &commands[0],
-                EditorCommand::Create { component: "Lfo", pos }
+                EditorCommand::Create { component: "Oscillator", pos }
                     if *pos == WorldVec2::new(120.0, 60.0)
             ),
             "got {:?}",
@@ -1212,7 +1216,7 @@ mod tests {
     #[test]
     fn a_right_click_opens_the_palette_at_the_pointer() {
         let mut snap = snapshot(vec![], vec![]);
-        snap.palette = vec!["Lfo", "Remap"];
+        snap.palette = vec!["Oscillator", "Remap"];
         let (mut harness, _rx) = harness_and_rx(snap);
 
         harness.mouse_move(Point::new(200.0, 150.0));
@@ -1237,12 +1241,15 @@ mod tests {
     #[test]
     fn dismissing_the_palette_by_clicking_outside_clears_the_layer_bookkeeping() {
         let mut snap = snapshot(vec![], vec![]);
-        snap.palette = vec!["Lfo", "Remap"];
+        snap.palette = vec!["Oscillator", "Remap"];
         let (mut harness, _rx) = harness_and_rx(snap);
 
         harness.mouse_move(Point::new(200.0, 150.0));
         harness.mouse_button_press(Some(PointerButton::Secondary));
-        assert!(harness.root_widget().palette_layer_id().is_some(), "the palette opened");
+        assert!(
+            harness.root_widget().palette_layer_id().is_some(),
+            "the palette opened"
+        );
 
         // A press far from where the palette opened lands outside its
         // border box, which is exactly what `Palette::capture_pointer_event`
@@ -1269,7 +1276,7 @@ mod tests {
     #[test]
     fn a_real_palette_pick_creates_the_node_with_no_bypass() {
         let mut snap = snapshot(vec![], vec![]);
-        snap.palette = vec!["Lfo", "Remap"];
+        snap.palette = vec!["Oscillator", "Remap"];
         let (mut harness, rx) = harness_and_rx(snap);
 
         harness.mouse_move(Point::new(200.0, 150.0));
@@ -1280,9 +1287,12 @@ mod tests {
             .expect("the secondary press opened the palette");
         let row_id = harness
             .edit_widget_with_id(layer_id, |mut widget| {
-                widget.downcast::<crate::palette::Palette>().widget.row_id(0)
+                widget
+                    .downcast::<crate::palette::Palette>()
+                    .widget
+                    .row_id(0)
             })
-            .expect("Lfo is the first row in registry order");
+            .expect("Oscillator is the first row in registry order");
 
         // `mouse_click_on`/`mouse_move_to` only hit-test `get_layer_root(0)`
         // (masonry_testing's own doc comments on those methods), so they
@@ -1304,7 +1314,7 @@ mod tests {
         assert!(
             matches!(
                 commands.as_slice(),
-                [EditorCommand::Create { component: "Lfo", pos }]
+                [EditorCommand::Create { component: "Oscillator", pos }]
                     if *pos == WorldVec2::new(200.0, 150.0)
             ),
             "got {commands:?}",

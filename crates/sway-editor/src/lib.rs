@@ -717,7 +717,7 @@ mod tests {
         let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx);
         ui.redraw();
 
-        let palette = Palette::new(vec!["Lfo", "Remap"]);
+        let palette = Palette::new(vec!["Oscillator", "Remap"]);
         let input_id = palette.input_area_id();
         let palette = NewWidget::new(palette);
 

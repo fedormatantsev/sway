@@ -192,7 +192,7 @@ impl Inspector {
     /// Important #3 (final review): a full rebuild tears down every row's
     /// widget -- dropping focus and any in-progress, uncommitted text --
     /// even when only an unrelated field's value changed (e.g. selecting an
-    /// `Lfo`, whose `#[require]`d `FloatOut` changes every tick while the
+    /// `Oscillator`, whose `#[require]`d `FloatOut` changes every tick while the
     /// transport runs). A full in-place reconcile of every row is a larger
     /// rewrite than this pass can land safely; instead, the one row (if
     /// any) that currently holds focus is carried over untouched -- its
@@ -704,7 +704,7 @@ mod tests {
 
     /// Two components so a field on one (`FloatOut`'s tuple field `"0"`) can
     /// change while a field on the other (`Knobs.gain`) -- the one under
-    /// test -- does not, mirroring an `Lfo`'s continuously-authored
+    /// test -- does not, mirroring an `Oscillator`'s continuously-authored
     /// `FloatOut` sitting alongside a knob the user is mid-edit on.
     fn two_component_snapshot(gain: &str, float_out: &str) -> WorldSnapshot {
         WorldSnapshot {

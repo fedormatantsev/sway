@@ -1,4 +1,4 @@
-//! The beat-locked LFO, as a behaviour. Spec §2.4.
+//! A generic time-driven oscillator, as a behaviour.
 //!
 //! This is the third case in the behaviour table: its `amplitude` can be
 //! driven by a wire, so it must compute between that propagation and the
@@ -7,45 +7,48 @@
 
 use bevy::prelude::*;
 use bevy_ecs::change_detection::DetectChangesMut;
-use sway_graph::{EditorPos, TickCtx, Transport, TransportTime};
+use sway_graph::{EditorPos, TickCtx};
 
 use crate::field_wire::field_wire;
-use crate::lfo::{wave, Waveform};
+use crate::lfo::{Waveform, wave};
 use crate::outputs::FloatOut;
 
-/// Period in beats, plus shape, phase offset in cycles, and amplitude.
+/// Time, period in time units, shape, phase offset in cycles, and amplitude.
 #[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]
 #[reflect(Component, Default, PartialEq)]
 #[require(FloatOut, EditorPos)]
-pub struct Lfo {
-    pub beats: f32,
+pub struct Oscillator {
+    pub time: f32,
+    pub period: f32,
     pub shape: Waveform,
     pub phase: f32,
     pub amplitude: f32,
 }
 
-impl Default for Lfo {
+impl Default for Oscillator {
     fn default() -> Self {
-        Self { beats: 4.0, shape: Waveform::Sine, phase: 0.0, amplitude: 1.0 }
+        Self {
+            time: 0.0,
+            period: 4.0,
+            shape: Waveform::Sine,
+            phase: 0.0,
+            amplitude: 1.0,
+        }
     }
 }
 
-/// Absolute beat position, never an accumulator — so a tempo change, a
-/// reposition and a dropped tick all leave this correct. Carried over from
-/// `SyncLfo::tick`.
-pub fn lfo_behaviour(world: &mut World, entity: Entity, _ctx: &TickCtx) {
-    let beats = world.resource::<Time<Transport>>().beats();
-    let Some(lfo) = world.get::<Lfo>(entity).copied() else {
+pub fn oscillator_behaviour(world: &mut World, entity: Entity, _ctx: &TickCtx) {
+    let Some(osc) = world.get::<Oscillator>(entity).copied() else {
         return;
     };
     // An authored zero or negative period holds still rather than dividing:
     // the behaviour is infallible.
-    let p = if lfo.beats > 0.0 {
-        (beats / lfo.beats as f64 + lfo.phase as f64).rem_euclid(1.0) as f32
+    let p = if osc.period > 0.0 {
+        (osc.time as f64 / osc.period as f64 + osc.phase as f64).rem_euclid(1.0) as f32
     } else {
-        lfo.phase.rem_euclid(1.0)
+        osc.phase.rem_euclid(1.0)
     };
-    let value = wave(lfo.shape, p) * lfo.amplitude;
+    let value = wave(osc.shape, p) * osc.amplitude;
 
     if let Some(mut out) = world.get_mut::<FloatOut>(entity) {
         out.set_if_neq(FloatOut(value));
@@ -53,9 +56,18 @@ pub fn lfo_behaviour(world: &mut World, entity: Entity, _ctx: &TickCtx) {
 }
 
 field_wire!(
-    /// Drives `Lfo.amplitude`.
+    /// Drives `Oscillator.time`.
+    TimeFrom / DrivesTime,
+    FloatOut => Oscillator,
+    "time",
+    |t| &mut t.time,
+    |s| s.0
+);
+
+field_wire!(
+    /// Drives `Oscillator.amplitude`.
     AmplitudeFrom / DrivesAmplitude,
-    FloatOut => Lfo,
+    FloatOut => Oscillator,
     "amplitude",
     |t| &mut t.amplitude,
     |s| s.0
@@ -69,9 +81,6 @@ mod tests {
     use crate::wire_testing::assert_writes_only_on_change;
     use sway_graph::WiresPlugin;
 
-    /// At beat 0 with `phase = 0.25`, a sine LFO's phase is exactly 0.25 and
-    /// `wave` returns 1.0 — so every value below is exact, and `Time<Transport>`
-    /// needs no advancing.
     fn slice_app() -> App {
         let mut app = App::new();
         app.add_plugins(bevy::time::TimePlugin)
@@ -84,8 +93,31 @@ mod tests {
         app
     }
 
-    fn lfo(phase: f32, amplitude: f32) -> Lfo {
-        Lfo { beats: 4.0, shape: Waveform::Sine, phase, amplitude }
+    fn oscillator(phase: f32, amplitude: f32) -> Oscillator {
+        Oscillator {
+            time: 0.0,
+            period: 4.0,
+            shape: Waveform::Sine,
+            phase,
+            amplitude,
+        }
+    }
+
+    #[test]
+    fn oscillator_at_phase_quarter_is_one_with_no_midi() {
+        let mut app = slice_app();
+        let e = app
+            .world_mut()
+            .spawn(Oscillator {
+                time: 0.0,
+                period: 4.0,
+                shape: Waveform::Sine,
+                phase: 0.25,
+                amplitude: 1.0,
+            })
+            .id();
+        app.update();
+        assert_eq!(app.world().get::<FloatOut>(e).map(|o| o.0), Some(1.0));
     }
 
     #[test]
@@ -93,30 +125,44 @@ mod tests {
         assert_writes_only_on_change::<AmplitudeFrom>(
             FloatOut(1.0),
             FloatOut(2.0),
-            Lfo::default(),
+            Oscillator::default(),
         );
     }
 
     #[test]
-    fn a_modulated_lfo_reaches_a_transform_in_one_tick() {
+    fn the_time_wire_never_writes_an_equal_value() {
+        assert_writes_only_on_change::<TimeFrom>(
+            FloatOut(0.0),
+            FloatOut(2.0),
+            Oscillator::default(),
+        );
+    }
+
+    #[test]
+    fn a_modulated_oscillator_reaches_a_transform_in_one_tick() {
         // The chain the design turns on, now one node longer (D5):
-        //   Lfo A -> Lfo B.amplitude -> B computes -> Vec3.y -> Transform
+        //   Oscillator A -> Oscillator B.amplitude -> B computes -> Vec3.y -> Transform
         // A's output is 1.0 * 0.5 = 0.5, which becomes B's amplitude, so B's
         // output is 0.5, which becomes the vector's y. If the order were wrong,
         // B would still hold its authored amplitude of 0.0 and y would be 0.0.
         let mut app = slice_app();
-        let a = app.world_mut().spawn(lfo(0.25, 0.5)).id();
-        let b = app.world_mut().spawn(lfo(0.25, 0.0)).id();
+        let a = app.world_mut().spawn(oscillator(0.25, 0.5)).id();
+        let b = app.world_mut().spawn(oscillator(0.25, 0.0)).id();
         let vector = app.world_mut().spawn(Vec3Value::default()).id();
         let mesh = app.world_mut().spawn(Transform::default()).id();
         app.world_mut().entity_mut(b).insert(AmplitudeFrom(a));
         app.world_mut().entity_mut(vector).insert(Vec3YFrom(b));
-        app.world_mut().entity_mut(mesh).insert(TranslationFrom(vector));
+        app.world_mut()
+            .entity_mut(mesh)
+            .insert(TranslationFrom(vector));
 
         app.update();
 
         assert_eq!(app.world().get::<FloatOut>(a).map(|o| o.0), Some(0.5));
-        assert_eq!(app.world().get::<Lfo>(b).map(|l| l.amplitude), Some(0.5));
+        assert_eq!(
+            app.world().get::<Oscillator>(b).map(|osc| osc.amplitude),
+            Some(0.5)
+        );
         assert_eq!(
             app.world().get::<Transform>(mesh).map(|t| t.translation.y),
             Some(0.5),

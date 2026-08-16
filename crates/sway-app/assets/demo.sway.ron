@@ -50,14 +50,14 @@ Project(
         Entity(
             id: "lfoA",
             components: {
-                "Lfo": (beats: 8.0, shape: Sine, phase: 0.0, amplitude: 0.5),
+                "Oscillator": (time: 0.0, period: 8.0, shape: Sine, phase: 0.0, amplitude: 0.5),
                 "EditorPos": ((-460.0, 40.0)),
             },
         ),
         Entity(
             id: "lfoB",
             components: {
-                "Lfo": (beats: 2.0, shape: Sine, phase: 0.0, amplitude: 0.0),
+                "Oscillator": (time: 0.0, period: 2.0, shape: Sine, phase: 0.0, amplitude: 0.0),
                 "EditorPos": ((-460.0, 160.0)),
             },
             wires: { "amplitude": "lfoA" },
