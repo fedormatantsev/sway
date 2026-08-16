@@ -20,7 +20,11 @@
 //! changed (a `ViewportInput::Move`/`Down` position converted through
 //! `cursor_in_viewport_pixels`, rather than `Window::cursor_position()`) and
 //! the "exactly one camera" fallback dropped, since `mark_gizmo_camera`
-//! above always keeps exactly one `TransformGizmoCamera` marked.
+//! above keeps at most one `TransformGizmoCamera` marked — it can also mark
+//! zero, e.g. `ViewportCamera` toggled to `Scene` before that document's
+//! scene camera has spawned — so both `viewport_gizmo_hover` and
+//! `viewport_gizmo_drag` must (and do) handle finding no marked camera at
+//! all, not just "exactly one".
 //!
 //! `viewport_gizmo_drag` is the third piece: a port of Bevy's private
 //! `transform_gizmo_drag` (`bevy_gizmos-0.19.0/src/transform_gizmo.rs:396-637`)
@@ -329,13 +333,18 @@ pub fn viewport_gizmo_drag(
     settings: Res<TransformGizmoSettings>,
     mut state: ResMut<TransformGizmoState>,
 ) {
-    let Some((camera, cam_tf)) = cameras.iter().next() else {
-        return;
-    };
-
-    // End drag. Checked first and unconditionally: a `Cancel` or `Up` must
-    // win over anything else this frame carries, the same hazard M6 Task 14
-    // found on the canvas (a stuck drag that never lets picking run again).
+    // End drag. Checked first and unconditionally, *before* the camera
+    // lookup below: a `Cancel` or `Up` must win over anything else this frame
+    // carries, the same hazard M6 Task 14 found on the canvas (a stuck drag
+    // that never lets picking run again). Concretely here: `mark_gizmo_camera`
+    // can mark zero cameras (see its doc comment) if the user toggles
+    // `ViewportCamera` before the target camera exists — e.g. to `Scene`
+    // before a document's scene camera has spawned. If that happens while a
+    // drag is active, the `cameras` query below finds nothing; resetting
+    // `state.active` here, ahead of that query, is what keeps a `Cancel`/`Up`
+    // arriving in that window from leaving the drag stuck forever (and, with
+    // it, `pick_on_click` permanently refusing to select anything — see its
+    // own `gizmo_state.is_some_and(|state| state.active)` guard).
     if state.active
         && events
             .0
@@ -347,6 +356,10 @@ pub fn viewport_gizmo_drag(
         state.entity = None;
         return;
     }
+
+    let Some((camera, cam_tf)) = cameras.iter().next() else {
+        return;
+    };
 
     let Some(cursor_pos) = events.0.iter().rev().find_map(|event| match event {
         ViewportInput::Move { pos, .. } | ViewportInput::Down { pos, .. } => Some(*pos),
@@ -935,6 +948,40 @@ mod tests {
         press_on_axis(&mut app, TransformGizmoAxis::X, start);
         feed(&mut app, vec![ViewportInput::Cancel]);
         assert!(!app.world().resource::<TransformGizmoState>().active);
+    }
+
+    #[test]
+    fn a_cancel_still_ends_the_drag_when_no_camera_carries_the_gizmo_marker() {
+        // The stuck-drag hazard: `mark_gizmo_camera` can mark zero cameras
+        // (see its doc comment and `viewport_gizmo_drag`'s own "End drag"
+        // comment) — e.g. the user toggles `ViewportCamera` to `Scene`
+        // before that document's scene camera has spawned. If the end-drag
+        // check ran only after the `cameras` query, this frame would return
+        // early before ever resetting `state.active`, and `pick_on_click`
+        // would refuse to select anything for the rest of the session.
+        let (mut app, _cube) = app_with_a_focused_gizmo();
+        let start = cursor_over_axis(&mut app, TransformGizmoAxis::X);
+        press_on_axis(&mut app, TransformGizmoAxis::X, start);
+        assert!(app.world().resource::<TransformGizmoState>().active, "test setup: drag did not start");
+
+        // Remove the marker from every camera, simulating the camera
+        // vanishing (or `mark_gizmo_camera` finding nothing to mark)
+        // mid-drag.
+        let marked: Vec<Entity> = app
+            .world_mut()
+            .query_filtered::<Entity, With<TransformGizmoCamera>>()
+            .iter(app.world())
+            .collect();
+        for entity in marked {
+            app.world_mut().entity_mut(entity).remove::<TransformGizmoCamera>();
+        }
+
+        feed(&mut app, vec![ViewportInput::Cancel]);
+
+        assert!(
+            !app.world().resource::<TransformGizmoState>().active,
+            "a Cancel must reset `active` even with no camera carrying TransformGizmoCamera",
+        );
     }
 
     #[test]
