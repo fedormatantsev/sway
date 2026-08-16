@@ -418,7 +418,7 @@ impl Widget for GraphCanvas {
                 // bubbling in that case, since `NodeBox` leaves text events
                 // unhandled).
                 ctx.request_focus();
-                self.clear_selection(ctx);
+                self.clear_selection();
                 ctx.set_handled();
             }
             PointerEvent::Move(PointerUpdate { current, .. })
@@ -509,7 +509,7 @@ impl Widget for GraphCanvas {
             return;
         };
         match action {
-            NodeBoxAction::Selected => self.select_from_action(ctx, id),
+            NodeBoxAction::Selected => self.select_from_action(id),
             NodeBoxAction::DraggedBy(delta) => {
                 if let Some(slot) = self.slots.get_mut(&id) {
                     slot.pos += delta / self.zoom;
@@ -647,9 +647,6 @@ impl GraphCanvas {
             if let Some(slot) = this.widget.slots.remove(&id) {
                 this.ctx.remove_child(slot.pod);
             }
-            if this.widget.selected == Some(id) {
-                this.widget.selected = None;
-            }
         }
 
         for (index, view) in snap.nodes.iter().enumerate() {
@@ -773,6 +770,20 @@ impl GraphCanvas {
                 }
             })
             .collect();
+
+        // Selection is the world's, not this canvas's (spec M7-5): translate
+        // `snap.selection`'s `Entity` through the slot map (an entity, not a
+        // `NodeId`, is what the world knows) to find which box, if any,
+        // corresponds to it, then reuse `set_selected` so the highlight moves
+        // -- including clearing it on a box that lost the selection.
+        let target = snap.selection.and_then(|entity| {
+            this.widget
+                .slots
+                .iter()
+                .find(|(_, slot)| slot.entity == entity)
+                .map(|(id, _)| *id)
+        });
+        Self::set_selected(this, target);
 
         this.ctx.request_render();
     }
@@ -908,37 +919,23 @@ impl GraphCanvas {
         (p.to_vec2() * self.zoom + self.pan).to_point()
     }
 
-    /// `EventCtx` version of clearing the selection (background click).
-    fn clear_selection(&mut self, ctx: &mut EventCtx<'_>) {
-        if let Some(id) = self.selected.take()
-            && let Some(slot) = self.slots.get_mut(&id)
-        {
-            ctx.mutate_child_later(&mut slot.pod, |mut node: WidgetMut<'_, NodeBox>| {
-                NodeBox::set_selected(&mut node, false);
-            });
-        }
-    }
-
-    /// `ActionCtx` version of selecting a node (a `NodeBox` reported
-    /// `NodeBoxAction::Selected`).
-    fn select_from_action(&mut self, ctx: &mut ActionCtx<'_>, id: NodeId) {
-        let previous = self.selected;
-        if previous == Some(id) {
+    /// A background click: asks the world to clear the selection. The world
+    /// is the only owner now (spec M7-5) -- this just asks; `apply_snapshot`
+    /// is what actually clears the highlight, once the world answers back.
+    fn clear_selection(&mut self) {
+        if self.selected.is_none() {
             return;
         }
-        self.selected = Some(id);
-        if let Some(prev_id) = previous
-            && let Some(slot) = self.slots.get_mut(&prev_id)
-        {
-            ctx.mutate_child_later(&mut slot.pod, |mut node: WidgetMut<'_, NodeBox>| {
-                NodeBox::set_selected(&mut node, false);
-            });
+        let _ = self.commands.send(EditorCommand::Select { entity: None });
+    }
+
+    /// A `NodeBox` reported `NodeBoxAction::Selected`: asks the world to
+    /// select the entity behind it, same reasoning as `clear_selection`.
+    fn select_from_action(&mut self, id: NodeId) {
+        if self.selected == Some(id) {
+            return;
         }
-        if let Some(slot) = self.slots.get_mut(&id) {
-            ctx.mutate_child_later(&mut slot.pod, |mut node: WidgetMut<'_, NodeBox>| {
-                NodeBox::set_selected(&mut node, true);
-            });
-        }
+        let _ = self.commands.send(EditorCommand::Select { entity: self.entity_of(id) });
     }
 
     /// A socket was pressed. An outlet starts an edge drag; a *connected*
@@ -1339,34 +1336,48 @@ mod tests {
     /// forever) never reached `GraphCanvas::on_text_event` -- a real
     /// selection followed by a real Delete press did nothing. Unlike
     /// `the_delete_key_deletes_the_selected_node` above, this drives a real
-    /// click (which is what actually selects a node in the running app,
-    /// through `NodeBox`, not `GraphCanvas::set_selected`) and a real
-    /// `TextEvent::Keyboard` Delete press through the harness, with no
+    /// click (which is what actually asks the world to select a node in the
+    /// running app, through `NodeBox`, not `GraphCanvas::set_selected`) and a
+    /// real `TextEvent::Keyboard` Delete press through the harness, with no
     /// `delete_selected_for_test` bypass -- proving the click grants focus
     /// (via `NodeBox::accepts_focus`/`ctx.request_focus()`) and that the key
     /// then reaches `GraphCanvas` by bubbling, since `NodeBox` leaves text
     /// events unhandled.
+    ///
+    /// Since M7-5 the click itself only *asks* -- it sends
+    /// `EditorCommand::Select` rather than setting `selected_node()` directly
+    /// -- so the highlight only actually moves once a snapshot carrying the
+    /// world's answer comes back through `apply_snapshot`, which this test
+    /// supplies by hand to stand in for the world's round trip.
     #[test]
     fn a_real_click_then_delete_key_deletes_the_selected_node() {
         let entity = Entity::from_raw_u32(4).expect("valid entity id");
-        let (mut harness, rx) = harness_and_rx(snapshot(
-            vec![NodeView { entity, ..node(4, "a", Some(Point::new(10.0, 10.0))) }],
-            vec![],
-        ));
+        let nodes = vec![NodeView { entity, ..node(4, "a", Some(Point::new(10.0, 10.0))) }];
+        let (mut harness, rx) = harness_and_rx(snapshot(nodes.clone(), vec![]));
 
         harness.mouse_move(Point::new(20.0, 20.0));
         harness.mouse_button_press(Some(PointerButton::Primary));
         harness.mouse_button_release(Some(PointerButton::Primary));
+        // The click's `Up` also reports `DragEnded` even without movement
+        // (`NodeBoxAction::DragEnded`'s own doc comment), which sends a
+        // same-position `MoveNode` alongside the `Select` -- irrelevant to
+        // what this test checks, so only `Select` is looked for here.
+        let commands: Vec<_> = rx.try_iter().collect();
+        assert!(
+            commands.contains(&EditorCommand::Select { entity: Some(entity) }),
+            "the click must have asked the world to select the node; got {commands:?}",
+        );
+
+        let mut selected = snapshot(nodes, vec![]);
+        selected.selection = Some(entity);
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::apply_snapshot(&mut canvas, &selected);
+        });
         assert_eq!(
             harness.root_widget().selected_node(),
             Some(NodeId(4)),
-            "the click must have selected the node",
+            "the world's answer must be what actually highlights the node",
         );
-        // The click's `Up` also reports `DragEnded` even without movement
-        // (`NodeBoxAction::DragEnded`'s own doc comment), which sends a
-        // same-position `MoveNode` -- irrelevant to what this test checks,
-        // so it's drained here rather than folded into the assertion below.
-        rx.try_iter().for_each(drop);
 
         harness.process_text_event(TextEvent::Keyboard(KeyboardEvent::key_down(
             Key::Named(NamedKey::Delete),
@@ -1425,9 +1436,15 @@ mod tests {
     /// masonry's `window_transform` inverse did not drive hit-testing, this
     /// press would land on whatever is at unscaled (210, 210) instead, and a
     /// node editor built on it would be subtly, unfixably wrong under zoom.
+    ///
+    /// Checked through the `Select` command the press sends, not
+    /// `selected_node()` directly: since M7-5 a press only asks the world,
+    /// it doesn't select locally (see `a_row_press_does_not_select_locally`'s
+    /// counterpart in `scene_tree.rs`).
     #[test]
     fn press_under_zoom_reaches_the_scaled_node() {
-        let mut harness = harness_with(snapshot(
+        let entity_0 = Entity::from_raw_u32(0).expect("valid entity id");
+        let (mut harness, rx) = harness_and_rx(snapshot(
             vec![
                 node(0, "a", Some(Point::new(100.0, 100.0))),
                 node(1, "b", Some(Point::new(400.0, 100.0))),
@@ -1441,7 +1458,10 @@ mod tests {
         harness.mouse_move(Point::new(210.0, 210.0));
         harness.mouse_button_press(Some(PointerButton::Primary));
 
-        assert_eq!(harness.root_widget().selected_node(), Some(NodeId(0)));
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![EditorCommand::Select { entity: Some(entity_0) }],
+        );
     }
 
     /// `to_canvas` (used when the palette creates a node at the click
@@ -1466,7 +1486,7 @@ mod tests {
 
     #[test]
     fn press_outside_any_node_clears_selection() {
-        let mut harness = harness_with(snapshot(
+        let (mut harness, rx) = harness_and_rx(snapshot(
             vec![node(0, "a", Some(Point::new(100.0, 100.0)))],
             vec![],
         ));
@@ -1477,7 +1497,56 @@ mod tests {
         harness.mouse_move(Point::new(20.0, 20.0));
         harness.mouse_button_press(Some(PointerButton::Primary));
 
-        assert_eq!(harness.root_widget().selected_node(), None);
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![EditorCommand::Select { entity: None }],
+            "a background click must ask the world to clear the selection",
+        );
+    }
+
+    /// `apply_snapshot` is what actually moves the highlight (spec M7-5):
+    /// it translates `snap.selection`'s `Entity` through the slot map to a
+    /// `NodeId` and reuses `set_selected`, which is also what must clear the
+    /// highlight on a box that lost the selection -- covered here by moving
+    /// selection from one node straight to another with no `None` in between.
+    #[test]
+    fn apply_snapshot_moves_the_highlight_via_the_slot_map() {
+        let entity_a = Entity::from_raw_u32(0).expect("valid entity id");
+        let entity_b = Entity::from_raw_u32(1).expect("valid entity id");
+        let nodes = vec![
+            node(0, "a", Some(Point::new(0.0, 0.0))),
+            node(1, "b", Some(Point::new(200.0, 0.0))),
+        ];
+        let mut harness = harness_with(snapshot(nodes.clone(), vec![]));
+
+        let mut selecting_a = snapshot(nodes.clone(), vec![]);
+        selecting_a.selection = Some(entity_a);
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::apply_snapshot(&mut canvas, &selecting_a);
+        });
+        assert_eq!(harness.root_widget().selected_node(), Some(NodeId(0)));
+
+        let mut selecting_b = snapshot(nodes.clone(), vec![]);
+        selecting_b.selection = Some(entity_b);
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::apply_snapshot(&mut canvas, &selecting_b);
+        });
+        assert_eq!(
+            harness.root_widget().selected_node(),
+            Some(NodeId(1)),
+            "selection must move to the new node",
+        );
+
+        let mut selecting_none = snapshot(nodes, vec![]);
+        selecting_none.selection = None;
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::apply_snapshot(&mut canvas, &selecting_none);
+        });
+        assert_eq!(
+            harness.root_widget().selected_node(),
+            None,
+            "a snapshot with no selection must clear the highlight",
+        );
     }
 
     #[test]

@@ -22,12 +22,10 @@ pub mod viewport;
 mod test_graph;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use bevy_ecs::entity::Entity;
 use crossbeam_channel::Sender;
 use imaging::record::replay_transformed;
 use masonry_core::app::{
@@ -49,7 +47,7 @@ use crate::canvas::GraphCanvas;
 use crate::inspector::Inspector;
 use crate::palette::Palette;
 use crate::scene_tree::SceneTree;
-use crate::snapshot::{NodeId, WorldSnapshot};
+use crate::snapshot::WorldSnapshot;
 use crate::transport_bar::{TRANSPORT_BAR_HEIGHT, TransportBar};
 use crate::viewport::Viewport;
 
@@ -113,14 +111,17 @@ pub enum ViewRequest {
 /// `viewport_rect` can reach them typed, without downcasting through the
 /// `Split`s.
 ///
-/// `commands` is handed to the two panes that write: the inspector edits
-/// fields, the canvas creates, deletes, moves and rewires. The tree and the
-/// transport bar are read-only and do not get it.
+/// `commands` is handed to every pane that writes: the inspector edits
+/// fields, the canvas creates, deletes, moves and rewires, and the tree asks
+/// the world to change its selection (spec M7-5 -- neither pane owns
+/// selection any more, both just send `EditorCommand::Select` and read the
+/// answer back off the next snapshot). Only the transport bar is read-only
+/// and does not get it.
 fn graph_root(
     commands: Sender<EditorCommand>,
     viewport_input: Sender<ViewportInput>,
 ) -> NewWidget<dyn Widget> {
-    let tree = Portal::new(SceneTree::new().prepare().with_tag(SCENE_TREE_TAG))
+    let tree = Portal::new(SceneTree::new(commands.clone()).prepare().with_tag(SCENE_TREE_TAG))
         .constrain_horizontal(true)
         .prepare();
 
@@ -174,10 +175,6 @@ pub struct EditorUi {
     /// host drives masonry's animation clock itself rather than through a
     /// real windowing event, because nothing else in this shell does.
     last_anim_tick: Instant,
-    /// The `NodeId` behind each entity, from the most recent snapshot.
-    /// Populated by `apply_snapshot`; used by `sync_selection` to translate a
-    /// tree-row selection (an `Entity`) into a canvas selection (a `NodeId`).
-    node_ids: HashMap<Entity, NodeId>,
     /// Masonry emits signals while it holds `RenderRoot` borrowed, and
     /// servicing a layer signal needs `&mut RenderRoot` -- so they are
     /// collected here and drained afterwards, exactly as `masonry_winit` does.
@@ -217,7 +214,6 @@ impl EditorUi {
             reducer: WindowEventReducer::default(),
             scale_factor,
             last_anim_tick: Instant::now(),
-            node_ids: HashMap::new(),
             signals,
             cursor: None,
             commands,
@@ -355,12 +351,6 @@ impl EditorUi {
     /// -- `SceneTree` compares its row signature, `GraphCanvas` reconciles by
     /// `NodeId` -- so calling this every frame is cheap in the steady state.
     pub fn apply_snapshot(&mut self, snap: &WorldSnapshot) {
-        self.node_ids = snap
-            .nodes
-            .iter()
-            .map(|node| (node.entity, node.id))
-            .collect();
-
         self.root.edit_widget_with_tag(SCENE_TREE_TAG, |mut tree| {
             SceneTree::apply_snapshot(&mut tree, snap);
         });
@@ -373,55 +363,6 @@ impl EditorUi {
         self.root.edit_widget_with_tag(INSPECTOR_TAG, |mut inspector| {
             Inspector::apply_snapshot(&mut inspector, snap);
         });
-    }
-
-    /// Mirrors selection between the two panes.
-    ///
-    /// Whichever pane changed since the last call wins; if both changed, the
-    /// canvas does, arbitrarily but deterministically. `NodeId` is the shared
-    /// key, and a tree row that is not a graph node (a Bevy internal, an edge
-    /// entity) selects within the tree and highlights nothing in the canvas.
-    pub fn sync_selection(&mut self) {
-        let canvas_selection = self
-            .root
-            .edit_widget_with_tag(GRAPH_CANVAS_TAG, |canvas| {
-                canvas.widget.selected_node().and_then(|id| {
-                    canvas.widget.entity_of(id).map(|entity| (id, entity))
-                })
-            });
-        let tree_selection = self
-            .root
-            .edit_widget_with_tag(SCENE_TREE_TAG, |tree| tree.widget.selected());
-
-        match (canvas_selection, tree_selection) {
-            (Some((_, entity)), tree) if tree != Some(entity) => {
-                self.root.edit_widget_with_tag(SCENE_TREE_TAG, |mut tree| {
-                    SceneTree::set_selected(&mut tree, Some(entity));
-                });
-            }
-            (None, Some(entity)) => {
-                let node_id = self.last_snapshot_node_id(entity);
-                self.root.edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
-                    GraphCanvas::set_selected(&mut canvas, node_id);
-                });
-            }
-            _ => {}
-        }
-    }
-
-    /// The `NodeId` for an entity, from the most recent snapshot. `None` for
-    /// a row that is not a graph node.
-    fn last_snapshot_node_id(&self, entity: Entity) -> Option<NodeId> {
-        self.node_ids.get(&entity).copied()
-    }
-
-    /// The entity the panes currently agree is selected.
-    ///
-    /// `sync_selection` keeps the tree and the canvas in step, so the tree's
-    /// answer is the shared one.
-    pub fn selected_entity(&mut self) -> Option<Entity> {
-        self.root
-            .edit_widget_with_tag(SCENE_TREE_TAG, |tree| tree.widget.selected())
     }
 
     /// The Bevy viewport's current window-space (logical pixel) rectangle, or
@@ -480,7 +421,6 @@ impl EditorUi {
     /// vanishes from the very next `VisualLayerPlan`.
     pub fn redraw(&mut self) -> VisualLayerPlan {
         self.drain_signals();
-        self.sync_selection();
 
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_anim_tick);
@@ -514,9 +454,7 @@ impl EditorUi {
 #[cfg(test)]
 mod tests {
     use super::EditorUi;
-    use crate::canvas::GraphCanvas;
-    use crate::scene_tree::SceneTree;
-    use crate::snapshot::{NodeId, NodeView, TreeGroup, TreeRow, WorldSnapshot};
+    use crate::snapshot::{TreeGroup, TreeRow, WorldSnapshot};
     use bevy_ecs::entity::Entity;
     use imaging::Painter;
     use kurbo::{Affine, Point as KurboPoint, Rect};
@@ -562,64 +500,39 @@ mod tests {
         );
     }
 
-    fn one_node_snapshot() -> WorldSnapshot {
+    #[test]
+    fn a_tree_only_selection_survives_repeated_snapshots() {
+        // M6's open bug: selecting a row whose entity has no canvas node
+        // (an `Lfo` with no wires) reverted after one frame, because
+        // `sync_selection` reconciled the tree back to the canvas's empty
+        // answer every frame. With the world owning selection there is nothing
+        // left to reconcile.
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let (vtx, _vrx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx, vtx);
+
         let entity = Entity::from_raw_u32(3).expect("valid entity id");
-        WorldSnapshot {
+        let mut snap = WorldSnapshot {
             tree: vec![TreeRow {
                 entity,
                 group: TreeGroup::Graph,
                 depth: 0,
                 label: "LFO #1".to_string(),
-                node_id: Some(NodeId(1)),
-            }],
-            nodes: vec![NodeView {
-                entity,
-                id: NodeId(1),
-                name: "LFO".to_string(),
-                pos: Some(KurboPoint::new(10.0, 10.0)),
-                inlets: Vec::new(),
-                outlets: 0,
+                node_id: None,
             }],
             ..Default::default()
-        }
-    }
+        };
+        snap.selection = Some(entity);
 
-    #[test]
-    fn selecting_a_node_box_highlights_its_tree_row() {
-        let (tx, _rx) = crossbeam_channel::unbounded();
-        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx, viewport_tx);
-        let snap = one_node_snapshot();
         ui.apply_snapshot(&snap);
-
-        ui.root.edit_widget_with_tag(crate::GRAPH_CANVAS_TAG, |mut canvas| {
-            GraphCanvas::set_selected(&mut canvas, Some(NodeId(1)));
-        });
-        ui.sync_selection();
+        ui.redraw();
+        ui.apply_snapshot(&snap);
+        ui.redraw();
 
         let selected = ui
             .root
             .edit_widget_with_tag(crate::SCENE_TREE_TAG, |tree| tree.widget.selected());
-        assert_eq!(selected, Some(snap.nodes[0].entity));
-    }
-
-    #[test]
-    fn selecting_a_graph_node_row_highlights_its_node_box() {
-        let (tx, _rx) = crossbeam_channel::unbounded();
-        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx, viewport_tx);
-        let snap = one_node_snapshot();
-        ui.apply_snapshot(&snap);
-
-        ui.root.edit_widget_with_tag(crate::SCENE_TREE_TAG, |mut tree| {
-            SceneTree::set_selected(&mut tree, Some(snap.nodes[0].entity));
-        });
-        ui.sync_selection();
-
-        let selected = ui
-            .root
-            .edit_widget_with_tag(crate::GRAPH_CANVAS_TAG, |canvas| canvas.widget.selected_node());
-        assert_eq!(selected, Some(NodeId(1)));
+        assert_eq!(selected, Some(entity), "the selection must not revert");
     }
 
     /// Regression test for the bug fixed alongside Task 8: `viewport_rect`
