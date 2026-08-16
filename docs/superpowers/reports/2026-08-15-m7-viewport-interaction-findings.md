@@ -1,7 +1,7 @@
 # M7 — viewport interaction: findings
 
 **Date:** 2026-08-16
-**Verdict:** GO — exit criterion met
+**Verdict:** CONDITIONAL — every automated/testable criterion passed; the plan's named exit criterion (the interactive by-eye walkthrough, Task 15 Step 5) has not been performed and remains outstanding before integration
 **Plan:** [`2026-08-15-m7-viewport-interaction.md`](../plans/2026-08-15-m7-viewport-interaction.md)
 **Spec:** [`2026-08-09-mvp-roadmap-design.md`](../specs/2026-08-09-mvp-roadmap-design.md)
 **Roadmap:** M7 in [`2026-07-25-sway-design.md`](../specs/2026-07-25-sway-design.md)
@@ -112,7 +112,7 @@ fixtures.
   it before checking active state, so the axis appears to go stale. No bug; the
   brief's test is more precise than inherited behavior.
 
-## What M7 inherits
+## What M8 inherits
 
 - **All M6-inherited items M7 deliberately did not address:** the tree-selection flicker
   (selecting a node with no canvas peer freezes the inspector one frame), the
