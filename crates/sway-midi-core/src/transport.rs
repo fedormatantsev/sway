@@ -1,16 +1,13 @@
-//! The 24 ppqn phase estimator: pulses in, tempo and beat position out.
+//! The 24 ppqn tempo smoother: pulses in, seconds-per-pulse and BPM out.
 //!
 //! Pure. No Bevy, no world, no clock of its own — every time it is handed is
-//! absolute seconds on whatever timeline the caller uses, and every answer is
-//! in those same seconds. `sway-nodes` owns the one instance and hands it the
-//! graph's fixed-clock timeline.
+//! absolute seconds on whatever timeline the caller uses. `PulseClock` owns
+//! the one instance and uses the fit only as `secs_per_pulse`.
 //!
-//! Raw pulse timing is too jittery to use directly (parent §2.7), so this
-//! fits a line to the last [`WINDOW_PULSES`] `(pulse index, arrival time)`
-//! pairs by least squares. The slope is seconds per pulse; the intercept is
-//! phase; inverting the line maps any time to a beat position. There are no
-//! gains to tune, and drift is corrected by construction because each new
-//! pulse re-fits against the caller's own timeline.
+//! Raw pulse timing is too jittery to use directly, so this fits a line to
+//! the last [`WINDOW_PULSES`] `(pulse index, arrival time)` pairs by least
+//! squares. The slope is seconds per pulse. Musical position is *not*
+//! interpolated from this line; [`crate::PulseClock`] counts pulses.
 
 use std::collections::VecDeque;
 
@@ -41,7 +38,6 @@ pub struct ClockEstimator {
     /// Current fit: `time = slope * index + intercept`. `None` until the fit
     /// is both long enough and non-degenerate.
     fit: Option<(f64, f64)>,
-    generation: u64,
 }
 
 impl ClockEstimator {
@@ -49,21 +45,12 @@ impl ClockEstimator {
         Self::default()
     }
 
-    /// Abandons the current fit. The generation changes, which is how a
-    /// caller differencing beat positions across ticks knows not to difference
-    /// across the seam.
+    /// Abandons the current fit.
     pub fn reset(&mut self) {
         self.samples.clear();
         self.next_index = 0.0;
         self.last_time = None;
         self.fit = None;
-        self.generation = self.generation.wrapping_add(1);
-    }
-
-    /// Which fit the current answers belong to. Changes on every `reset`,
-    /// including the implicit one a long gap causes.
-    pub fn generation(&self) -> u64 {
-        self.generation
     }
 
     /// Records one clock pulse, arriving at absolute time `t`.
@@ -82,7 +69,7 @@ impl ClockEstimator {
         // time," dragging the slope toward zero — and because the *next*
         // pulse's index is inferred from this fit, the error compounds pulse
         // over pulse rather than averaging out. Dropping it here is lossless:
-        // `beats_at` depends only on the fitted line, never on the index
+        // tempo depends only on the fitted line, never on the index
         // bookkeeping, and the next pulse that *does* advance time recovers
         // whatever this one couldn't distinguish via the same elapsed-pulses-
         // across-a-gap inference already used for genuinely missed pulses.
@@ -148,22 +135,12 @@ impl ClockEstimator {
 
     /// Estimated beat period, in seconds.
     pub fn secs_per_beat(&self) -> Option<f64> {
-        self.secs_per_pulse().map(|spp| spp * PULSES_PER_QUARTER as f64)
+        self.secs_per_pulse()
+            .map(|spp| spp * PULSES_PER_QUARTER as f64)
     }
 
     pub fn bpm(&self) -> Option<f64> {
         self.secs_per_beat().map(|spb| 60.0 / spb)
-    }
-
-    /// Beat position at absolute time `t`, relative to this fit's own origin.
-    ///
-    /// Only differences between two calls within one [`generation`] are
-    /// meaningful — the origin moves whenever the fit restarts.
-    ///
-    /// [`generation`]: Self::generation
-    pub fn beats_at(&self, t: f64) -> Option<f64> {
-        let (slope, intercept) = self.fit?;
-        Some((t - intercept) / slope / PULSES_PER_QUARTER as f64)
     }
 }
 
@@ -178,7 +155,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next_signed(&mut self, magnitude: f64) -> f64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let unit = (self.0 >> 11) as f64 / (1u64 << 53) as f64;
             (unit * 2.0 - 1.0) * magnitude
         }
@@ -223,22 +203,16 @@ mod tests {
     }
 
     #[test]
-    fn beat_position_advances_one_beat_per_twenty_four_pulses() {
-        let mut estimator = ClockEstimator::new();
-        steady(&mut estimator, 48, SPP_120, 0.0);
-        let a = estimator.beats_at(0.0).expect("locked");
-        let b = estimator.beats_at(0.5).expect("locked");
-        assert!((b - a - 1.0).abs() < 1e-9, "half a second is one beat at 120 BPM");
-    }
-
-    #[test]
     fn a_tempo_change_settles_within_one_window() {
         let mut estimator = ClockEstimator::new();
         let end = steady(&mut estimator, 48, SPP_120, 0.0);
         let spp_140 = (60.0 / 140.0) / PULSES_PER_QUARTER as f64;
         steady(&mut estimator, WINDOW_PULSES, spp_140, end);
         let bpm = estimator.bpm().expect("locked");
-        assert!((bpm - 140.0).abs() < 1.0, "after one full window: {bpm} BPM");
+        assert!(
+            (bpm - 140.0).abs() < 1.0,
+            "after one full window: {bpm} BPM"
+        );
     }
 
     #[test]
@@ -250,28 +224,27 @@ mod tests {
         t += 3.0 * SPP_120; // three pulses lost in transit
         steady(&mut estimator, 24, SPP_120, t);
         let bpm = estimator.bpm().expect("locked");
-        assert!((bpm - 120.0).abs() < 0.5, "dropped pulses moved the tempo to {bpm}");
+        assert!(
+            (bpm - 120.0).abs() < 0.5,
+            "dropped pulses moved the tempo to {bpm}"
+        );
     }
 
     #[test]
     fn a_gap_longer_than_a_beat_restarts_the_fit() {
         let mut estimator = ClockEstimator::new();
         let t = steady(&mut estimator, 48, SPP_120, 0.0);
-        let before = estimator.generation();
         estimator.push_pulse(t + 3.0); // three seconds of silence
-        assert_ne!(estimator.generation(), before, "a long gap must restart the fit");
         assert!(!estimator.is_locked(), "one pulse is not a lock");
     }
 
     #[test]
-    fn reset_bumps_the_generation_and_drops_the_lock() {
+    fn reset_drops_the_lock() {
         let mut estimator = ClockEstimator::new();
         steady(&mut estimator, 48, SPP_120, 0.0);
-        let before = estimator.generation();
         estimator.reset();
-        assert_ne!(estimator.generation(), before);
         assert!(!estimator.is_locked());
-        assert_eq!(estimator.beats_at(1.0), None);
+        assert_eq!(estimator.bpm(), None);
     }
 
     #[test]
@@ -283,7 +256,7 @@ mod tests {
             estimator.push_pulse(1.0);
         }
         assert!(estimator.bpm().is_none_or(|bpm| bpm.is_finite()));
-        assert!(estimator.beats_at(1.0).is_none_or(f64::is_finite));
+        assert!(estimator.secs_per_pulse().is_none_or(f64::is_finite));
     }
 
     #[test]
@@ -318,7 +291,7 @@ mod tests {
         // duplicate stragglers should still lock to the correct tempo, and
         // dropping the duplicates must be silent and cheap: it must not walk
         // the MAX_GAP_PULSES reset path (which only genuinely-long gaps
-        // should trigger), so `generation()` must not change.
+        // should trigger).
         let mut estimator = ClockEstimator::new();
         let mut t = 0.0;
         for i in 0..48 {
@@ -330,16 +303,23 @@ mod tests {
             }
             t += SPP_120;
         }
-        let generation_after_lock = estimator.generation();
-        assert_eq!(generation_after_lock, 0, "duplicates must never trigger a reset");
+        assert!(
+            estimator.is_locked(),
+            "duplicates must never trigger a reset"
+        );
 
         let bpm = estimator.bpm().expect("locked");
-        assert!((bpm - 120.0).abs() < 1.0, "stragglers moved the tempo to {bpm}");
+        assert!(
+            (bpm - 120.0).abs() < 1.0,
+            "stragglers moved the tempo to {bpm}"
+        );
 
-        // A few more duplicates after lock must still leave the generation
-        // untouched.
+        // A few more duplicates after lock must still leave the fit locked.
         estimator.push_pulse(t - SPP_120);
         estimator.push_pulse(t - SPP_120);
-        assert_eq!(estimator.generation(), generation_after_lock, "duplicates after lock must not reset");
+        assert!(
+            estimator.is_locked(),
+            "duplicates after lock must not reset"
+        );
     }
 }

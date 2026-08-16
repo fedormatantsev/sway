@@ -4,10 +4,8 @@ use std::path::PathBuf;
 use bevy_app::App;
 use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
 use serde::{Deserialize, Serialize};
-use sway_graph::{Transport, TransportTime, WiresPlugin};
 use sway_nodes::{
-    BeatTriggerState, Division, EnvelopeParams, EnvelopeState, MathOp, MidiInbox, MidiPlugin,
-    RawMidi, TickMidi, Waveform, beat_pulses, envelope_tick, lfo_value, math_value, note_message,
+    EnvelopeParams, EnvelopeState, MathOp, NoteMsg, Waveform, envelope_tick, lfo_value, math_value,
     remap_value,
 };
 
@@ -17,59 +15,9 @@ struct TraceInput {
     ticks: u32,
     #[serde(default)]
     events: Vec<(f64, MidiEvent)>,
-    #[serde(default)]
-    clock: Option<ClockSpec>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ClockSpec {
-    start: f64,
-    segments: Vec<(f64, f64)>,
-    #[serde(default)]
-    jitter: f64,
-    #[serde(default)]
-    dropout: Option<(f64, f64)>,
-}
-
-struct Lcg(u64);
-
-impl Lcg {
-    fn next_signed(&mut self, magnitude: f64) -> f64 {
-        self.0 = self
-            .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let unit = (self.0 >> 11) as f64 / (1u64 << 53) as f64;
-        (unit * 2.0 - 1.0) * magnitude
-    }
-}
-
-fn clock_events(spec: &ClockSpec) -> Vec<(f64, RawMidi)> {
-    let mut random = Lcg(0xC10C_C10C);
-    let mut events = Vec::new();
-    let mut at = spec.start;
-    for &(bpm, beats) in &spec.segments {
-        let seconds_per_pulse = (60.0 / bpm) / 24.0;
-        for _ in 0..((beats * 24.0).round() as usize) {
-            let dropped = spec.dropout.is_some_and(|(from, to)| at >= from && at < to);
-            if !dropped {
-                events.push((
-                    at + random.next_signed(spec.jitter),
-                    RawMidi {
-                        status: sway_midi_core::CLOCK,
-                        data1: 0,
-                        data2: 0,
-                    },
-                ));
-            }
-            at += seconds_per_pulse;
-        }
-    }
-    events.sort_by(|a, b| a.0.total_cmp(&b.0));
-    events
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, Copy)]
 struct MidiEvent {
     status: u8,
     data1: u8,
@@ -102,6 +50,44 @@ fn load_input(name: &str) -> TraceInput {
     ron::from_str(&source).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()))
 }
 
+fn note_message(
+    message: MidiEvent,
+    channel: u8,
+    note_lo: u8,
+    note_hi: u8,
+) -> Option<(bool, NoteMsg)> {
+    if message.status & 0x0f != channel || message.data1 < note_lo || message.data1 > note_hi {
+        return None;
+    }
+    let note = NoteMsg {
+        note: message.data1,
+        velocity: message.data2,
+    };
+    match (message.status & 0xf0, message.data2) {
+        (0x90, velocity) if velocity > 0 => Some((true, note)),
+        (0x80, _) | (0x90, 0) => Some((false, note)),
+        _ => None,
+    }
+}
+
+fn cc_value(message: MidiEvent, channel: u8, cc: u8) -> Option<f32> {
+    (message.status & 0xf0 == 0xb0 && message.status & 0x0f == channel && message.data1 == cc)
+        .then(|| message.data2 as f32 / 127.0)
+}
+
+fn due_this_tick(
+    events: &[(f64, MidiEvent)],
+    tick_start: f64,
+    tick_end: f64,
+    dt: f32,
+) -> Vec<(f32, MidiEvent)> {
+    events
+        .iter()
+        .filter(|(time, _)| *time > tick_start && *time <= tick_end)
+        .map(|(time, message)| (((time - tick_start).clamp(0.0, dt as f64)) as f32, *message))
+        .collect()
+}
+
 enum Runner {
     Envelope {
         state: EnvelopeState,
@@ -113,10 +99,6 @@ enum Runner {
         held: f32,
     },
     Chain,
-    Transport,
-    Beat {
-        state: BeatTriggerState,
-    },
 }
 
 impl Runner {
@@ -148,40 +130,22 @@ impl Runner {
                     "remap.value".into(),
                 ],
             ),
-            "transport-lock" | "transport-tempo-change" | "transport-dropout" => (
-                Self::Transport,
-                vec![
-                    "transport.bpm".into(),
-                    "transport.beats".into(),
-                    "transport.playing".into(),
-                ],
-            ),
-            "beat-trigger" => (
-                Self::Beat {
-                    state: BeatTriggerState::default(),
-                },
-                vec![
-                    "transport.bpm".into(),
-                    "transport.beats".into(),
-                    "transport.playing".into(),
-                    "beat.pulse".into(),
-                ],
-            ),
             _ => panic!("unknown trace case `{name}`"),
         }
     }
 
-    fn snapshot(&mut self, app: &App) -> Vec<Snapshot> {
-        let fixed = app.world().resource::<Time<Fixed>>();
-        let dt = fixed.delta_secs();
-        let tick_start = fixed.elapsed_secs_f64() - dt as f64;
+    fn snapshot(
+        &mut self,
+        tick_start: f64,
+        dt: f32,
+        messages: &[(f32, MidiEvent)],
+    ) -> Vec<Snapshot> {
         match self {
             Self::Envelope {
                 state,
                 fan_in,
                 trace_notes,
             } => {
-                let messages = &app.world().resource::<TickMidi>().events;
                 let channels: &[u8] = if *fan_in { &[0, 1] } else { &[0] };
                 let mut envelope_events = Vec::new();
                 let mut note_events = Vec::new();
@@ -230,8 +194,8 @@ impl Runner {
                 tick_start,
             ))],
             Self::Cc { held } => {
-                for &(_, message) in &app.world().resource::<TickMidi>().events {
-                    if let Some(value) = sway_nodes::cc_value(message, 0, 74) {
+                for &(_, message) in messages {
+                    if let Some(value) = cc_value(message, 0, 74) {
                         *held = value;
                     }
                 }
@@ -247,47 +211,8 @@ impl Runner {
                     Snapshot::Continuous(remap),
                 ]
             }
-            Self::Transport => transport_snapshots(app),
-            Self::Beat { state } => {
-                let time = app.world().resource::<Time<Transport>>();
-                let pulses = beat_pulses(
-                    state,
-                    Division::Beat,
-                    time.is_playing(),
-                    time.transport().beats_per_bar,
-                    time.beats(),
-                    time.delta_secs_f64(),
-                    time.transport().origin_beats,
-                    dt,
-                );
-                let mut snapshots = transport_snapshots(app);
-                snapshots.push(Snapshot::Events(
-                    pulses
-                        .into_iter()
-                        .map(|pulse| {
-                            (
-                                pulse.offset,
-                                format!(
-                                    "beat({},{},{})",
-                                    pulse.value.bar, pulse.value.beat, pulse.value.sixteenth
-                                ),
-                            )
-                        })
-                        .collect(),
-                ));
-                snapshots
-            }
         }
     }
-}
-
-fn transport_snapshots(app: &App) -> Vec<Snapshot> {
-    let time = app.world().resource::<Time<Transport>>();
-    vec![
-        Snapshot::Continuous(time.bpm() as f32),
-        Snapshot::Continuous(time.beats() as f32),
-        Snapshot::Continuous(if time.is_playing() { 1.0 } else { 0.0 }),
-    ]
 }
 
 fn run_trace(name: &str) -> TraceOutput {
@@ -295,33 +220,19 @@ fn run_trace(name: &str) -> TraceOutput {
     let mut app = App::new();
     app.add_plugins(TimePlugin)
         .insert_resource(Time::<Fixed>::from_hz(input.tick_hz))
-        .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
-        .add_plugins((WiresPlugin, MidiPlugin));
+        .insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
     app.update();
-
-    for (time, message) in input.events {
-        app.world_mut().resource_mut::<MidiInbox>().push(
-            time,
-            RawMidi {
-                status: message.status,
-                data1: message.data1,
-                data2: message.data2,
-            },
-        );
-    }
-    if let Some(clock) = &input.clock {
-        for (time, message) in clock_events(clock) {
-            app.world_mut()
-                .resource_mut::<MidiInbox>()
-                .push(time, message);
-        }
-    }
 
     let (mut runner, ports) = Runner::for_case(name);
     let ticks = (0..input.ticks)
         .map(|tick| {
             app.update();
-            (tick, runner.snapshot(&app))
+            let fixed = app.world().resource::<Time<Fixed>>();
+            let dt = fixed.delta_secs();
+            let tick_start = fixed.elapsed_secs_f64() - dt as f64;
+            let tick_end = tick_start + dt as f64;
+            let messages = due_this_tick(&input.events, tick_start, tick_end, dt);
+            (tick, runner.snapshot(tick_start, dt, &messages))
         })
         .collect();
     TraceOutput { ports, ticks }
@@ -381,17 +292,9 @@ trace_test!(cc_hold, "cc-hold");
 trace_test!(chain_math_remap, "chain-math-remap");
 trace_test!(two_notes_one_tick, "two-notes-one-tick");
 trace_test!(event_fan_in, "event-fan-in");
-trace_test!(transport_lock, "transport-lock");
-trace_test!(transport_tempo_change, "transport-tempo-change");
-trace_test!(transport_dropout, "transport-dropout");
-trace_test!(beat_trigger, "beat-trigger");
 
 #[test]
 fn traces_replay_bit_identically() {
-    assert_eq!(
-        run_trace("transport-dropout"),
-        run_trace("transport-dropout")
-    );
     assert_eq!(
         run_trace("envelope-retrigger"),
         run_trace("envelope-retrigger")

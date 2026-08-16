@@ -1,6 +1,10 @@
 //! ADSR logic as a pure function of absolute gate times.
 
-use crate::NoteMsg;
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct NoteMsg {
+    pub note: u8,
+    pub velocity: u8,
+}
 
 #[derive(Default, Debug, Clone)]
 pub struct EnvelopeState {

@@ -9,11 +9,12 @@ pub mod registry_wires;
 pub mod run;
 #[cfg(any(test, feature = "test-wires"))]
 pub mod test_wires;
-pub mod transport;
 pub mod watch;
 pub mod wire;
 
-pub use command::{EditorCommand, EditorRx, FieldValue, apply_editor_command, apply_editor_commands};
+pub use command::{
+    EditorCommand, EditorRx, FieldValue, apply_editor_command, apply_editor_commands,
+};
 pub use ctx::{EditorPos, TickCtx};
 pub use diagnostics::GraphDiagnostics;
 pub use order::{GraphOrder, Link, Sorted, Step, TopologyDirty, rebuild_order, topological_order};
@@ -23,6 +24,5 @@ pub use registry_wires::{
     register_wire,
 };
 pub use run::{WireTickCount, WiresPlugin, graph_tick};
-pub use transport::{MusicalTime, Transport, TransportState, TransportTime};
 pub use watch::{Authoring, WatchSet};
 pub use wire::{PropagateFn, Wire, propagate_of};

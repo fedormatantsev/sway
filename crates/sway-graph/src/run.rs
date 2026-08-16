@@ -7,7 +7,7 @@ use bevy_ecs::world::World;
 use bevy_time::{Fixed, Time};
 
 use crate::ctx::TickCtx;
-use crate::order::{rebuild_order, GraphOrder, Step, TopologyDirty};
+use crate::order::{GraphOrder, Step, TopologyDirty, rebuild_order};
 use crate::registry_wires::{BehaviourRegistry, WireRegistry};
 
 /// Ticks since the graph started running. Exposed as `TickCtx::tick_index`.
@@ -26,7 +26,11 @@ pub fn graph_tick(world: &mut World) {
         count.0 += 1;
         index
     };
-    let ctx = TickCtx { dt, tick_start, tick_index };
+    let ctx = TickCtx {
+        dt,
+        tick_start,
+        tick_index,
+    };
 
     // Taken out so the steps can borrow `world` mutably, put back after.
     let order = world.remove_resource::<GraphOrder>().unwrap_or_default();
@@ -50,26 +54,25 @@ impl Plugin for WiresPlugin {
             .init_resource::<TopologyDirty>()
             .init_resource::<WireTickCount>()
             .init_resource::<crate::diagnostics::GraphDiagnostics>()
-            .init_resource::<Time<crate::transport::Transport>>()
-            .register_type::<crate::transport::Transport>()
-            .register_type::<crate::transport::TransportState>()
             .register_type::<crate::ctx::EditorPos>()
             .add_systems(FixedUpdate, (rebuild_order, graph_tick).chain());
 
         app.configure_sets(
             bevy_app::PreUpdate,
-            crate::watch::WatchSet.run_if(bevy_ecs::schedule::common_conditions::resource_exists::<
-                crate::watch::Authoring,
-            >),
+            crate::watch::WatchSet.run_if(
+                bevy_ecs::schedule::common_conditions::resource_exists::<crate::watch::Authoring>,
+            ),
         );
 
         app.add_systems(
             bevy_app::PreUpdate,
             crate::command::apply_editor_commands
                 .before(crate::watch::WatchSet)
-                .run_if(bevy_ecs::schedule::common_conditions::resource_exists::<
-                    crate::command::EditorRx,
-                >),
+                .run_if(
+                    bevy_ecs::schedule::common_conditions::resource_exists::<
+                        crate::command::EditorRx,
+                    >,
+                ),
         );
     }
 }
@@ -78,7 +81,7 @@ impl Plugin for WiresPlugin {
 mod tests {
     use super::*;
     use crate::registry_wires::{register_behaviour, register_wire};
-    use crate::test_wires::{spawn_float, spawn_gain, FloatOut, Gain, GainFrom};
+    use crate::test_wires::{FloatOut, Gain, GainFrom, spawn_float, spawn_gain};
     use bevy_ecs::entity::Entity;
 
     const TICK_HZ: f64 = 120.0;
@@ -86,7 +89,9 @@ mod tests {
     /// A `Gain` behaviour: value = factor * 2, published on `FloatOut` so a
     /// second hop can consume it.
     fn double(world: &mut World, entity: Entity, _ctx: &TickCtx) {
-        let Some(gain) = world.get::<Gain>(entity) else { return };
+        let Some(gain) = world.get::<Gain>(entity) else {
+            return;
+        };
         let doubled = gain.factor * 2.0;
         if let Some(mut gain) = world.get_mut::<Gain>(entity)
             && gain.value != doubled
@@ -113,7 +118,7 @@ mod tests {
         register_wire::<GainFrom>(&mut app);
         register_behaviour::<Gain>(&mut app, double);
         app.update(); // burn frame 0's empty fixed-time accumulator -- mirrors
-                      // test_nodes.rs::engine_app's identical gotcha
+        // test_nodes.rs::engine_app's identical gotcha
         app
     }
 
@@ -207,5 +212,13 @@ mod tests {
         app.update();
 
         assert_eq!(app.world().resource::<ChangedCount>().0, 1);
+    }
+
+    #[test]
+    fn the_wires_plugin_does_not_insert_a_beat_clock() {
+        let mut app = App::new();
+        app.add_plugins(WiresPlugin);
+        // Type is gone; this test just proves WiresPlugin builds.
+        assert!(app.world().get_resource::<GraphOrder>().is_some());
     }
 }

@@ -269,4 +269,54 @@ mod tests {
         assert!(clock.playing());
         assert!((clock.ppq(24.0 * SPP_120) - 1.0).abs() < 1e-6);
     }
+
+    #[test]
+    fn a_clock_dropout_holds_ppq() {
+        let mut events = vec![(0.0, MidiMessage::Start)];
+        events.extend((1..=96).map(|i| (i as f32 * SPP_120 as f32, MidiMessage::Clock)));
+        let mut clock = crate::PulseClock::new();
+        apply_tick(&mut clock, &events, 0.0);
+        let t_last = 96.0 * SPP_120;
+        let before = clock.ppq(t_last);
+
+        assert!(
+            (clock.ppq(t_last + 1.0) - before).abs() < 1.0 / 24.0 + 1e-9,
+            "dropout must hold, not freewheel"
+        );
+    }
+
+    #[test]
+    fn a_tempo_change_is_followed() {
+        let spp_90 = (60.0 / 90.0) / 24.0;
+        let mut events = vec![(0.0, MidiMessage::Start)];
+        events.extend((1..=96).map(|i| (i as f32 * SPP_120 as f32, MidiMessage::Clock)));
+        let start_90 = 96.0 * SPP_120;
+        events
+            .extend((1..=96).map(|i| ((start_90 + i as f64 * spp_90) as f32, MidiMessage::Clock)));
+        let mut clock = crate::PulseClock::new();
+        apply_tick(&mut clock, &events, 0.0);
+
+        assert!(
+            (clock.bpm() - 90.0).abs() < 1.0,
+            "followed to {} BPM",
+            clock.bpm()
+        );
+    }
+
+    #[test]
+    fn inbox_start_updates_the_transport_snapshot() {
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let mut app = plugin_app(rx);
+        let now = crate::host_time_to_secs(crate::host_time_now());
+        app.world_mut()
+            .resource_mut::<MidiInbox>()
+            .events
+            .push_back((now, MidiMessage::Start));
+
+        app.update();
+
+        let transport = app.world().resource::<Transport>();
+        assert!(transport.playing);
+        assert_eq!(transport.ppq, 0.0);
+    }
 }

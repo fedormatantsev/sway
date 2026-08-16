@@ -5656,7 +5656,6 @@ dependencies = [
  "bevy_ecs",
  "bevy_math",
  "bevy_reflect",
- "bevy_time",
  "bevy_transform",
  "crossbeam-channel",
  "imaging",
@@ -5666,6 +5665,7 @@ dependencies = [
  "masonry_testing",
  "peniko",
  "sway-graph",
+ "sway-midi",
  "sway-nodes",
  "ui-events-winit",
  "winit",
@@ -5746,7 +5746,6 @@ dependencies = [
  "ron",
  "serde",
  "sway-graph",
- "sway-midi-core",
 ]
 
 [[package]]
