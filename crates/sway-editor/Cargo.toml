@@ -12,12 +12,12 @@ peniko.workspace = true
 ui-events-winit.workspace = true
 winit.workspace = true
 sway-graph.workspace = true
+sway-midi.workspace = true
 crossbeam-channel.workspace = true
 bevy_ecs.workspace = true
 bevy_math.workspace = true
 bevy_reflect.workspace = true
 bevy_transform.workspace = true
-bevy_time.workspace = true
 
 [dev-dependencies]
 masonry_testing.workspace = true

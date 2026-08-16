@@ -11,7 +11,8 @@ use bevy_reflect::{PartialReflect, ReflectRef};
 use bevy_transform::components::Transform;
 use kurbo::Point;
 use sway_graph::order::{GraphOrder, Step};
-use sway_graph::{ComponentDocRegistry, EditorPos, GraphDiagnostics, TransportTime, WireRegistry};
+use sway_graph::{ComponentDocRegistry, EditorPos, GraphDiagnostics, WireRegistry};
+use sway_midi::MusicalTime;
 
 /// The editor's display key for a node box.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -257,14 +258,14 @@ pub struct TransportView {
 }
 
 fn capture_transport(world: &World) -> TransportView {
-    let Some(time) = world.get_resource::<bevy_time::Time<sway_graph::Transport>>() else {
+    let Some(t) = world.get_resource::<sway_midi::Transport>() else {
         return TransportView::default();
     };
     TransportView {
-        playing: time.is_playing(),
-        bpm: time.bpm() as f32,
-        position: time.position().to_string(),
-        locked: time.transport().locked,
+        playing: t.playing,
+        bpm: t.bpm as f32,
+        position: MusicalTime::from_ppq(t.ppq, t.beats_per_bar).to_string(),
+        locked: t.locked,
     }
 }
 
@@ -643,16 +644,13 @@ mod tests {
     #[test]
     fn the_snapshot_carries_the_transport_readout() {
         let mut app = app();
-        {
-            let mut time = app
-                .world_mut()
-                .resource_mut::<bevy_time::Time<sway_graph::Transport>>();
-            time.transport_mut().state = sway_graph::TransportState::Playing;
-            time.transport_mut().secs_per_beat = 60.0 / 128.0;
-            time.transport_mut().locked = true;
-            time.advance_by(core::time::Duration::from_secs_f64(17.5));
-            time.reposition(17.5);
-        }
+        app.world_mut().insert_resource(sway_midi::Transport {
+            playing: true,
+            bpm: 128.0,
+            ppq: 17.5,
+            locked: true,
+            beats_per_bar: 4,
+        });
         let snapshot = capture(app.world());
         assert!(snapshot.transport.playing);
         assert!(snapshot.transport.locked);
