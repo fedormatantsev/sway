@@ -142,6 +142,9 @@ pub struct NodeBox {
     /// `NodeView::inlets` carries, so a `Vec` inlet (e.g. a `Group`'s
     /// `children`) draws one socket per element rather than one per field.
     inlets: Vec<u16>,
+    /// Wire type path per inlet field, parallel to `inlets`. Hit-test
+    /// identity; layout still uses the slot counts.
+    inlet_wires: Vec<&'static str>,
     /// How many outlet fields this node has. Never per-slot: an outlet can't
     /// be a `Vec` (design §12).
     outlets: u16,
@@ -168,6 +171,7 @@ impl NodeBox {
             selected: false,
             gesture: Gesture::None,
             inlets: Vec::new(),
+            inlet_wires: Vec::new(),
             outlets: 0,
             initial_transform: Affine::IDENTITY,
         }
@@ -188,6 +192,12 @@ impl NodeBox {
     pub(crate) fn with_sockets(mut self, inlets: Vec<u16>, outlets: u16) -> Self {
         self.inlets = inlets;
         self.outlets = outlets;
+        self
+    }
+
+    /// Seeds the type path for each inlet socket so hit-test can name a wire.
+    pub(crate) fn with_inlet_wires(mut self, wires: Vec<&'static str>) -> Self {
+        self.inlet_wires = wires;
         self
     }
 
@@ -234,7 +244,10 @@ impl NodeBox {
         }
         for ordinal in 0..inlet_fields {
             if inlet_socket_local(&self.inlets, ordinal, 0).distance(local) <= SOCKET_HIT_RADIUS {
-                return Some(SocketKind::Inlet(ordinal));
+                let Some(&wire) = self.inlet_wires.get(ordinal as usize) else {
+                    continue;
+                };
+                return Some(SocketKind::Inlet(wire));
             }
         }
         None
@@ -335,11 +348,20 @@ impl NodeBox {
     /// `Group`'s `children` `Vec` grew or shrank across a recompile. A no-op,
     /// paint-only change: sockets carry no state of their own, so nothing
     /// downstream (edges are rebuilt outright every snapshot) needs telling.
-    pub fn set_sockets(this: &mut WidgetMut<'_, Self>, inlets: Vec<u16>, outlets: u16) {
-        if this.widget.inlets == inlets && this.widget.outlets == outlets {
+    pub fn set_sockets(
+        this: &mut WidgetMut<'_, Self>,
+        inlets: Vec<u16>,
+        inlet_wires: Vec<&'static str>,
+        outlets: u16,
+    ) {
+        if this.widget.inlets == inlets
+            && this.widget.inlet_wires == inlet_wires
+            && this.widget.outlets == outlets
+        {
             return;
         }
         this.widget.inlets = inlets;
+        this.widget.inlet_wires = inlet_wires;
         this.widget.outlets = outlets;
         this.ctx.request_paint_only();
     }

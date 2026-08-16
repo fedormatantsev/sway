@@ -1,95 +1,199 @@
-//! `Wire` — a connection type. Spec §2.1.
+//! `Wire` — a reflected relationship on the consumer.
+
+use std::any::TypeId;
 
 use bevy_ecs::change_detection::Mut;
-use bevy_ecs::component::{Component, Mutable};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::hierarchy::ChildOf;
-use bevy_ecs::relationship::Relationship;
 use bevy_ecs::world::World;
+use bevy_reflect::{
+    PartialReflect, Reflect, ReflectMut, ReflectRef, reflect_trait,
+};
 use bevy_transform::components::Transform;
 
-/// A connection. The `Relationship` component lives on the CONSUMER and names
-/// the producer; the `RelationshipTarget` on the producer collects consumers.
+use crate::dispatch;
+
+/// A connection. The relationship component lives on the consumer and names
+/// the producer; the relationship-target on the producer collects consumers.
 ///
-/// Bevy allows one component per type per entity, so "an inlet has at most one
-/// source" holds by construction — there is no validation pass for it.
-pub trait Wire: Relationship {
-    /// The component read on the producer. Also the legality rule the editor
-    /// uses: this wire may only originate at an entity that has one.
-    type Source: Component;
-    /// The component written on the consumer.
-    type Target: Component<Mutability = Mutable>;
+/// Object-safe so the type registry can hold `ReflectWire` and the tick can
+/// call `propagate` on a `FromReflect` stack copy. Not a `Relationship`
+/// supertrait: that trait is `Sized`.
+#[reflect_trait]
+pub trait Wire {
+    fn producer(&self) -> Entity;
+    fn source_type(&self) -> TypeId;
+    fn target_type(&self) -> TypeId;
+    fn source_path(&self) -> &'static str;
+    fn target_path(&self) -> &'static str;
 
-    /// Display name, for the editor.
-    const NAME: &'static str;
-
-    /// The entirety of this connection's behaviour.
-    ///
-    /// **Must not write an equal value.** `get_mut` marks `Changed<Target>`
-    /// unconditionally, and `Changed<T>` is the whole dirty story downstream
-    /// (spec §3.4). Use `Mut::map_unchanged(..).set_if_neq(..)`.
-    fn propagate(src: &Self::Source, dst: Mut<Self::Target>);
+    /// Copy the producer's outlet into the consumer's inlet. Default is a
+    /// reflected field copy along [`Self::source_path`] / [`Self::target_path`].
+    /// An empty target path is a no-op (`ChildOf`).
+    fn propagate(&self, outlet: &dyn PartialReflect, inlet: Mut<dyn Reflect>) {
+        propagate_field_copy(outlet, inlet, self.source_path(), self.target_path());
+    }
 }
 
-/// A wire type's `propagate`, monomorphised and erased so a heterogeneous
-/// step list can hold it. `Wire::propagate` takes associated types and so is
-/// not object-safe; this is the only erasure the design needs.
-pub type PropagateFn = fn(&mut World, Entity, Entity);
-
-/// Hierarchy costs one impl, because `ChildOf` is already a `Relationship`.
-///
-/// `propagate` is empty because a structural connection carries no per-tick
-/// value: its existence IS the state, and Bevy's own hooks maintain
-/// `Children`. `Source`/`Target` still define wiring legality for tooling.
-impl Wire for ChildOf {
-    type Source = Transform;
-    type Target = Transform;
-    const NAME: &'static str = "parent";
-
-    fn propagate(_: &Transform, _: Mut<Transform>) {}
-}
-
-pub fn propagate_of<W: Wire>(world: &mut World, src: Entity, dst: Entity) {
-    // `src == dst` cannot happen: Bevy removes self-referential
-    // relationships (see tests/relationship_semantics.rs), so this fetch
-    // never aliases.
-    let Ok([src_ref, mut dst_mut]) = world.get_entity_mut([src, dst]) else {
-        return; // producer despawned or consumer missing (Bevy cleaned up the wire)
-    };
-    let Some(source) = src_ref.get::<W::Source>() else {
-        return; // legal transient state during spawn
-    };
-    let Some(target) = dst_mut.get_mut::<W::Target>() else {
+/// Copies `source_path` on `outlet` onto `target_path` on `inlet` when the
+/// values are not reflect-equal. `None` from `reflect_partial_eq` is treated
+/// as not equal. Empty `target_path` does nothing.
+pub fn propagate_field_copy(
+    outlet: &dyn PartialReflect,
+    inlet: Mut<dyn Reflect>,
+    source_path: &str,
+    target_path: &str,
+) {
+    if target_path.is_empty() {
+        return;
+    }
+    let Some(source_field) = reflect_field(outlet, source_path) else {
         return;
     };
-    W::propagate(source, target);
+    let equal = reflect_field((*inlet).as_partial_reflect(), target_path)
+        .and_then(|target| target.reflect_partial_eq(source_field))
+        == Some(true);
+    if equal {
+        return;
+    }
+    let Some(mut field) = map_field(inlet, target_path) else {
+        return;
+    };
+    let _ = field.try_apply(source_field);
+}
+
+fn reflect_field<'a>(value: &'a dyn PartialReflect, path: &str) -> Option<&'a dyn PartialReflect> {
+    match value.reflect_ref() {
+        ReflectRef::Struct(target) => target.field(path).or_else(|| {
+            path.parse::<usize>()
+                .ok()
+                .and_then(|index| target.field_at(index))
+        }),
+        ReflectRef::TupleStruct(target) => path
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| target.field(index)),
+        ReflectRef::Tuple(target) => path
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| target.field(index)),
+        _ => None,
+    }
+}
+
+fn reflect_field_mut<'a>(
+    value: &'a mut dyn PartialReflect,
+    path: &str,
+) -> Option<&'a mut dyn PartialReflect> {
+    match value.reflect_mut() {
+        ReflectMut::Struct(target) => {
+            if target.field(path).is_some() {
+                target.field_mut(path)
+            } else {
+                path.parse::<usize>()
+                    .ok()
+                    .and_then(|index| target.field_at_mut(index))
+            }
+        }
+        ReflectMut::TupleStruct(target) => path
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| target.field_mut(index)),
+        ReflectMut::Tuple(target) => path
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| target.field_mut(index)),
+        _ => None,
+    }
+}
+
+fn map_field<'a>(
+    inlet: Mut<'a, dyn Reflect>,
+    target_path: &str,
+) -> Option<Mut<'a, dyn PartialReflect>> {
+    // `map_unchanged` requires a field pointer; the immutable check above
+    // already proved the path exists on this value.
+    let path = target_path.to_owned();
+    Some(inlet.map_unchanged(move |value| {
+        reflect_field_mut(value.as_partial_reflect_mut(), &path)
+            .expect("target field existed during the immutable equal-value check")
+    }))
+}
+
+/// Hierarchy costs one impl, because `ChildOf` is already a `Relationship`.
+/// Empty `target_path` makes the default propagate a no-op; Bevy's own hooks
+/// maintain `Children`. Source/target types still define wiring legality.
+impl Wire for ChildOf {
+    fn producer(&self) -> Entity {
+        self.0
+    }
+
+    fn source_type(&self) -> TypeId {
+        TypeId::of::<Transform>()
+    }
+
+    fn target_type(&self) -> TypeId {
+        TypeId::of::<Transform>()
+    }
+
+    fn source_path(&self) -> &'static str {
+        "0"
+    }
+
+    fn target_path(&self) -> &'static str {
+        ""
+    }
+}
+
+/// `FromReflect`s the wire on `dst`, fetches outlet/inlet from its type
+/// methods, and calls [`Wire::propagate`]. Missing source, target, or
+/// entities is a no-op.
+pub fn propagate_reflected(world: &mut World, src: Entity, dst: Entity, type_id: TypeId) {
+    dispatch::propagate_reflected(world, src, dst, type_id);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::register::register_wire_type;
     use crate::test_wires::{Gain, GainFrom, spawn_float, spawn_gain};
-    use bevy_ecs::world::World;
+    use bevy_app::App;
+    use bevy_ecs::change_detection::DetectChanges;
+    use bevy_ecs::reflect::AppTypeRegistry;
+
+    fn wire_world() -> (World, Entity, Entity) {
+        let mut app = App::new();
+        app.register_type::<crate::test_wires::FloatOut>();
+        app.register_type::<Gain>();
+        register_wire_type::<GainFrom>(&mut app);
+        let src = spawn_float(app.world_mut(), 3.5);
+        let dst = spawn_gain(app.world_mut(), 0.0);
+        app.world_mut().entity_mut(dst).insert(GainFrom(src));
+        let world = std::mem::take(app.world_mut());
+        (world, src, dst)
+    }
+
+    fn propagate(world: &mut World, src: Entity, dst: Entity) {
+        propagate_reflected(world, src, dst, TypeId::of::<GainFrom>());
+    }
 
     #[test]
     fn propagate_copies_the_source_into_the_target_field() {
-        let mut world = World::new();
-        let src = spawn_float(&mut world, 3.5);
-        let dst = spawn_gain(&mut world, 0.0);
+        let (mut world, src, dst) = wire_world();
+        world.entity_mut(src).insert(crate::test_wires::FloatOut(3.5));
 
-        propagate_of::<GainFrom>(&mut world, src, dst);
+        propagate(&mut world, src, dst);
 
         assert_eq!(world.get::<Gain>(dst).map(|g| g.factor), Some(3.5));
     }
 
     #[test]
     fn a_despawned_producer_leaves_the_consumer_untouched() {
-        let mut world = World::new();
-        let src = spawn_float(&mut world, 3.5);
-        let dst = spawn_gain(&mut world, 1.25);
+        let (mut world, src, dst) = wire_world();
+        world.entity_mut(dst).insert(Gain { factor: 1.25, value: 0.0 });
         world.despawn(src);
 
-        propagate_of::<GainFrom>(&mut world, src, dst);
+        propagate(&mut world, src, dst);
 
         assert_eq!(
             world.get::<Gain>(dst).map(|g| g.factor),
@@ -100,36 +204,73 @@ mod tests {
 
     #[test]
     fn a_producer_without_the_source_component_is_a_no_op() {
-        let mut world = World::new();
-        let src = world.spawn_empty().id();
-        let dst = spawn_gain(&mut world, 1.25);
+        let mut app = App::new();
+        app.register_type::<crate::test_wires::FloatOut>();
+        app.register_type::<Gain>();
+        register_wire_type::<GainFrom>(&mut app);
+        let src = app.world_mut().spawn_empty().id();
+        let dst = spawn_gain(app.world_mut(), 1.25);
+        app.world_mut().entity_mut(dst).insert(GainFrom(src));
 
-        propagate_of::<GainFrom>(&mut world, src, dst);
+        propagate(app.world_mut(), src, dst);
 
-        assert_eq!(world.get::<Gain>(dst).map(|g| g.factor), Some(1.25));
+        assert_eq!(app.world().get::<Gain>(dst).map(|g| g.factor), Some(1.25));
     }
 
     #[test]
     fn a_consumer_without_the_target_component_is_a_no_op() {
-        let mut world = World::new();
-        let src = spawn_float(&mut world, 3.5);
-        let dst = world.spawn_empty().id();
+        let mut app = App::new();
+        app.register_type::<crate::test_wires::FloatOut>();
+        app.register_type::<Gain>();
+        register_wire_type::<GainFrom>(&mut app);
+        let src = spawn_float(app.world_mut(), 3.5);
+        let dst = app.world_mut().spawn_empty().id();
+        app.world_mut().entity_mut(dst).insert(GainFrom(src));
 
-        propagate_of::<GainFrom>(&mut world, src, dst);
+        propagate(app.world_mut(), src, dst);
 
-        assert!(world.get::<Gain>(dst).is_none());
+        assert!(app.world().get::<Gain>(dst).is_none());
     }
 
     #[test]
     fn the_source_value_is_read_not_the_wire_component() {
-        // Guards against reading the relationship's Entity by mistake.
-        let mut world = World::new();
-        let src = spawn_float(&mut world, -2.0);
-        let dst = spawn_gain(&mut world, 0.0);
-        world.entity_mut(dst).insert(GainFrom(src));
+        let (mut world, src, dst) = wire_world();
+        world.entity_mut(src).insert(crate::test_wires::FloatOut(-2.0));
+        world.entity_mut(dst).insert(Gain { factor: 0.0, value: 0.0 });
 
-        propagate_of::<GainFrom>(&mut world, src, dst);
+        propagate(&mut world, src, dst);
 
         assert_eq!(world.get::<Gain>(dst).map(|g| g.factor), Some(-2.0));
+    }
+
+    #[test]
+    fn equal_value_does_not_dirty_the_target() {
+        let (mut world, src, dst) = wire_world();
+        world.entity_mut(src).insert(crate::test_wires::FloatOut(3.5));
+        world.entity_mut(dst).insert(Gain { factor: 0.0, value: 0.0 });
+
+        propagate(&mut world, src, dst);
+        world.clear_trackers();
+        propagate(&mut world, src, dst);
+
+        assert!(
+            !world.entity(dst).get_ref::<Gain>().unwrap().is_changed(),
+            "a second copy of the same value must not re-mark Changed"
+        );
+    }
+
+    #[test]
+    fn child_of_is_a_reflected_no_op_wire() {
+        let mut app = App::new();
+        register_wire_type::<ChildOf>(&mut app);
+        let registry = app.world().resource::<AppTypeRegistry>().read();
+        assert!(
+            registry
+                .get(TypeId::of::<ChildOf>())
+                .and_then(|r| r.data::<ReflectWire>())
+                .is_some()
+        );
+        let wire = ChildOf(Entity::from_raw_u32(1).unwrap());
+        assert!(wire.target_path().is_empty());
     }
 }

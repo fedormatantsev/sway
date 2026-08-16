@@ -1,16 +1,19 @@
 //! Wire-model fixtures for the editor snapshot tests.
 
+use std::any::TypeId;
+
 use bevy_app::App;
-use bevy_ecs::change_detection::{DetectChangesMut, Mut};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::name::Name;
+use bevy_ecs::reflect::ReflectComponent;
 use bevy_ecs::world::World;
 use bevy_math::Vec2;
+use bevy_reflect::Reflect;
 use bevy_transform::components::Transform;
 use sway_graph::order::{TopologyDirty, rebuild_order};
-use sway_graph::{EditorPos, Wire, WiresPlugin, register_wire};
+use sway_graph::{EditorPos, ReflectWire, Wire, WiresPlugin, register_wire_type};
 
 #[derive(Component, Default)]
 pub(crate) struct Emit;
@@ -26,37 +29,58 @@ impl Recv {
     pub const AMOUNT: u16 = 0;
 }
 
-#[derive(Component, Default, Debug, Clone, Copy, PartialEq)]
-struct FloatOut(f32);
+#[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
+#[reflect(Component)]
+pub(crate) struct FloatOut(f32);
 
-#[derive(Component, Default, Debug, Clone, Copy, PartialEq)]
-struct Gain {
+#[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
+#[reflect(Component)]
+pub(crate) struct Gain {
     factor: f32,
 }
 
-#[derive(Component)]
+#[derive(Component, Reflect, Clone, Copy)]
 #[relationship(relationship_target = DrivesGain)]
-struct GainFrom(#[entities] Entity);
+#[reflect(Component, Wire)]
+pub(crate) struct GainFrom(#[entities] Entity);
 
 #[derive(Component)]
 #[relationship_target(relationship = GainFrom)]
-struct DrivesGain(Vec<Entity>);
+pub(crate) struct DrivesGain(Vec<Entity>);
+
+impl From<Entity> for GainFrom {
+    fn from(entity: Entity) -> Self {
+        Self(entity)
+    }
+}
 
 impl Wire for GainFrom {
-    type Source = FloatOut;
-    type Target = Gain;
-    const NAME: &'static str = "amount";
+    fn producer(&self) -> Entity {
+        self.0
+    }
 
-    fn propagate(src: &FloatOut, dst: Mut<Gain>) {
-        dst.map_unchanged(|gain| &mut gain.factor).set_if_neq(src.0);
+    fn source_type(&self) -> TypeId {
+        TypeId::of::<FloatOut>()
+    }
+
+    fn target_type(&self) -> TypeId {
+        TypeId::of::<Gain>()
+    }
+
+    fn source_path(&self) -> &'static str {
+        "0"
+    }
+
+    fn target_path(&self) -> &'static str {
+        "factor"
     }
 }
 
 pub(crate) fn app() -> App {
     let mut app = App::new();
     app.add_plugins(WiresPlugin);
-    register_wire::<GainFrom>(&mut app);
-    register_wire::<ChildOf>(&mut app);
+    register_wire_type::<GainFrom>(&mut app);
+    register_wire_type::<ChildOf>(&mut app);
     app
 }
 
@@ -111,8 +135,8 @@ pub(crate) fn spawn_named_spatial(world: &mut World, name: &str) -> Entity {
         .id()
 }
 
-/// Sources two registered wires at once (`amount` via `FloatOut`, `parent` via
-/// `Transform`). M6-6 collapses that to a single outlet socket.
+/// Sources two registered wires at once (`GainFrom` via `FloatOut`, `ChildOf`
+/// via `Transform`). Collapses to a single outlet socket.
 pub(crate) fn spawn_double_source(world: &mut World) -> Entity {
     world
         .spawn((
@@ -124,8 +148,8 @@ pub(crate) fn spawn_double_source(world: &mut World) -> Entity {
         .id()
 }
 
-/// Targets two registered wires at once, so its inlets are `[amount, parent]`
-/// and an inbound `parent` edge has a non-zero ordinal to land on.
+/// Targets two registered wires at once (`Gain` and `Transform`), so an
+/// inbound `ChildOf` edge has a distinct type path from `GainFrom`.
 pub(crate) fn spawn_double_target(world: &mut World, parent: Option<Entity>) -> Entity {
     let mut entity = world.spawn((
         Name::new("BothIn"),

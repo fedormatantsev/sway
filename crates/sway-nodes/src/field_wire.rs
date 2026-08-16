@@ -1,22 +1,15 @@
-//! One macro for the twenty-odd near-identical value wires.
+//! One macro for the near-identical value wires.
 //!
 //! A wire is a `Relationship` on the consumer, a `RelationshipTarget` on the
-//! producer, and a `propagate` that writes one field. All three are mechanical;
-//! the only per-wire facts are the two types, the document name, which field of
-//! the target to write, and how to get the value out of the source.
-//!
-//! `set_if_neq` is not optional. `get_mut` marks `Changed` unconditionally, and
-//! `Changed<T>` is the whole dirty story downstream (architecture §7), so a wire
-//! that writes an equal value silently recooks everything it feeds.
+//! producer, and reflected field copy from outlet tuple field `0` onto a
+//! named inlet field. Identity is the type path, not a short name.
 
 /// ```ignore
 /// field_wire!(
 ///     /// Doc comment for the wire type.
 ///     TranslationFrom / DrivesTranslation,
 ///     Vec3Out => Transform,
-///     "translation",
-///     |t| &mut t.translation,
-///     |s| s.0
+///     "translation"
 /// );
 /// ```
 macro_rules! field_wire {
@@ -24,29 +17,43 @@ macro_rules! field_wire {
         $(#[$attr:meta])*
         $wire:ident / $drives:ident,
         $src:ty => $dst:ty,
-        $name:literal,
-        |$t:ident| $field:expr,
-        |$s:ident| $value:expr
+        $target_path:literal
     ) => {
         $(#[$attr])*
-        #[derive(bevy::prelude::Component)]
+        #[derive(bevy::prelude::Component, bevy::prelude::Reflect, Clone, Copy)]
         #[relationship(relationship_target = $drives)]
+        #[reflect(Component, Wire)]
         pub struct $wire(#[entities] pub bevy::prelude::Entity);
 
         #[derive(bevy::prelude::Component)]
         #[relationship_target(relationship = $wire)]
         pub struct $drives(Vec<bevy::prelude::Entity>);
 
-        impl sway_graph::Wire for $wire {
-            type Source = $src;
-            type Target = $dst;
-            const NAME: &'static str = $name;
+        impl From<bevy::prelude::Entity> for $wire {
+            fn from(entity: bevy::prelude::Entity) -> Self {
+                Self(entity)
+            }
+        }
 
-            fn propagate(src: &$src, dst: bevy_ecs::change_detection::Mut<$dst>) {
-                let $s = src;
-                let value = $value;
-                let mut field = dst.map_unchanged(|$t| $field);
-                bevy_ecs::change_detection::DetectChangesMut::set_if_neq(&mut field, value);
+        impl sway_graph::Wire for $wire {
+            fn producer(&self) -> bevy::prelude::Entity {
+                self.0
+            }
+
+            fn source_type(&self) -> std::any::TypeId {
+                std::any::TypeId::of::<$src>()
+            }
+
+            fn target_type(&self) -> std::any::TypeId {
+                std::any::TypeId::of::<$dst>()
+            }
+
+            fn source_path(&self) -> &'static str {
+                "0"
+            }
+
+            fn target_path(&self) -> &'static str {
+                $target_path
             }
         }
     };

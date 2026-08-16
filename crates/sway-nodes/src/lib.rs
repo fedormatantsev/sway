@@ -33,29 +33,31 @@ pub struct WireNodesPlugin;
 
 impl bevy_app::Plugin for WireNodesPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        sway_graph::register_behaviour::<Oscillator>(app, oscillator_behaviour);
-        sway_graph::register_wire::<TimeFrom>(app);
-        sway_graph::register_wire::<AmplitudeFrom>(app);
-        sway_graph::register_wire::<TranslationFrom>(app);
-        sway_graph::register_wire::<RotationFrom>(app);
-        sway_graph::register_wire::<ScaleFrom>(app);
-        sway_graph::register_wire::<bevy::prelude::ChildOf>(app);
-        sway_graph::register_behaviour::<Vec3Value>(app, vec3_behaviour);
-        sway_graph::register_wire::<Vec3XFrom>(app);
-        sway_graph::register_wire::<Vec3YFrom>(app);
-        sway_graph::register_wire::<Vec3ZFrom>(app);
-        sway_graph::register_behaviour::<Math>(app, math_behaviour);
-        sway_graph::register_behaviour::<Remap>(app, remap_behaviour);
-        sway_graph::register_wire::<MathAFrom>(app);
-        sway_graph::register_wire::<MathBFrom>(app);
-        sway_graph::register_wire::<RemapInputFrom>(app);
+        sway_graph::register_behaviour_type::<Oscillator>(app);
+        sway_graph::register_wire_type::<TimeFrom>(app);
+        sway_graph::register_wire_type::<AmplitudeFrom>(app);
+        sway_graph::register_wire_type::<TranslationFrom>(app);
+        sway_graph::register_wire_type::<RotationFrom>(app);
+        sway_graph::register_wire_type::<ScaleFrom>(app);
+        sway_graph::register_wire_type::<bevy::prelude::ChildOf>(app);
+        sway_graph::register_behaviour_type::<Vec3Value>(app);
+        sway_graph::register_wire_type::<Vec3XFrom>(app);
+        sway_graph::register_wire_type::<Vec3YFrom>(app);
+        sway_graph::register_wire_type::<Vec3ZFrom>(app);
+        sway_graph::register_behaviour_type::<Math>(app);
+        sway_graph::register_behaviour_type::<Remap>(app);
+        sway_graph::register_wire_type::<MathAFrom>(app);
+        sway_graph::register_wire_type::<MathBFrom>(app);
+        sway_graph::register_wire_type::<RemapInputFrom>(app);
 
         // What a project document may name (M4). Short names, not type paths.
         app.register_type::<Waveform>();
         app.register_type::<MathOp>();
+        app.register_type::<FloatOut>();
+        app.register_type::<Vec3Out>();
+        app.register_type::<MaterialOut>();
+        app.register_type::<bevy::prelude::MeshMaterial3d<bevy::prelude::StandardMaterial>>();
         sway_graph::register_authorable::<Oscillator>(app, "Oscillator");
-        sway_graph::register_authorable::<FloatOut>(app, "FloatOut");
-        sway_graph::register_authorable::<Vec3Out>(app, "Vec3Out");
         sway_graph::register_authorable::<bevy::prelude::Transform>(app, "Transform");
         sway_graph::register_authorable::<sway_graph::EditorPos>(app, "EditorPos");
         sway_graph::register_authorable::<Vec3Value>(app, "Vec3");
@@ -77,7 +79,7 @@ impl bevy_app::Plugin for WireNodesPlugin {
                 .run_if(bevy_ecs::prelude::resource_exists::<bevy::prelude::AssetServer>),
         );
 
-        sway_graph::register_wire::<MaterialFrom>(app);
+        sway_graph::register_wire_type::<MaterialFrom>(app);
         sway_graph::register_authorable::<PbrMaterial>(app, "PbrMaterial");
         app.add_systems(
             bevy_app::Update,
@@ -116,7 +118,6 @@ mod tests {
             vec![
                 "DirectionalLight",
                 "EditorPos",
-                "FloatOut",
                 "Math",
                 "MeshAsset",
                 "Oscillator",
@@ -126,7 +127,6 @@ mod tests {
                 "SceneCamera",
                 "Transform",
                 "Vec3",
-                "Vec3Out",
             ]
         );
     }

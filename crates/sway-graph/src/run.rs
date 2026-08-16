@@ -7,8 +7,8 @@ use bevy_ecs::world::World;
 use bevy_time::{Fixed, Time};
 
 use crate::ctx::TickCtx;
+use crate::dispatch;
 use crate::order::{GraphOrder, Step, TopologyDirty, rebuild_order};
-use crate::registry_wires::{BehaviourRegistry, WireRegistry};
 
 /// Ticks since the graph started running. Exposed as `TickCtx::tick_index`.
 #[derive(Resource, Default)]
@@ -36,8 +36,12 @@ pub fn graph_tick(world: &mut World) {
     let order = world.remove_resource::<GraphOrder>().unwrap_or_default();
     for step in &order.steps {
         match *step {
-            Step::Propagate { run, src, dst, .. } => run(world, src, dst),
-            Step::Run { run, entity } => run(world, entity, &ctx),
+            Step::Propagate {
+                src, dst, type_id, ..
+            } => dispatch::propagate_reflected(world, src, dst, type_id),
+            Step::Run { entity, type_id } => {
+                dispatch::evaluate_reflected(world, entity, type_id, &ctx)
+            }
         }
     }
     world.insert_resource(order);
@@ -48,9 +52,7 @@ pub struct WiresPlugin;
 
 impl Plugin for WiresPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<WireRegistry>()
-            .init_resource::<BehaviourRegistry>()
-            .init_resource::<GraphOrder>()
+        app.init_resource::<GraphOrder>()
             .init_resource::<TopologyDirty>()
             .init_resource::<WireTickCount>()
             .init_resource::<crate::diagnostics::GraphDiagnostics>()
@@ -81,30 +83,10 @@ impl Plugin for WiresPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry_wires::{register_behaviour, register_wire};
+    use crate::register::{register_behaviour_type, register_wire_type};
     use crate::test_wires::{FloatOut, Gain, GainFrom, spawn_float, spawn_gain};
-    use bevy_ecs::entity::Entity;
 
     const TICK_HZ: f64 = 120.0;
-
-    /// A `Gain` behaviour: value = factor * 2, published on `FloatOut` so a
-    /// second hop can consume it.
-    fn double(world: &mut World, entity: Entity, _ctx: &TickCtx) {
-        let Some(gain) = world.get::<Gain>(entity) else {
-            return;
-        };
-        let doubled = gain.factor * 2.0;
-        if let Some(mut gain) = world.get_mut::<Gain>(entity)
-            && gain.value != doubled
-        {
-            gain.value = doubled;
-        }
-        if let Some(mut out) = world.get_mut::<FloatOut>(entity)
-            && out.0 != doubled
-        {
-            out.0 = doubled;
-        }
-    }
 
     fn engine_app() -> App {
         let mut app = App::new();
@@ -116,8 +98,9 @@ mod tests {
             .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
             .insert_resource(bevy_time::TimeUpdateStrategy::FixedTimesteps(1))
             .add_plugins(WiresPlugin);
-        register_wire::<GainFrom>(&mut app);
-        register_behaviour::<Gain>(&mut app, double);
+        app.register_type::<FloatOut>();
+        register_wire_type::<GainFrom>(&mut app);
+        register_behaviour_type::<Gain>(&mut app);
         app.update(); // burn frame 0's empty fixed-time accumulator -- mirrors
         // test_nodes.rs::engine_app's identical gotcha
         app
@@ -138,7 +121,7 @@ mod tests {
         app.update();
 
         assert_eq!(app.world().get::<Gain>(b).map(|g| g.factor), Some(3.0));
-        assert_eq!(app.world().get::<Gain>(b).map(|g| g.value), Some(6.0));
+        assert_eq!(app.world().get::<FloatOut>(b).map(|o| o.0), Some(6.0));
         assert_eq!(
             app.world().get::<Gain>(c).map(|g| g.factor),
             Some(6.0),

@@ -6,16 +6,17 @@
 //! in the schedule and cannot.
 
 use bevy::prelude::*;
-use bevy_ecs::change_detection::DetectChangesMut;
-use sway_graph::{EditorPos, TickCtx};
+use bevy_ecs::change_detection::Mut;
+use bevy_reflect::Reflect;
+use sway_graph::{Behaviour, EditorPos, ReflectBehaviour, ReflectWire, TickCtx};
 
 use crate::field_wire::field_wire;
 use crate::lfo::{Waveform, wave};
-use crate::outputs::FloatOut;
+use crate::outputs::{write_outlet, FloatOut};
 
 /// Time, period in time units, shape, phase offset in cycles, and amplitude.
 #[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]
-#[reflect(Component, Default, PartialEq)]
+#[reflect(Component, Default, PartialEq, Behaviour)]
 #[require(FloatOut, EditorPos)]
 pub struct Oscillator {
     pub time: f32,
@@ -37,21 +38,30 @@ impl Default for Oscillator {
     }
 }
 
-pub fn oscillator_behaviour(world: &mut World, entity: Entity, _ctx: &TickCtx) {
-    let Some(osc) = world.get::<Oscillator>(entity).copied() else {
-        return;
-    };
-    // An authored zero or negative period holds still rather than dividing:
-    // the behaviour is infallible.
-    let p = if osc.period > 0.0 {
-        (osc.time as f64 / osc.period as f64 + osc.phase as f64).rem_euclid(1.0) as f32
-    } else {
-        osc.phase.rem_euclid(1.0)
-    };
-    let value = wave(osc.shape, p) * osc.amplitude;
+impl Behaviour for Oscillator {
+    fn state_type(&self) -> Option<std::any::TypeId> {
+        None
+    }
 
-    if let Some(mut out) = world.get_mut::<FloatOut>(entity) {
-        out.set_if_neq(FloatOut(value));
+    fn outlet_type(&self) -> Option<std::any::TypeId> {
+        Some(std::any::TypeId::of::<FloatOut>())
+    }
+
+    fn evaluate(
+        &self,
+        _state: Option<Mut<dyn Reflect>>,
+        outlets: Option<Mut<dyn Reflect>>,
+        _ctx: &TickCtx,
+    ) {
+        // An authored zero or negative period holds still rather than dividing:
+        // the behaviour is infallible.
+        let p = if self.period > 0.0 {
+            (self.time as f64 / self.period as f64 + self.phase as f64).rem_euclid(1.0) as f32
+        } else {
+            self.phase.rem_euclid(1.0)
+        };
+        let value = wave(self.shape, p) * self.amplitude;
+        write_outlet(outlets, FloatOut(value));
     }
 }
 
@@ -59,18 +69,14 @@ field_wire!(
     /// Drives `Oscillator.time`.
     TimeFrom / DrivesTime,
     FloatOut => Oscillator,
-    "time",
-    |t| &mut t.time,
-    |s| s.0
+    "time"
 );
 
 field_wire!(
     /// Drives `Oscillator.amplitude`.
     AmplitudeFrom / DrivesAmplitude,
     FloatOut => Oscillator,
-    "amplitude",
-    |t| &mut t.amplitude,
-    |s| s.0
+    "amplitude"
 );
 
 #[cfg(test)]
@@ -149,7 +155,7 @@ mod tests {
 
     #[test]
     fn the_amplitude_wire_never_writes_an_equal_value() {
-        assert_writes_only_on_change::<AmplitudeFrom>(
+        assert_writes_only_on_change::<AmplitudeFrom, _, _>(
             FloatOut(1.0),
             FloatOut(2.0),
             Oscillator::default(),
@@ -158,7 +164,7 @@ mod tests {
 
     #[test]
     fn the_time_wire_never_writes_an_equal_value() {
-        assert_writes_only_on_change::<TimeFrom>(
+        assert_writes_only_on_change::<TimeFrom, _, _>(
             FloatOut(0.0),
             FloatOut(2.0),
             Oscillator::default(),

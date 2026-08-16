@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn adding_the_asset_applies_it_to_the_world() {
         let mut app = asset_app();
-        let doc = parse(r#"Project(version: 1, entities: [Entity(id: "a")])"#).expect("parses");
+        let doc = parse(r#"Project(version: 2, entities: [Entity(id: "a")])"#).expect("parses");
         let handle = app
             .world_mut()
             .resource_mut::<Assets<ProjectAsset>>()
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn modifying_the_asset_reapplies_it() {
         let mut app = asset_app();
-        let doc = parse(r#"Project(version: 1, entities: [Entity(id: "a")])"#).expect("parses");
+        let doc = parse(r#"Project(version: 2, entities: [Entity(id: "a")])"#).expect("parses");
         let handle = app
             .world_mut()
             .resource_mut::<Assets<ProjectAsset>>()
@@ -215,7 +215,7 @@ mod tests {
             .collect();
         assert_eq!(before.len(), 1, "the first load must have already applied");
 
-        let next = parse(r#"Project(version: 1, entities: [Entity(id: "a"), Entity(id: "b")])"#)
+        let next = parse(r#"Project(version: 2, entities: [Entity(id: "a"), Entity(id: "b")])"#)
             .expect("parses");
         app.world_mut()
             .resource_mut::<Assets<ProjectAsset>>()
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn the_loader_reads_text_into_a_document() {
         // The loader's own parse path, without an AssetServer.
-        let text = r#"Project(version: 1, entities: [Entity(id: "a")])"#;
+        let text = r#"Project(version: 2, entities: [Entity(id: "a")])"#;
         let doc = parse(text).expect("parses");
         assert_eq!(doc.entities.len(), 1);
     }

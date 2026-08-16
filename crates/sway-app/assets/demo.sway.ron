@@ -22,7 +22,7 @@
 // the next tick by design, M7-7, which makes them useless for proving a
 // translate-drag "sticks").
 Project(
-    version: 1,
+    version: 2,
     entities: [
         Entity(
             id: "camera",
@@ -68,7 +68,7 @@ Project(
                 "Oscillator": (time: 0.0, period: 8.0, shape: Sine, phase: 0.0, amplitude: 0.5),
                 "EditorPos": ((-460.0, 40.0)),
             },
-            wires: { "time": "midiTime" },
+            wires: { "sway_nodes::osc::TimeFrom": "midiTime" },
         ),
         Entity(
             id: "lfoB",
@@ -76,7 +76,7 @@ Project(
                 "Oscillator": (time: 0.0, period: 2.0, shape: Sine, phase: 0.0, amplitude: 0.0),
                 "EditorPos": ((-460.0, 160.0)),
             },
-            wires: { "amplitude": "lfoA", "time": "midiTime" },
+            wires: { "sway_nodes::osc::AmplitudeFrom": "lfoA", "sway_nodes::osc::TimeFrom": "midiTime" },
         ),
         Entity(
             id: "vec3A",
@@ -84,7 +84,7 @@ Project(
                 "Vec3": (x: -0.8, y: 0.0, z: 0.0),
                 "EditorPos": ((-220.0, 40.0)),
             },
-            wires: { "vec3.y": "lfoA" },
+            wires: { "sway_nodes::value::Vec3YFrom": "lfoA" },
         ),
         Entity(
             id: "vec3B",
@@ -92,7 +92,7 @@ Project(
                 "Vec3": (x: 0.8, y: 0.0, z: 0.0),
                 "EditorPos": ((-220.0, 160.0)),
             },
-            wires: { "vec3.y": "lfoB" },
+            wires: { "sway_nodes::value::Vec3YFrom": "lfoB" },
         ),
         Entity(
             id: "cubeA",
@@ -100,7 +100,7 @@ Project(
                 "MeshAsset": (path: "cube.gltf#Mesh0/Primitive0"),
                 "EditorPos": ((20.0, 40.0)),
             },
-            wires: { "translation": "vec3A", "material": "mat", "parent": "group" },
+            wires: { "sway_nodes::spatial::TranslationFrom": "vec3A", "sway_nodes::pbr_material::MaterialFrom": "mat", "bevy_ecs::hierarchy::ChildOf": "group" },
         ),
         Entity(
             id: "cubeB",
@@ -108,7 +108,7 @@ Project(
                 "MeshAsset": (path: "cube.gltf#Mesh0/Primitive0"),
                 "EditorPos": ((20.0, 160.0)),
             },
-            wires: { "translation": "vec3B", "material": "mat", "parent": "group" },
+            wires: { "sway_nodes::spatial::TranslationFrom": "vec3B", "sway_nodes::pbr_material::MaterialFrom": "mat", "bevy_ecs::hierarchy::ChildOf": "group" },
         ),
         Entity(
             id: "cubeC",
@@ -121,7 +121,7 @@ Project(
                 ),
                 "EditorPos": ((20.0, 280.0)),
             },
-            wires: { "material": "mat", "parent": "group" },
+            wires: { "sway_nodes::pbr_material::MaterialFrom": "mat", "bevy_ecs::hierarchy::ChildOf": "group" },
         ),
         Entity(
             id: "group",

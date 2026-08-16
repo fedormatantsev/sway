@@ -15,7 +15,8 @@ use bevy_reflect::serde::TypedReflectSerializer;
 use crate::diagnostics::DocId;
 use crate::doc::{EntityDoc, FORMAT_VERSION, ProjectDoc};
 use sway_graph::ComponentDocRegistry;
-use sway_graph::WireRegistry;
+use sway_graph::ReflectWire;
+use sway_graph::dispatch::stack_wire;
 
 pub fn to_document(world: &mut World) -> ProjectDoc {
     let empty = ProjectDoc {
@@ -42,12 +43,14 @@ pub fn to_document(world: &mut World) -> ProjectDoc {
     let components = world
         .remove_resource::<ComponentDocRegistry>()
         .unwrap_or_default();
-    let had_wires = world.get_resource::<WireRegistry>().is_some();
-    let wires = world.remove_resource::<WireRegistry>().unwrap_or_default();
 
     let mut entities = Vec::with_capacity(carriers.len());
     {
         let type_registry = type_registry.read();
+        let wire_types: Vec<(std::any::TypeId, &'static str)> = type_registry
+            .iter_with_data::<ReflectWire>()
+            .map(|(registration, _)| (registration.type_id(), registration.type_info().type_path()))
+            .collect();
         for (id, entity) in &carriers {
             let mut component_map = BTreeMap::new();
             for entry in &components.entries {
@@ -82,14 +85,14 @@ pub fn to_document(world: &mut World) -> ProjectDoc {
             }
 
             let mut wire_map = BTreeMap::new();
-            for entry in &wires.entries {
-                let Some(src) = (entry.read)(world, *entity) else {
+            for (type_id, type_path) in &wire_types {
+                let Some(wire) = stack_wire(&type_registry, world, *entity, *type_id) else {
                     continue;
                 };
-                let Some(src_id) = ids.get(&src) else {
+                let Some(src_id) = ids.get(&wire.producer()) else {
                     continue; // wired to something the document does not own
                 };
-                wire_map.insert(entry.name.to_string(), src_id.clone());
+                wire_map.insert((*type_path).to_string(), src_id.clone());
             }
 
             entities.push(EntityDoc {
@@ -102,9 +105,6 @@ pub fn to_document(world: &mut World) -> ProjectDoc {
 
     if had_components {
         world.insert_resource(components);
-    }
-    if had_wires {
-        world.insert_resource(wires);
     }
 
     ProjectDoc {
@@ -132,30 +132,35 @@ mod tests {
     use crate::apply::apply;
     use crate::doc::parse;
     use bevy_app::App;
+    use bevy_reflect::TypePath;
     use sway_graph::TopologyDirty;
     use sway_graph::register_authorable;
-    use sway_graph::register_wire;
+    use sway_graph::register_wire_type;
     use sway_graph::test_wires::{FloatOut, Gain, GainFrom};
 
     fn round_trip_app() -> App {
         let mut app = App::new();
         app.init_resource::<TopologyDirty>();
-        register_wire::<GainFrom>(&mut app);
+        register_wire_type::<GainFrom>(&mut app);
         register_authorable::<Gain>(&mut app, "Gain");
-        register_authorable::<FloatOut>(&mut app, "FloatOut");
         app
     }
 
-    const SOURCE: &str = r#"Project(version: 1, entities: [
-        Entity(id: "src", components: { "FloatOut": (2.0) }),
-        Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.5) },
-               wires: { "factor": "src" }),
-    ])"#;
+    fn source() -> String {
+        format!(
+            r#"Project(version: 2, entities: [
+        Entity(id: "src"),
+        Entity(id: "dst", components: {{ "Gain": (factor: 0.0, value: 0.5) }},
+               wires: {{ "{}": "src" }}),
+    ])"#,
+            GainFrom::type_path()
+        )
+    }
 
     #[test]
     fn a_world_emits_the_document_that_built_it() {
         let mut app = round_trip_app();
-        apply(app.world_mut(), &parse(SOURCE).expect("parses"));
+        apply(app.world_mut(), &parse(&source()).expect("parses"));
 
         let emitted = to_document(app.world_mut());
 
@@ -166,8 +171,15 @@ mod tests {
             .iter()
             .find(|e| e.id == "dst")
             .expect("present");
-        assert_eq!(dst.wires.get("factor").map(String::as_str), Some("src"));
+        assert_eq!(
+            dst.wires.get(GainFrom::type_path()).map(String::as_str),
+            Some("src")
+        );
         assert!(dst.components.contains_key("Gain"));
+        assert!(
+            !dst.components.contains_key("FloatOut"),
+            "outlets are not document components"
+        );
     }
 
     #[test]
@@ -175,7 +187,7 @@ mod tests {
         // The completeness check: anything the format cannot express is lost
         // here and the assertion fails.
         let mut app = round_trip_app();
-        apply(app.world_mut(), &parse(SOURCE).expect("parses"));
+        apply(app.world_mut(), &parse(&source()).expect("parses"));
         let once = to_document(app.world_mut());
 
         let mut second = round_trip_app();
@@ -188,7 +200,7 @@ mod tests {
     #[test]
     fn the_emitted_text_reparses() {
         let mut app = round_trip_app();
-        apply(app.world_mut(), &parse(SOURCE).expect("parses"));
+        apply(app.world_mut(), &parse(&source()).expect("parses"));
         let doc = to_document(app.world_mut());
 
         let text = to_ron(&doc).expect("emits");
@@ -201,7 +213,7 @@ mod tests {
     fn each_component_and_wire_gets_its_own_line() {
         // Spec §2.2: this is what lets M7's writer replace one line in place.
         let mut app = round_trip_app();
-        apply(app.world_mut(), &parse(SOURCE).expect("parses"));
+        apply(app.world_mut(), &parse(&source()).expect("parses"));
         let text = to_ron(&to_document(app.world_mut())).expect("emits");
 
         let gain_line = text
@@ -212,9 +224,10 @@ mod tests {
             gain_line.contains("factor") && gain_line.contains("value"),
             "the whole payload is on one line: {gain_line}"
         );
+        let wire_needle = format!("\"{}\": \"src\"", GainFrom::type_path());
         assert_eq!(
             text.lines()
-                .filter(|line| line.contains("\"factor\": \"src\""))
+                .filter(|line| line.contains(&wire_needle))
                 .count(),
             1,
             "the wire is one line"
@@ -222,9 +235,35 @@ mod tests {
     }
 
     #[test]
+    fn emit_omits_outlet_components() {
+        let mut app = round_trip_app();
+        apply(app.world_mut(), &parse(&source()).expect("parses"));
+        let src = app
+            .world_mut()
+            .query::<(bevy_ecs::entity::Entity, &crate::diagnostics::DocId)>()
+            .iter(app.world())
+            .find(|(_, id)| id.0 == "src")
+            .map(|(entity, _)| entity)
+            .expect("src");
+        app.world_mut().entity_mut(src).insert(FloatOut(9.0));
+
+        let doc = to_document(app.world_mut());
+        let src_doc = doc
+            .entities
+            .iter()
+            .find(|e| e.id == "src")
+            .expect("present");
+        assert!(
+            !src_doc.components.contains_key("FloatOut"),
+            "runtime outlets stay off the document: {:?}",
+            src_doc.components.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn an_entity_without_a_doc_id_is_not_in_the_document() {
         let mut app = round_trip_app();
-        apply(app.world_mut(), &parse(SOURCE).expect("parses"));
+        apply(app.world_mut(), &parse(&source()).expect("parses"));
         app.world_mut().spawn(FloatOut(9.0));
 
         let doc = to_document(app.world_mut());

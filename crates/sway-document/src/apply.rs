@@ -19,8 +19,9 @@ use serde::de::DeserializeSeed;
 use crate::diagnostics::{DocId, ItemError, ProjectDiagnostics};
 use crate::doc::{EntityDoc, ProjectDoc};
 use sway_graph::ComponentDocRegistry;
+use sway_graph::ReflectWire;
 use sway_graph::TopologyDirty;
-use sway_graph::WireRegistry;
+use sway_graph::dispatch::{insert_wire, remove_wire, stack_wire};
 
 /// Applies `doc` to `world` and returns what it could not do.
 ///
@@ -59,16 +60,11 @@ pub fn apply(world: &mut World, doc: &ProjectDoc) -> ProjectDiagnostics {
         }
     }
 
-    let had_wires = world.get_resource::<WireRegistry>().is_some();
-    let wires = world.remove_resource::<WireRegistry>().unwrap_or_default();
     for entity_doc in &doc.entities {
         let Some(&entity) = ids.get(&entity_doc.id) else {
             continue;
         };
-        apply_wires(world, entity, entity_doc, &ids, &wires, &mut diagnostics);
-    }
-    if had_wires {
-        world.insert_resource(wires);
+        apply_wires(world, entity, entity_doc, &ids, &mut diagnostics);
     }
 
     if let Some(mut dirty) = world.get_resource_mut::<TopologyDirty>() {
@@ -234,30 +230,42 @@ fn apply_components(
     }
 }
 
-/// Pass 4: resolves each entity's declared wires against `WireRegistry`,
-/// inserting, removing, or leaving each one alone, and reports an unknown
-/// wire name or an unresolved target rather than panicking on either.
+/// Pass 4: resolves each entity's declared wires against reflected wire
+/// types, inserting, removing, or leaving each one alone, and reports an
+/// unknown type path or an unresolved target rather than panicking on either.
 fn apply_wires(
     world: &mut World,
     entity: Entity,
     entity_doc: &EntityDoc,
     ids: &HashMap<String, Entity>,
-    wires: &WireRegistry,
     diagnostics: &mut ProjectDiagnostics,
 ) {
-    // Wire names this entity named in the document but that failed to
+    let Some(type_registry) = world.get_resource::<AppTypeRegistry>().cloned() else {
+        return;
+    };
+    let catalog: Vec<(TypeId, &'static str)> = {
+        let registry = type_registry.read();
+        registry
+            .iter_with_data::<ReflectWire>()
+            .map(|(registration, _)| (registration.type_id(), registration.type_info().type_path()))
+            .collect()
+    };
+
+    // Type paths this entity named in the document but that failed to
     // resolve (unknown wire, or a target id that doesn't resolve). These
     // are left alone below rather than treated as "wanted = None", so a
     // transient typo mid-edit doesn't rip out a wire that was already
     // successfully wired — spec §4.3: a failed item is skipped, not removed.
     let mut diagnosed: HashSet<&str> = HashSet::new();
+    let mut has_unknown = false;
     for (name, target_id) in &entity_doc.wires {
-        if wires.entries.iter().all(|entry| entry.name != name) {
+        if catalog.iter().all(|(_, path)| *path != name.as_str()) {
             diagnostics.items.push(ItemError::UnknownWire {
                 entity: entity_doc.id.clone(),
                 wire: name.clone(),
             });
             diagnosed.insert(name.as_str());
+            has_unknown = true;
         } else if !ids.contains_key(target_id) {
             diagnostics.items.push(ItemError::UnresolvedTarget {
                 entity: entity_doc.id.clone(),
@@ -268,22 +276,32 @@ fn apply_wires(
         }
     }
 
-    for entry in &wires.entries {
-        if diagnosed.contains(entry.name) {
-            continue; // named but unresolved this round — leave it alone
+    for (type_id, type_path) in catalog {
+        if diagnosed.contains(type_path) {
+            continue;
+        }
+        let named = entity_doc.wires.contains_key(type_path);
+        // A typo that replaced the real type path is an unknown key, so the
+        // catalog type looks omitted. Do not disconnect in that case; the
+        // author is mid-edit, not dropping the wire.
+        if !named && has_unknown {
+            continue;
         }
         let wanted = entity_doc
             .wires
-            .get(entry.name)
+            .get(type_path)
             .and_then(|target_id| ids.get(target_id))
             .copied();
-        let current = (entry.read)(world, entity);
+        let current = {
+            let registry = type_registry.read();
+            stack_wire(&registry, world, entity, type_id).map(|wire| wire.producer())
+        };
         if wanted == current {
-            continue; // never churn a RelationshipTarget for nothing
+            continue;
         }
         match wanted {
-            Some(src) => (entry.insert)(world, entity, src),
-            None => (entry.remove)(world, entity),
+            Some(src) => insert_wire(world, type_path, entity, src),
+            None => remove_wire(world, type_path, entity),
         }
     }
 }
@@ -369,7 +387,7 @@ mod tests {
         world.init_resource::<AppTypeRegistry>();
         apply(
             &mut world,
-            &doc(r#"Project(version: 1, entities: [Entity(id: "a"), Entity(id: "b")])"#),
+            &doc(r#"Project(version: 2, entities: [Entity(id: "a"), Entity(id: "b")])"#),
         );
 
         assert_eq!(ids(&mut world), vec!["a".to_string(), "b".to_string()]);
@@ -389,13 +407,13 @@ mod tests {
         world.init_resource::<AppTypeRegistry>();
         apply(
             &mut world,
-            &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#),
+            &doc(r#"Project(version: 2, entities: [Entity(id: "a")])"#),
         );
         let before = entity_of(&mut world, "a").expect("spawned");
 
         apply(
             &mut world,
-            &doc(r#"Project(version: 1, entities: [Entity(id: "a"), Entity(id: "b")])"#),
+            &doc(r#"Project(version: 2, entities: [Entity(id: "a"), Entity(id: "b")])"#),
         );
 
         assert_eq!(
@@ -412,13 +430,13 @@ mod tests {
         world.init_resource::<AppTypeRegistry>();
         apply(
             &mut world,
-            &doc(r#"Project(version: 1, entities: [Entity(id: "a"), Entity(id: "b")])"#),
+            &doc(r#"Project(version: 2, entities: [Entity(id: "a"), Entity(id: "b")])"#),
         );
         let b = entity_of(&mut world, "b").expect("spawned");
 
         apply(
             &mut world,
-            &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#),
+            &doc(r#"Project(version: 2, entities: [Entity(id: "a")])"#),
         );
 
         assert!(world.get_entity(b).is_err(), "b is gone");
@@ -434,9 +452,9 @@ mod tests {
 
         apply(
             &mut world,
-            &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#),
+            &doc(r#"Project(version: 2, entities: [Entity(id: "a")])"#),
         );
-        apply(&mut world, &doc("Project(version: 1, entities: [])"));
+        apply(&mut world, &doc("Project(version: 2, entities: [])"));
 
         assert!(
             world.get_entity(runtime_owned).is_ok(),
@@ -450,9 +468,9 @@ mod tests {
         world.init_resource::<AppTypeRegistry>();
         apply(
             &mut world,
-            &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#),
+            &doc(r#"Project(version: 2, entities: [Entity(id: "a")])"#),
         );
-        apply(&mut world, &doc("Project(version: 1, entities: [])"));
+        apply(&mut world, &doc("Project(version: 2, entities: [])"));
 
         assert!(ids(&mut world).is_empty());
     }
@@ -503,7 +521,7 @@ mod tests {
         let mut app = doc_app();
         apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
+            &doc(r#"Project(version: 2, entities: [
                 Entity(id: "a", components: { "Osc": (hz: 3.0, amplitude: 0.25) })
             ])"#),
         );
@@ -532,7 +550,7 @@ mod tests {
         let mut app = doc_app();
         apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
+            &doc(r#"Project(version: 2, entities: [
                 Entity(id: "a", components: { "Osc": (hz: 3.0, amplitude: 0.25) })
             ])"#),
         );
@@ -545,7 +563,7 @@ mod tests {
 
         apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
+            &doc(r#"Project(version: 2, entities: [
                 Entity(id: "a", components: { "Osc": (hz: 4.0) })
             ])"#),
         );
@@ -564,7 +582,7 @@ mod tests {
         // The same discipline wires live under (parent spec §2.11): writing an
         // equal value destroys change detection for everything downstream.
         let mut app = doc_app();
-        let text = r#"Project(version: 1, entities: [
+        let text = r#"Project(version: 2, entities: [
             Entity(id: "a", components: { "Osc": (hz: 3.0, amplitude: 0.25) })
         ])"#;
         apply(app.world_mut(), &doc(text));
@@ -585,7 +603,7 @@ mod tests {
         let mut app = doc_app();
         apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
+            &doc(r#"Project(version: 2, entities: [
                 Entity(id: "a", components: { "Osc": (hz: 3.0) })
             ])"#),
         );
@@ -593,7 +611,7 @@ mod tests {
 
         apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#),
+            &doc(r#"Project(version: 2, entities: [Entity(id: "a")])"#),
         );
 
         assert!(app.world().get::<Osc>(entity).is_none());
@@ -606,7 +624,7 @@ mod tests {
         // its outlet attached. Without the exemption the removal pass strips
         // `Outlet` right back off again and the node has no output.
         let mut app = require_app();
-        let text = r#"Project(version: 1, entities: [
+        let text = r#"Project(version: 2, entities: [
             Entity(id: "a", components: { "Emitter": () })
         ])"#;
 
@@ -626,7 +644,7 @@ mod tests {
         let mut app = require_app();
         apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
+            &doc(r#"Project(version: 2, entities: [
                 Entity(id: "a", components: { "Emitter": (), "Osc": (hz: 3.0) })
             ])"#),
         );
@@ -634,7 +652,7 @@ mod tests {
 
         apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
+            &doc(r#"Project(version: 2, entities: [
                 Entity(id: "a", components: { "Emitter": () })
             ])"#),
         );
@@ -659,14 +677,14 @@ mod tests {
         let mut app = doc_app();
         apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [Entity(id: "a")])"#),
+            &doc(r#"Project(version: 2, entities: [Entity(id: "a")])"#),
         );
         let entity = entity_of(app.world_mut(), "a").expect("spawned");
         app.world_mut().entity_mut(entity).insert(RuntimeOwned);
 
         apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
+            &doc(r#"Project(version: 2, entities: [
                 Entity(id: "a", components: { "Osc": (hz: 1.0) })
             ])"#),
         );
@@ -679,7 +697,7 @@ mod tests {
         let mut app = doc_app();
         let diagnostics = apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
+            &doc(r#"Project(version: 2, entities: [
                 Entity(id: "a", components: { "Nope": (), "Osc": (hz: 2.0) })
             ])"#),
         );
@@ -700,7 +718,7 @@ mod tests {
         let mut app = doc_app();
         let diagnostics = apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
+            &doc(r#"Project(version: 2, entities: [
                 Entity(id: "a", components: { "Osc": (hz: "not a number") })
             ])"#),
         );
@@ -722,7 +740,7 @@ mod tests {
         let mut app = doc_app();
         apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
+            &doc(r#"Project(version: 2, entities: [
                 Entity(id: "a", components: { "Osc": (hz: 3.0, amplitude: 0.25) })
             ])"#),
         );
@@ -737,7 +755,7 @@ mod tests {
 
         let diagnostics = apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
+            &doc(r#"Project(version: 2, entities: [
                 Entity(id: "a", components: { "Osc": (hz: "not a number") })
             ])"#),
         );
@@ -757,31 +775,36 @@ mod tests {
         );
     }
 
+    use bevy_reflect::TypePath;
     use sway_graph::TopologyDirty;
-    use sway_graph::register_wire;
-    use sway_graph::test_wires::{FloatOut, Gain, GainFrom};
+    use sway_graph::register_wire_type;
+    use sway_graph::test_wires::{Gain, GainFrom};
 
-    /// `Gain` is the wire fixture's target and `FloatOut` its source; both
-    /// become authorable so a document can build the whole graph.
+    /// `Gain` is the wire fixture's authorable inlet. Outlets stay off the
+    /// document; the producer entity is just an id the wire can point at.
     fn wired_app() -> App {
         let mut app = doc_app();
         app.init_resource::<TopologyDirty>();
-        register_wire::<GainFrom>(&mut app);
+        register_wire_type::<GainFrom>(&mut app);
         register_authorable::<Gain>(&mut app, "Gain");
-        register_authorable::<FloatOut>(&mut app, "FloatOut");
         app
     }
 
-    const WIRED: &str = r#"Project(version: 1, entities: [
-        Entity(id: "src", components: { "FloatOut": (2.0) }),
-        Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) },
-               wires: { "factor": "src" }),
-    ])"#;
+    fn wired() -> String {
+        format!(
+            r#"Project(version: 2, entities: [
+        Entity(id: "src"),
+        Entity(id: "dst", components: {{ "Gain": (factor: 0.0, value: 0.0) }},
+               wires: {{ "{}": "src" }}),
+    ])"#,
+            GainFrom::type_path()
+        )
+    }
 
     #[test]
     fn a_document_wire_becomes_a_relationship_component() {
         let mut app = wired_app();
-        apply(app.world_mut(), &doc(WIRED));
+        apply(app.world_mut(), &doc(&wired()));
 
         let src = entity_of(app.world_mut(), "src").expect("spawned");
         let dst = entity_of(app.world_mut(), "dst").expect("spawned");
@@ -793,11 +816,14 @@ mod tests {
         let mut app = wired_app();
         apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
-                Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) },
-                       wires: { "factor": "src" }),
-                Entity(id: "src", components: { "FloatOut": (2.0) }),
-            ])"#),
+            &doc(&format!(
+                r#"Project(version: 2, entities: [
+                Entity(id: "dst", components: {{ "Gain": (factor: 0.0, value: 0.0) }},
+                       wires: {{ "{}": "src" }}),
+                Entity(id: "src"),
+            ])"#,
+                GainFrom::type_path()
+            )),
         );
 
         let src = entity_of(app.world_mut(), "src").expect("spawned");
@@ -808,13 +834,13 @@ mod tests {
     #[test]
     fn a_wire_dropped_from_the_document_is_removed() {
         let mut app = wired_app();
-        apply(app.world_mut(), &doc(WIRED));
+        apply(app.world_mut(), &doc(&wired()));
         let dst = entity_of(app.world_mut(), "dst").expect("spawned");
 
         apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
-                Entity(id: "src", components: { "FloatOut": (2.0) }),
+            &doc(r#"Project(version: 2, entities: [
+                Entity(id: "src"),
                 Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) }),
             ])"#),
         );
@@ -827,10 +853,10 @@ mod tests {
         // Removing and re-inserting would rewrite the producer's
         // RelationshipTarget collection for nothing.
         let mut app = wired_app();
-        apply(app.world_mut(), &doc(WIRED));
+        apply(app.world_mut(), &doc(&wired()));
         app.world_mut().clear_trackers();
 
-        apply(app.world_mut(), &doc(WIRED));
+        apply(app.world_mut(), &doc(&wired()));
 
         let changed = app
             .world_mut()
@@ -845,17 +871,20 @@ mod tests {
         let mut app = wired_app();
         let diagnostics = apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
-                Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) },
-                       wires: { "factor": "ghost" }),
-            ])"#),
+            &doc(&format!(
+                r#"Project(version: 2, entities: [
+                Entity(id: "dst", components: {{ "Gain": (factor: 0.0, value: 0.0) }},
+                       wires: {{ "{}": "ghost" }}),
+            ])"#,
+                GainFrom::type_path()
+            )),
         );
 
         assert_eq!(
             diagnostics.items,
             vec![ItemError::UnresolvedTarget {
                 entity: "dst".to_string(),
-                wire: "factor".to_string(),
+                wire: GainFrom::type_path().to_string(),
                 target: "ghost".to_string(),
             }]
         );
@@ -872,25 +901,28 @@ mod tests {
         // reconcile loop must not then also treat the wire as "wanted =
         // None" and remove it.
         let mut app = wired_app();
-        apply(app.world_mut(), &doc(WIRED));
+        apply(app.world_mut(), &doc(&wired()));
         let src = entity_of(app.world_mut(), "src").expect("spawned");
         let dst = entity_of(app.world_mut(), "dst").expect("spawned");
         assert_eq!(app.world().get::<GainFrom>(dst).map(|w| w.0), Some(src));
 
         let diagnostics = apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
-                Entity(id: "src", components: { "FloatOut": (2.0) }),
-                Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) },
-                       wires: { "factor": "lfoB_typo_mid_edit" }),
-            ])"#),
+            &doc(&format!(
+                r#"Project(version: 2, entities: [
+                Entity(id: "src"),
+                Entity(id: "dst", components: {{ "Gain": (factor: 0.0, value: 0.0) }},
+                       wires: {{ "{}": "lfoB_typo_mid_edit" }}),
+            ])"#,
+                GainFrom::type_path()
+            )),
         );
 
         assert_eq!(
             diagnostics.items,
             vec![ItemError::UnresolvedTarget {
                 entity: "dst".to_string(),
-                wire: "factor".to_string(),
+                wire: GainFrom::type_path().to_string(),
                 target: "lfoB_typo_mid_edit".to_string(),
             }]
         );
@@ -906,8 +938,8 @@ mod tests {
         let mut app = wired_app();
         let diagnostics = apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
-                Entity(id: "src", components: { "FloatOut": (2.0) }),
+            &doc(r#"Project(version: 2, entities: [
+                Entity(id: "src"),
                 Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) },
                        wires: { "nope": "src" }),
             ])"#),
@@ -923,24 +955,22 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_wire_name_leaves_an_existing_wire_under_a_different_name_alone() {
-        // Same contract as the unresolved-target case, but for a wire name
-        // the registry doesn't know at all (e.g. a typo in the wire's own
-        // name). `factor` is live from a prior reload; the second document
-        // additionally names a bogus `nope` wire, which must not disturb
-        // `factor`.
+    fn an_unknown_wire_name_leaves_an_existing_wire_alone() {
+        // Spec: a reload that names a typo type path instead of the live
+        // wire must not disconnect that wire. The catalog type looks omitted,
+        // but the unknown key means the author is mid-edit.
         let mut app = wired_app();
-        apply(app.world_mut(), &doc(WIRED));
+        apply(app.world_mut(), &doc(&wired()));
         let src = entity_of(app.world_mut(), "src").expect("spawned");
         let dst = entity_of(app.world_mut(), "dst").expect("spawned");
         assert_eq!(app.world().get::<GainFrom>(dst).map(|w| w.0), Some(src));
 
         let diagnostics = apply(
             app.world_mut(),
-            &doc(r#"Project(version: 1, entities: [
-                Entity(id: "src", components: { "FloatOut": (2.0) }),
+            &doc(r#"Project(version: 2, entities: [
+                Entity(id: "src"),
                 Entity(id: "dst", components: { "Gain": (factor: 0.0, value: 0.0) },
-                       wires: { "factor": "src", "nope": "src" }),
+                       wires: { "nope": "src" }),
             ])"#),
         );
 
@@ -961,7 +991,7 @@ mod tests {
         let mut app = wired_app();
         app.world_mut().resource_mut::<TopologyDirty>().0 = false;
 
-        apply(app.world_mut(), &doc(WIRED));
+        apply(app.world_mut(), &doc(&wired()));
 
         assert!(app.world().resource::<TopologyDirty>().0);
     }

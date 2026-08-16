@@ -3,8 +3,8 @@ name = "sway-document"
 version.workspace = true
 edition.workspace = true
 
-# The on-disk format only. Depends on sway-graph for the registries it reads
-# (ComponentDocRegistry, WireRegistry) — never the other way round.
+# The on-disk format only. Depends on sway-graph for ComponentDocRegistry and
+# reflected wire types — never the other way round.
 [dependencies]
 bevy_app.workspace = true
 bevy_asset.workspace = true

@@ -1,5 +1,6 @@
 //! The graph-to-UI read path. One pure function of `&World` per frame.
 
+use std::any::TypeId;
 use std::collections::HashSet;
 
 use bevy_ecs::entity::Entity;
@@ -10,9 +11,10 @@ use bevy_ecs::world::World;
 use bevy_reflect::{PartialReflect, ReflectRef};
 use bevy_transform::components::Transform;
 use kurbo::Point;
+use sway_graph::dispatch::{entity_has_type, make_wire_component};
 use sway_graph::order::{GraphOrder, Step};
 use sway_graph::{
-    ComponentDocRegistry, EditorPos, GraphDiagnostics, HiddenFromEditor, Selection, WireRegistry,
+    ComponentDocRegistry, EditorPos, GraphDiagnostics, HiddenFromEditor, ReflectWire, Selection,
 };
 use sway_midi::{MusicalTime, Transport};
 
@@ -66,11 +68,7 @@ pub enum FieldKind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EdgeView {
     pub from: NodeId,
-    pub from_field: u16,
-    pub from_index: u16,
     pub to: NodeId,
-    pub to_field: u16,
-    pub to_index: u16,
     pub wire: &'static str,
     pub activity: Option<f32>,
 }
@@ -384,37 +382,73 @@ fn canvas_entities(world: &World) -> Vec<Entity> {
     entities
 }
 
-/// The inlet sockets of one entity, in `WireRegistry` order — which is
-/// registration order, fixed at startup, so a socket's ordinal is stable.
-fn inlets_of(
-    world: &World,
-    registry: &WireRegistry,
-    canvas: &[Entity],
-    entity: Entity,
-) -> Vec<InletView> {
+/// Reflected wire types: type path plus source/target component ids, taken
+/// from a stack `FromReflect` value — not from a dummy ECS entity.
+struct WireMeta {
+    type_id: TypeId,
+    type_path: &'static str,
+    source_type: TypeId,
+    target_type: TypeId,
+}
+
+fn wire_catalog(world: &World) -> Vec<WireMeta> {
+    let Some(type_registry) = world.get_resource::<AppTypeRegistry>() else {
+        return Vec::new();
+    };
+    let registry = type_registry.read();
     registry
-        .entries
-        .iter()
-        .filter(|entry| (entry.has_target)(world, entity))
-        .map(|entry| InletView {
-            wire: entry.name,
-            connected: (entry.read)(world, entity).is_some(),
-            // Excluding `entity` itself keeps a self-edge from ever being
-            // offered; Bevy would drop it anyway (tests/relationship_semantics.rs),
-            // but the editor should not paint it as legal.
-            accepts_from: canvas
-                .iter()
-                .copied()
-                .filter(|candidate| *candidate != entity && (entry.has_source)(world, *candidate))
-                .collect(),
+        .iter_with_data::<ReflectWire>()
+        .filter_map(|(registration, reflect_wire)| {
+            let type_id = registration.type_id();
+            let owned = make_wire_component(&registry, type_id, Entity::PLACEHOLDER)?;
+            let wire = reflect_wire.get(owned.as_ref())?;
+            Some(WireMeta {
+                type_id,
+                type_path: registration.type_info().type_path(),
+                source_type: wire.source_type(),
+                target_type: wire.target_type(),
+            })
         })
         .collect()
 }
 
-fn capture_nodes(world: &World) -> Vec<NodeView> {
-    let Some(registry) = world.get_resource::<WireRegistry>() else {
+/// Inlet sockets evidenced by this entity's own components: its inlet/target
+/// part and any reflected-wire relationships. Catalog iteration only
+/// point-looks up whether a present type is a wire or a wire's target;
+/// it does not invent a socket for every registered wire.
+fn inlets_of(
+    world: &World,
+    catalog: &[WireMeta],
+    canvas: &[Entity],
+    entity: Entity,
+) -> Vec<InletView> {
+    let Ok(entity_ref) = world.get_entity(entity) else {
         return Vec::new();
     };
+    let mut inlets: Vec<InletView> = catalog
+        .iter()
+        .filter(|meta| {
+            entity_ref.contains_type_id(meta.target_type)
+                || entity_ref.contains_type_id(meta.type_id)
+        })
+        .map(|meta| InletView {
+            wire: meta.type_path,
+            connected: entity_ref.contains_type_id(meta.type_id),
+            accepts_from: canvas
+                .iter()
+                .copied()
+                .filter(|candidate| {
+                    *candidate != entity && entity_has_type(world, *candidate, meta.source_type)
+                })
+                .collect(),
+        })
+        .collect();
+    inlets.sort_by_key(|inlet| inlet.wire);
+    inlets
+}
+
+fn capture_nodes(world: &World) -> Vec<NodeView> {
+    let catalog = wire_catalog(world);
     let canvas = canvas_entities(world);
     canvas
         .iter()
@@ -429,44 +463,29 @@ fn capture_nodes(world: &World) -> Vec<NodeView> {
             pos: world
                 .get::<EditorPos>(entity)
                 .map(|pos| Point::new(pos.0.x as f64, pos.0.y as f64)),
-            inlets: inlets_of(world, registry, &canvas, entity),
-            outlets: registry
-                .entries
+            inlets: inlets_of(world, &catalog, &canvas, entity),
+            outlets: catalog
                 .iter()
-                .any(|entry| (entry.has_source)(world, entity)) as u16,
+                .any(|meta| entity_has_type(world, entity, meta.source_type))
+                as u16,
         })
         .collect()
 }
 
 fn capture_edges(world: &World) -> Vec<EdgeView> {
-    let (Some(order), Some(registry)) = (
-        world.get_resource::<GraphOrder>(),
-        world.get_resource::<WireRegistry>(),
-    ) else {
+    let Some(order) = world.get_resource::<GraphOrder>() else {
         return Vec::new();
     };
     order
         .steps
         .iter()
         .filter_map(|step| match *step {
-            Step::Propagate { src, dst, wire, .. } => {
-                // The inlet ordinal, so the edge lands on its own socket
-                // rather than always on socket 0 (spec M6-6).
-                let to_field = inlets_of(world, registry, &[], dst)
-                    .iter()
-                    .position(|inlet| inlet.wire == wire)
-                    .unwrap_or(0) as u16;
-                Some(EdgeView {
-                    from: NodeId::of(src),
-                    from_field: 0,
-                    from_index: 0,
-                    to: NodeId::of(dst),
-                    to_field,
-                    to_index: 0,
-                    wire,
-                    activity: None,
-                })
-            }
+            Step::Propagate { src, dst, wire, .. } => Some(EdgeView {
+                from: NodeId::of(src),
+                to: NodeId::of(dst),
+                wire,
+                activity: None,
+            }),
             Step::Run { .. } => None,
         })
         .collect()
@@ -572,10 +591,11 @@ fn push_scene_subtree(
 mod tests {
     use super::*;
     use crate::test_graph::{
-        Emit, Recv, app, connect, fixture_with_parenting, recompile, spawn_double_source,
+        Emit, GainFrom, Recv, app, connect, fixture_with_parenting, recompile, spawn_double_source,
         spawn_double_target, spawn_emit, spawn_named_spatial, spawn_recv, spawn_spatial,
     };
     use bevy_math::Vec2;
+    use bevy_reflect::TypePath;
 
     fn rows_of(snapshot: &WorldSnapshot, group: TreeGroup) -> Vec<&TreeRow> {
         snapshot
@@ -618,11 +638,16 @@ mod tests {
         let parent = snapshot
             .edges
             .iter()
-            .find(|edge| edge.wire == "parent")
+            .find(|edge| edge.wire == ChildOf::type_path())
             .expect("parenting wire");
         assert_eq!(parent.from, NodeId::of(ids.parent));
         assert_eq!(parent.to, NodeId::of(ids.child));
-        assert!(snapshot.edges.iter().any(|edge| edge.wire == "amount"));
+        assert!(
+            snapshot
+                .edges
+                .iter()
+                .any(|edge| edge.wire == GainFrom::type_path())
+        );
     }
 
     #[test]
@@ -792,6 +817,10 @@ mod tests {
                 .iter()
                 .any(|f| f.name == "shape" && f.value == "Saw")
         );
+        assert!(
+            !view.components.iter().any(|c| c.name == "FloatOut"),
+            "outlets are sockets, not inspector fields"
+        );
     }
 
     #[test]
@@ -803,8 +832,11 @@ mod tests {
 
         let view = inspect(app.world(), entity);
 
-        assert_eq!(view.components.len(), 1);
-        assert_eq!(view.components[0].name, "FloatOut");
+        assert!(
+            view.components.is_empty(),
+            "outlets are sockets, not inspector fields: {:?}",
+            view.components
+        );
     }
 
     #[test]
@@ -850,7 +882,7 @@ mod tests {
     #[test]
     fn an_entity_sourcing_several_wires_reports_exactly_one_outlet() {
         // M6-6. Counting per wire drew seven dots on an Oscillator; only socket 0 has
-        // ever had an edge attached, because capture_edges hardcodes from_field.
+        // ever had an edge attached.
         // `spawn_double_source` sources both `amount` and `parent`, so the old
         // `count()` reported 2 here and the new `any()` reports 1.
         let mut app = app();
@@ -881,22 +913,15 @@ mod tests {
         let amount = node
             .inlets
             .iter()
-            .find(|i| i.wire == "amount")
+            .find(|i| i.wire == GainFrom::type_path())
             .expect("named inlet");
         assert!(amount.connected);
     }
 
     #[test]
-    fn an_edge_lands_on_its_own_wires_inlet_ordinal_not_on_socket_zero() {
-        // The to_field defect M6-6 names: every inbound edge used to draw into
-        // socket 0 whatever wire it was.
-        //
-        // This needs a target with more than one inlet, or the assertion is
-        // vacuous — `spawn_double_target` carries both `Gain` (target of
-        // `amount`) and `Transform` (target of `parent`), and `WireRegistry`
-        // order is registration order, so its inlets are `[amount, parent]`.
-        // The `parent` edge must therefore land on ordinal 1, which is exactly
-        // what the hardcoded `to_field: 0` got wrong.
+    fn an_edge_names_its_own_wire_type_path() {
+        // Identity is the type path, not a visual ordinal. Sorting sockets
+        // for painting must not reattach this edge to a different inlet.
         let mut app = app();
         let grandparent = spawn_spatial(app.world_mut(), 1, None);
         let both = spawn_double_target(app.world_mut(), Some(grandparent));
@@ -904,18 +929,25 @@ mod tests {
 
         let snapshot = capture(app.world());
         let node = snapshot.nodes.iter().find(|n| n.entity == both).unwrap();
-        assert_eq!(
-            node.inlets.iter().map(|i| i.wire).collect::<Vec<_>>(),
-            vec!["amount", "parent"],
-            "inlet ordinals come from WireRegistry order",
+        let paths: Vec<_> = node.inlets.iter().map(|i| i.wire).collect();
+        let mut sorted = paths.clone();
+        sorted.sort_unstable();
+        assert_eq!(paths, sorted, "inlets are sorted by path for painting only");
+        assert!(
+            paths.contains(&ChildOf::type_path()),
+            "ChildOf is an inlet because the entity has Transform: {paths:?}"
+        );
+        assert!(
+            paths.contains(&GainFrom::type_path()),
+            "GainFrom is an inlet because the entity has Gain: {paths:?}"
         );
 
         let edge = snapshot
             .edges
             .iter()
-            .find(|e| e.wire == "parent" && e.to == NodeId::of(both))
+            .find(|e| e.wire == ChildOf::type_path() && e.to == NodeId::of(both))
             .expect("the parenting edge");
-        assert_eq!(edge.to_field, 1);
+        assert_eq!(edge.wire, ChildOf::type_path());
     }
 
     #[test]
@@ -975,7 +1007,11 @@ mod tests {
 
         let snapshot = capture(app.world());
         let node = snapshot.nodes.iter().find(|n| n.entity == recv).unwrap();
-        let amount = node.inlets.iter().find(|i| i.wire == "amount").unwrap();
+        let amount = node
+            .inlets
+            .iter()
+            .find(|i| i.wire == GainFrom::type_path())
+            .unwrap();
 
         assert!(amount.accepts_from.contains(&emit), "Emit carries FloatOut");
         assert!(
@@ -998,7 +1034,11 @@ mod tests {
 
         let snapshot = capture(app.world());
         let node = snapshot.nodes.iter().find(|n| n.entity == both).unwrap();
-        let parent = node.inlets.iter().find(|i| i.wire == "parent").unwrap();
+        let parent = node
+            .inlets
+            .iter()
+            .find(|i| i.wire == ChildOf::type_path())
+            .unwrap();
 
         assert!(!parent.accepts_from.contains(&both));
     }

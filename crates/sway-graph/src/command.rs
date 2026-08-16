@@ -52,9 +52,8 @@ pub enum FieldValue {
 
 /// One edit, from the editor to the world.
 ///
-/// `component` and `wire` are the `&'static str` keys already carried by
-/// `ComponentEntry::name` and `WireEntry::name`, so a command names a type
-/// without carrying one.
+/// `component` is a `ComponentDocRegistry` short name. `wire` is the
+/// reflected type path of a wire type (`TypePath::type_path()`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditorCommand {
     Create {
@@ -276,29 +275,13 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
             let _ = existing.try_apply(replacement.as_ref());
         }
         EditorCommand::Connect { wire, src, dst } => {
-            let Some((insert, has_source, has_target)) = world
-                .get_resource::<crate::WireRegistry>()
-                .and_then(|r| r.entries.iter().find(|e| e.name == *wire))
-                .map(|e| (e.insert, e.has_source, e.has_target))
-            else {
-                return;
-            };
-            // The editor filters illegal drops before sending, but a command
-            // is data and may arrive stale — the world enforces it too.
-            if !has_source(world, *src) || !has_target(world, *dst) {
+            if !crate::dispatch::connect_is_legal(world, wire, *src, *dst) {
                 return;
             }
-            insert(world, *dst, *src);
+            crate::dispatch::insert_wire(world, wire, *dst, *src);
         }
         EditorCommand::Disconnect { wire, dst } => {
-            let Some(remove) = world
-                .get_resource::<crate::WireRegistry>()
-                .and_then(|r| r.entries.iter().find(|e| e.name == *wire))
-                .map(|e| e.remove)
-            else {
-                return;
-            };
-            remove(world, *dst);
+            crate::dispatch::remove_wire(world, wire, *dst);
         }
         EditorCommand::Select { entity } => {
             // A selection naming a despawned entity is a no-op rather than a
@@ -720,11 +703,18 @@ mod tests {
     }
 
     use crate::test_wires::{GainFrom, spawn_float, spawn_gain};
+    use bevy_reflect::TypePath;
 
     fn wired_app() -> App {
         let mut app = registry_app();
-        crate::register_wire::<GainFrom>(&mut app);
+        app.register_type::<crate::test_wires::FloatOut>();
+        app.register_type::<crate::test_wires::Gain>();
+        crate::register_wire_type::<GainFrom>(&mut app);
         app
+    }
+
+    fn factor_wire() -> &'static str {
+        GainFrom::type_path()
     }
 
     #[test]
@@ -736,7 +726,7 @@ mod tests {
         apply_editor_command(
             app.world_mut(),
             &EditorCommand::Connect {
-                wire: "factor",
+                wire: factor_wire(),
                 src,
                 dst,
             },
@@ -755,7 +745,7 @@ mod tests {
         apply_editor_command(
             app.world_mut(),
             &EditorCommand::Connect {
-                wire: "factor",
+                wire: factor_wire(),
                 src: first,
                 dst,
             },
@@ -763,7 +753,7 @@ mod tests {
         apply_editor_command(
             app.world_mut(),
             &EditorCommand::Connect {
-                wire: "factor",
+                wire: factor_wire(),
                 src: second,
                 dst,
             },
@@ -781,7 +771,7 @@ mod tests {
         apply_editor_command(
             app.world_mut(),
             &EditorCommand::Connect {
-                wire: "factor",
+                wire: factor_wire(),
                 src: not_a_source,
                 dst,
             },
@@ -802,7 +792,7 @@ mod tests {
         apply_editor_command(
             app.world_mut(),
             &EditorCommand::Connect {
-                wire: "factor",
+                wire: factor_wire(),
                 src,
                 dst: not_a_target,
             },
@@ -819,7 +809,7 @@ mod tests {
         apply_editor_command(
             app.world_mut(),
             &EditorCommand::Connect {
-                wire: "factor",
+                wire: factor_wire(),
                 src,
                 dst,
             },
@@ -828,7 +818,7 @@ mod tests {
         apply_editor_command(
             app.world_mut(),
             &EditorCommand::Disconnect {
-                wire: "factor",
+                wire: factor_wire(),
                 dst,
             },
         );
@@ -837,7 +827,7 @@ mod tests {
         apply_editor_command(
             app.world_mut(),
             &EditorCommand::Disconnect {
-                wire: "factor",
+                wire: factor_wire(),
                 dst,
             },
         );
@@ -848,14 +838,16 @@ mod tests {
         // The ordering guarantee M6-1 rests on: apply_editor_commands runs
         // before WatchSet, so the watch sees this frame's insert.
         let (mut app, tx) = command_app();
-        crate::register_wire::<GainFrom>(&mut app);
+        app.register_type::<crate::test_wires::FloatOut>();
+        app.register_type::<crate::test_wires::Gain>();
+        crate::register_wire_type::<GainFrom>(&mut app);
         let src = spawn_float(app.world_mut(), 1.0);
         let dst = spawn_gain(app.world_mut(), 0.0);
         app.update();
         app.update();
 
         tx.send(EditorCommand::Connect {
-            wire: "factor",
+            wire: factor_wire(),
             src,
             dst,
         })

@@ -96,13 +96,12 @@ struct NodeSlot {
     inlet_views: Vec<InletView>,
 }
 
-/// Which socket on a node. An outlet needs no ordinal — there is at most one
-/// (M6-6) — while an inlet's ordinal is its wire's position in the node's
-/// inlet list, which is `WireRegistry` order and fixed at startup.
+/// Which socket on a node. An outlet needs no path — there is at most one
+/// (M6-6) — while an inlet is identified by the wire type path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SocketKind {
     Outlet,
-    Inlet(u16),
+    Inlet(&'static str),
 }
 
 /// One socket, addressed across the whole canvas.
@@ -124,13 +123,7 @@ struct EdgeDrag {
 /// survives a reordering.
 struct EdgeSlot {
     from: NodeId,
-    /// The source outlet's field ordinal. No matching `from_index`: an
-    /// outlet can never be a `Vec` (design §12), so an outlet socket is
-    /// always identified by field alone.
-    from_field: u16,
     to: NodeId,
-    to_field: u16,
-    to_index: u16,
     wire: &'static str,
     /// The source port's current value, or `None` when this edge carries no
     /// readable activity (design §4).
@@ -217,12 +210,12 @@ impl GraphCanvas {
                 }
             }
 
-            for ordinal in 0..slot.inlets.len() as u16 {
-                let inlet = node_box::inlet_socket_local(&slot.inlets, ordinal, 0);
-                if inlet.distance(local) <= SOCKET_HIT_RADIUS {
+            for (ordinal, inlet) in slot.inlet_views.iter().enumerate() {
+                let inlet_pos = node_box::inlet_socket_local(&slot.inlets, ordinal as u16, 0);
+                if inlet_pos.distance(local) <= SOCKET_HIT_RADIUS {
                     return Some(SocketRef {
                         node: *id,
-                        kind: SocketKind::Inlet(ordinal),
+                        kind: SocketKind::Inlet(inlet.wire),
                     });
                 }
             }
@@ -329,10 +322,14 @@ impl Widget for GraphCanvas {
             let from_local = node_box::outlet_socket_local(
                 from_slot.inlets.len() as u16,
                 from_slot.outlets,
-                edge.from_field,
+                from_slot.inlets.len() as u16,
             );
-            let to_local =
-                node_box::inlet_socket_local(&to_slot.inlets, edge.to_field, edge.to_index);
+            let to_ordinal = to_slot
+                .inlet_views
+                .iter()
+                .position(|inlet| inlet.wire == edge.wire)
+                .unwrap_or(0) as u16;
+            let to_local = node_box::inlet_socket_local(&to_slot.inlets, to_ordinal, 0);
             let from = self.to_visual(from_slot.pos + from_local.to_vec2());
             let to = self.to_visual(to_slot.pos + to_local.to_vec2());
             let (brush, width) = edge_style(edge);
@@ -712,12 +709,19 @@ impl GraphCanvas {
                     // Socket counts change when a `Vec` inlet is resized
                     // (e.g. a `Group`'s `children`) -- not on every snapshot,
                     // so this is gated the same way `label` is.
+                    let inlet_wires: Vec<&'static str> =
+                        view.inlets.iter().map(|inlet| inlet.wire).collect();
                     if slot.inlet_views != view.inlets || slot.outlets != view.outlets {
                         slot.inlets = inlet_counts.clone();
                         slot.inlet_views = view.inlets.clone();
                         slot.outlets = view.outlets;
                         let mut child = this.ctx.get_mut(&mut slot.pod);
-                        NodeBox::set_sockets(&mut child, inlet_counts.clone(), view.outlets);
+                        NodeBox::set_sockets(
+                            &mut child,
+                            inlet_counts.clone(),
+                            inlet_wires,
+                            view.outlets,
+                        );
                     }
                     // A `NodeId` can outlive the entity it names across a
                     // recompile, so this is refreshed every snapshot even
@@ -736,9 +740,12 @@ impl GraphCanvas {
                     let transform = Affine::translate(this.widget.pan)
                         * Affine::scale(this.widget.zoom)
                         * Affine::translate(pos.to_vec2());
+                    let inlet_wires: Vec<&'static str> =
+                        view.inlets.iter().map(|inlet| inlet.wire).collect();
                     let pod = NodeBox::new(view.name.clone())
                         .with_initial_transform(transform)
                         .with_sockets(inlet_counts.clone(), view.outlets)
+                        .with_inlet_wires(inlet_wires)
                         .prepare()
                         .to_pod();
                     this.widget.slots.insert(
@@ -787,10 +794,7 @@ impl GraphCanvas {
                 }
                 EdgeSlot {
                     from: edge.from,
-                    from_field: edge.from_field,
                     to: edge.to,
-                    to_field: edge.to_field,
-                    to_index: edge.to_index,
                     wire: edge.wire,
                     value: edge.activity,
                     range,
@@ -995,11 +999,11 @@ impl GraphCanvas {
                     cursor,
                 });
             }
-            SocketKind::Inlet(ordinal) => {
+            SocketKind::Inlet(wire) => {
                 let Some(slot) = self.slots.get(&node) else {
                     return;
                 };
-                let Some(inlet) = slot.inlet_views.get(ordinal as usize) else {
+                let Some(inlet) = slot.inlet_views.iter().find(|inlet| inlet.wire == wire) else {
                     return;
                 };
                 if !inlet.connected {
@@ -1022,7 +1026,7 @@ impl GraphCanvas {
         };
         let Some(SocketRef {
             node,
-            kind: SocketKind::Inlet(ordinal),
+            kind: SocketKind::Inlet(wire),
         }) = self.socket_at(point)
         else {
             return; // released over empty canvas or over an outlet
@@ -1030,7 +1034,7 @@ impl GraphCanvas {
         let Some(slot) = self.slots.get(&node) else {
             return;
         };
-        let Some(inlet) = slot.inlet_views.get(ordinal as usize) else {
+        let Some(inlet) = slot.inlet_views.iter().find(|inlet| inlet.wire == wire) else {
             return;
         };
         // Legality is re-checked here even though `paint` only highlighted
@@ -1169,7 +1173,7 @@ fn edge_style(edge: &EdgeSlot) -> (Color, f64) {
 /// Colour by wire name. Local editor policy.
 fn edge_color(wire: &str) -> Color {
     match wire {
-        "parent" => Color::from_rgb8(170, 150, 110),
+        "bevy_ecs::hierarchy::ChildOf" => Color::from_rgb8(170, 150, 110),
         "amplitude" => Color::from_rgb8(150, 130, 170),
         _ => Color::from_rgb8(140, 140, 155),
     }
@@ -1211,27 +1215,10 @@ mod tests {
         }
     }
 
-    // A positional test fixture mirroring `EdgeView`'s own fields one for
-    // one; splitting it into a builder would cost more at each of this
-    // test module's few call sites than the lint saves.
-    #[allow(clippy::too_many_arguments)]
-    fn edge(
-        from: NodeId,
-        from_field: u16,
-        from_index: u16,
-        to: NodeId,
-        to_field: u16,
-        to_index: u16,
-        wire: &'static str,
-        activity: Option<f32>,
-    ) -> EdgeView {
+    fn edge(from: NodeId, to: NodeId, wire: &'static str, activity: Option<f32>) -> EdgeView {
         EdgeView {
             from,
-            from_field,
-            from_index,
             to,
-            to_field,
-            to_index,
             wire,
             activity,
         }
@@ -1915,16 +1902,7 @@ mod tests {
     fn edges_are_kept_only_when_both_endpoints_exist() {
         let harness = harness_with(snapshot(
             vec![node(0, "a", None), node(1, "b", None)],
-            vec![edge(
-                NodeId(0),
-                0,
-                0,
-                NodeId(1),
-                0,
-                0,
-                "translation.y",
-                Some(0.5),
-            )],
+            vec![edge(NodeId(0), NodeId(1), "translation.y", Some(0.5))],
         ));
         assert_eq!(harness.root_widget().edge_count(), 1);
 
@@ -1934,16 +1912,7 @@ mod tests {
                 &mut canvas,
                 &snapshot(
                     vec![node(0, "a", None)],
-                    vec![edge(
-                        NodeId(0),
-                        0,
-                        0,
-                        NodeId(9),
-                        0,
-                        0,
-                        "translation.y",
-                        None,
-                    )],
+                    vec![edge(NodeId(0), NodeId(9), "translation.y", None)],
                 ),
             );
         });
@@ -2024,9 +1993,9 @@ mod tests {
     }
 
     #[test]
-    fn each_inlet_socket_reports_its_own_ordinal() {
-        // Two inlets must not both resolve to ordinal 0 — the same class of
-        // defect as the hardcoded to_field M6-6 fixes.
+    fn each_inlet_socket_reports_its_own_type_path() {
+        // Two inlets must not both resolve to the first path — identity is
+        // the wire type, not a visual ordinal.
         let origin = Point::new(40.0, 25.0);
         let (harness, _rx) = harness_and_rx(snapshot(vec![socket_node(origin)], vec![]));
 
@@ -2041,14 +2010,14 @@ mod tests {
             harness.root_widget().socket_at(first),
             Some(SocketRef {
                 node: NodeId(0),
-                kind: SocketKind::Inlet(0)
+                kind: SocketKind::Inlet("amount")
             }),
         );
         assert_eq!(
             harness.root_widget().socket_at(second),
             Some(SocketRef {
                 node: NodeId(0),
-                kind: SocketKind::Inlet(1)
+                kind: SocketKind::Inlet("parent")
             }),
         );
     }
@@ -2278,7 +2247,7 @@ mod tests {
                 &mut canvas,
                 SocketRef {
                     node: NodeId(2),
-                    kind: SocketKind::Inlet(0),
+                    kind: SocketKind::Inlet("amount"),
                 },
             );
         });
@@ -2302,7 +2271,7 @@ mod tests {
                 &mut canvas,
                 SocketRef {
                     node: NodeId(2),
-                    kind: SocketKind::Inlet(0),
+                    kind: SocketKind::Inlet("amount"),
                 },
             );
         });

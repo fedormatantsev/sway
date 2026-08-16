@@ -3,11 +3,15 @@
 use std::cmp::{Ord, Ordering};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-use bevy_ecs::entity::Entity;
-use bevy_ecs::world::World;
+use std::any::TypeId;
 
+use bevy_ecs::entity::Entity;
+use bevy_ecs::reflect::AppTypeRegistry;
+use bevy_ecs::world::World;
+use crate::behaviour::ReflectBehaviour;
 use crate::diagnostics::GraphDiagnostics;
-use crate::wire::PropagateFn;
+use crate::dispatch::{entity_has_type, entities_with_type, stack_wire};
+use crate::wire::ReflectWire;
 
 /// `Entity::Ord` is DESCENDING in raw spawn index for bevy_ecs 0.19.0: its
 /// NonMaxU32 niche encoding stores the bitwise complement of the index.
@@ -30,13 +34,12 @@ impl PartialOrd for AscendingEntity {
     }
 }
 
-/// One wire instance, flattened for the sort. `run` is the wire type's
-/// monomorphised propagate; the sort ignores it.
+/// One wire instance, flattened for the sort.
 #[derive(Clone, Copy)]
 pub struct Link {
     pub src: Entity,
     pub dst: Entity,
-    pub run: PropagateFn,
+    pub type_id: TypeId,
     pub wire: &'static str,
 }
 
@@ -103,24 +106,21 @@ pub fn topological_order(vertices: &[Entity], links: &[Link]) -> Sorted {
 
 use bevy_ecs::resource::Resource;
 
-use crate::registry_wires::{BehaviourFn, BehaviourRegistry, WireRegistry};
-
-/// One unit of work. A step carries its own fn pointer: the list is
-/// heterogeneous and `Wire::propagate` is not object-safe (spec §3.1).
+/// One unit of work. Steps identify reflected types, not fn pointers.
 ///
 /// Data, not a closure — the editor shows the order and the tests assert on
 /// it.
 #[derive(Clone, Copy)]
 pub enum Step {
     Propagate {
-        run: PropagateFn,
         src: Entity,
         dst: Entity,
+        type_id: TypeId,
         wire: &'static str,
     },
     Run {
-        run: BehaviourFn,
         entity: Entity,
+        type_id: TypeId,
     },
 }
 
@@ -146,21 +146,41 @@ pub fn rebuild_order(world: &mut World) {
         return;
     }
 
-    let wires = world.remove_resource::<WireRegistry>().unwrap_or_default();
-    let behaviours = world
-        .remove_resource::<BehaviourRegistry>()
-        .unwrap_or_default();
-
     let mut links: Vec<Link> = Vec::new();
-    for entry in &wires.entries {
-        (entry.collect)(world, &mut links);
-    }
-
-    let mut behaviour_steps: Vec<(Entity, BehaviourFn)> = Vec::new();
-    for entry in &behaviours.entries {
-        let mut found = Vec::new();
-        (entry.collect)(world, &mut found);
-        behaviour_steps.extend(found.into_iter().map(|entity| (entity, entry.run)));
+    let mut behaviour_steps: Vec<(Entity, TypeId)> = Vec::new();
+    if let Some(type_registry) = world.get_resource::<AppTypeRegistry>().cloned() {
+        let registry = type_registry.read();
+        let wire_types: Vec<(TypeId, &'static str)> = registry
+            .iter_with_data::<ReflectWire>()
+            .map(|(registration, _)| {
+                (
+                    registration.type_id(),
+                    registration.type_info().type_path(),
+                )
+            })
+            .collect();
+        let behaviour_types: Vec<TypeId> = registry
+            .iter_with_data::<ReflectBehaviour>()
+            .map(|(registration, _)| registration.type_id())
+            .collect();
+        for (type_id, type_path) in wire_types {
+            for dst in entities_with_type(world, type_id) {
+                let Some(wire) = stack_wire(&registry, world, dst, type_id) else {
+                    continue;
+                };
+                links.push(Link {
+                    src: wire.producer(),
+                    dst,
+                    type_id,
+                    wire: type_path,
+                });
+            }
+        }
+        for type_id in behaviour_types {
+            for entity in entities_with_type(world, type_id) {
+                behaviour_steps.push((entity, type_id));
+            }
+        }
     }
 
     // Vertices are entities (spec §2.5): everything a wire touches, plus
@@ -180,15 +200,17 @@ pub fn rebuild_order(world: &mut World) {
         cycles: sorted.cycles.clone(),
         ..Default::default()
     };
-    for entry in &wires.entries {
-        let mut instances: Vec<Link> = Vec::new();
-        (entry.collect)(world, &mut instances);
-        for link in instances {
-            if !(entry.has_source)(world, link.src) {
-                diagnostics.missing_source.push((link.src, entry.name));
+    if let Some(type_registry) = world.get_resource::<AppTypeRegistry>().cloned() {
+        let registry = type_registry.read();
+        for link in &links {
+            let Some(wire) = stack_wire(&registry, world, link.dst, link.type_id) else {
+                continue;
+            };
+            if !entity_has_type(world, link.src, wire.source_type()) {
+                diagnostics.missing_source.push((link.src, link.wire));
             }
-            if !(entry.has_target)(world, link.dst) {
-                diagnostics.missing_target.push((link.dst, entry.name));
+            if !entity_has_type(world, link.dst, wire.target_type()) {
+                diagnostics.missing_target.push((link.dst, link.wire));
             }
         }
     }
@@ -200,9 +222,9 @@ pub fn rebuild_order(world: &mut World) {
     for (index, link) in links.iter().enumerate() {
         inbound.entry(link.dst).or_default().push(index);
     }
-    let mut behaviours_of: HashMap<Entity, Vec<BehaviourFn>> = HashMap::new();
-    for (entity, run) in behaviour_steps {
-        behaviours_of.entry(entity).or_default().push(run);
+    let mut behaviours_of: HashMap<Entity, Vec<TypeId>> = HashMap::new();
+    for (entity, type_id) in behaviour_steps {
+        behaviours_of.entry(entity).or_default().push(type_id);
     }
 
     let mut steps: Vec<Step> = Vec::new();
@@ -210,19 +232,17 @@ pub fn rebuild_order(world: &mut World) {
         for &index in inbound.get(&entity).map_or(&[][..], |v| v.as_slice()) {
             let link = links[index];
             steps.push(Step::Propagate {
-                run: link.run,
                 src: link.src,
                 dst: link.dst,
+                type_id: link.type_id,
                 wire: link.wire,
             });
         }
-        for &run in behaviours_of.get(&entity).map_or(&[][..], |v| v.as_slice()) {
-            steps.push(Step::Run { run, entity });
+        for &type_id in behaviours_of.get(&entity).map_or(&[][..], |v| v.as_slice()) {
+            steps.push(Step::Run { entity, type_id });
         }
     }
 
-    world.insert_resource(wires);
-    world.insert_resource(behaviours);
     world.insert_resource(diagnostics);
     world.insert_resource(GraphOrder { steps });
     world.resource_mut::<TopologyDirty>().0 = false;
@@ -236,13 +256,15 @@ mod tests {
         Entity::from_raw_u32(index).expect("valid entity index")
     }
 
-    fn noop(_: &mut World, _: Entity, _: Entity) {}
+    fn noop_type() -> TypeId {
+        TypeId::of::<()>()
+    }
 
     fn link(src: Entity, dst: Entity) -> Link {
         Link {
             src,
             dst,
-            run: noop,
+            type_id: noop_type(),
             wire: "test",
         }
     }
@@ -321,15 +343,18 @@ mod tests {
 
     // --- rebuild_order ------------------------------------------------
 
-    use crate::registry_wires::{register_behaviour, register_wire};
+    use crate::register::{register_behaviour_type, register_wire_type};
     use crate::test_wires::{FloatOut, Gain, GainFrom, spawn_float, spawn_gain};
     use bevy_app::App;
+    use bevy_reflect::TypePath;
 
     fn rebuild_app() -> App {
         let mut app = App::new();
         app.init_resource::<TopologyDirty>();
         app.init_resource::<GraphOrder>();
-        register_wire::<GainFrom>(&mut app);
+        app.register_type::<FloatOut>();
+        app.register_type::<Gain>();
+        register_wire_type::<GainFrom>(&mut app);
         app
     }
 
@@ -352,7 +377,7 @@ mod tests {
     fn a_rebuild_emits_propagate_before_the_behaviour_that_consumes_it() {
         // The ordering rule the whole design turns on.
         let mut app = rebuild_app();
-        register_behaviour::<Gain>(&mut app, |_, _, _| {});
+        register_behaviour_type::<Gain>(&mut app);
         let src = spawn_float(app.world_mut(), 2.0);
         let dst = spawn_gain(app.world_mut(), 0.0);
         app.world_mut().entity_mut(dst).insert(GainFrom(src));
@@ -377,7 +402,7 @@ mod tests {
         let Step::Propagate { wire, .. } = app.world().resource::<GraphOrder>().steps[0] else {
             panic!("expected a propagation step");
         };
-        assert_eq!(wire, "factor");
+        assert_eq!(wire, GainFrom::type_path());
     }
 
     #[test]
@@ -460,7 +485,7 @@ mod tests {
         let diagnostics = app
             .world()
             .resource::<crate::diagnostics::GraphDiagnostics>();
-        assert_eq!(diagnostics.missing_source, vec![(bare, "factor")]);
+        assert_eq!(diagnostics.missing_source, vec![(bare, GainFrom::type_path())]);
     }
 
     #[test]

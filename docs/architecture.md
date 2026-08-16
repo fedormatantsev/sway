@@ -101,20 +101,39 @@ There is no node type and no node instance. An entity is a graph vertex because
 it carries components; a value connection is a component too.
 
 ```rust
-pub trait Wire: Relationship {
-    type Source: Component;
-    type Target: Component<Mutability = Mutable>;
-    const NAME: &'static str;
-
-    fn propagate(src: &Self::Source, dst: Mut<Self::Target>);
+#[reflect_trait]
+pub trait Wire {
+    fn producer(&self) -> Entity;
+    fn source_type(&self) -> TypeId;
+    fn target_type(&self) -> TypeId;
+    fn source_path(&self) -> &'static str;
+    fn target_path(&self) -> &'static str;
+    fn propagate(&self, outlet: &dyn PartialReflect, inlet: Mut<dyn Reflect>);
 }
 ```
 
 The relationship component lives on the **consumer** and names the producer;
-Bevy's `RelationshipTarget` on the producer collects consumers. **Outlets are
-components** (an entity has an `f32` outlet because it has `FloatOut`). **Inlets
-are wire types** (an entity has a `translation.y` inlet because it has
-`Transform` and that wire's `Target` is `Transform`).
+Bevy's `RelationshipTarget` on the producer collects consumers. The reflected
+`Wire` trait is a parallel surface — `Relationship` is `Sized` and cannot be a
+supertrait. Identity is the type's full reflected type path, not a short name.
+
+A **node** is up to three optional parts:
+
+| Part | Role | Editor | Document |
+|---|---|---|---|
+| Inlets | Ports: authored and/or driven by wires | Fields + inlet sockets | Yes (authorable) |
+| State | Internal memory for the behaviour | Hidden | No |
+| Outlets | Values other wires can read | Outlet sockets only | No |
+
+**Outlets are components** (an entity has an `f32` outlet because it has
+`FloatOut`). **Inlets are the wire's target component** (an entity has a
+translation inlet because it has `Transform` and `TranslationFrom`'s target is
+`Transform`). State is neither inspectable nor stored in the document.
+
+Default `propagate` is a reflected field copy along `source_path` /
+`target_path` (immutable `reflect_partial_eq`, write via `map_unchanged`). An
+empty target path is a no-op (`ChildOf`). Typed overrides exist only where
+conversion is the meaning (`RotationFrom`).
 
 Every connection invariant that used to need an arena is a property of Bevy
 `Relationship` (at most one source per inlet type, compile-time value typing,
@@ -123,8 +142,27 @@ Those behaviours are pinned by characterization tests. A producer missing the
 source component or a consumer missing the target is skipped at propagate time
 and reported in diagnostics.
 
-**Behaviours** are the second registered thing. Most computation is not a
-connection and does not belong in the graph:
+**Behaviours** are a second `#[reflect_trait]`, implemented on the inlet type
+(or a marker when there are no inlets):
+
+```rust
+#[reflect_trait]
+pub trait Behaviour {
+    fn state_type(&self) -> Option<TypeId>;
+    fn outlet_type(&self) -> Option<TypeId>;
+    fn evaluate(
+        &self,
+        state: Option<Mut<dyn Reflect>>,
+        outlets: Option<Mut<dyn Reflect>>,
+        ctx: &TickCtx,
+    );
+}
+```
+
+`&self` is the inlets after inbound wires this tick. State is read/written in
+place; outlets are write-only in place. There is no `World`, `Entity`, or
+return struct. Most computation is not a connection and does not belong in
+the graph:
 
 | What the output depends on | Where it runs |
 |---|---|
@@ -132,9 +170,11 @@ connection and does not belong in the graph:
 | Nothing; it only consumes — mesh upload, material rebuild | Ordinary Bevy system on `Changed<T>` |
 | A wired inlet, in the same tick | A **behaviour**, placed in the order |
 
-Registration is per component type. Hierarchy costs one `Wire` impl on
-`ChildOf` (`Source` and `Target` both `Transform`, empty `propagate`); authoring
-inserts `ChildOf`, Bevy maintains `Children`.
+Registration is `register_type` plus `ReflectWire` / `ReflectBehaviour` type
+data and `Authoring`-gated topology hooks. There is no sidecar `WireRegistry`
+or `BehaviourRegistry`. Hierarchy costs one `Wire` impl on `ChildOf` (source
+and target both `Transform`, empty `target_path`); authoring inserts `ChildOf`,
+Bevy maintains `Children`.
 
 `TickCtx` carries only what is specific to this tick — duration, start, index.
 Wall time comes from `Time<Real>`. Beat time, when present, comes from a
@@ -143,9 +183,10 @@ derive time-varying values from absolute time rather than accumulating per tick.
 
 ### Runtime surface
 
-Mechanically a behaviour receives `&mut World` and can touch anything. By
-convention it goes through registered service resources. A wire's `propagate`
-sees one source component and one target component only.
+A behaviour never sees `&mut World`. It reads inlets on `&self`, read/writes
+state in place, and writes outlets in place. Work that needs services, other
+entities, or the world stays an ordinary system or an observer trigger. A
+wire's `propagate` sees one outlet value and one inlet `Mut` only.
 
 Fire-and-forget interactions ("burst here", "start clip 3") use **observer
 triggers** rather than facade methods — graph → world only. Observers are not
@@ -169,11 +210,11 @@ registers the systems that own buffer lifecycle.
   gives each consumer its own copy. `TriggerIn<W>` *is* that buffer, living on
   the consumer; a component hook installed by `register_event_wire::<W>`
   inserts it alongside `W`.
-- Registration monomorphises the clear and copy functions exactly as
-  `register_wire` does, so the tick never sees a generic.
-- Event wires round-trip through the document like value wires, so there is a
-  **separate event-wire registry** alongside the value-wire one. Drag-to-connect
-  legality reads both.
+- Registration monomorphises the clear and copy functions so the tick never
+  sees a generic.
+- Event wires round-trip through the document like value wires, keyed by type
+  path. Event-wire dispatch is a separate catalog from value `ReflectWire`
+  (not implemented in this change). Drag-to-connect legality reads both.
 
 **Order relative to the graph tick** (`FixedUpdate`):
 
@@ -198,22 +239,23 @@ One derived artifact exists — a flat list:
 pub struct GraphOrder { pub steps: Vec<Step> }
 
 pub enum Step {
-    Propagate { run: PropagateFn, src: Entity, dst: Entity, wire: &'static str },
-    Run       { run: BehaviourFn, entity: Entity },
+    Propagate { src: Entity, dst: Entity, type_id: TypeId, wire: &'static str },
+    Run       { entity: Entity, type_id: TypeId },
 }
 ```
 
-A rebuild collects every instance of every registered value wire, Kahn-sorts the
-**entities** they connect, and emits, per entity in that order, inbound
-propagations followed by behaviours. Each step carries a monomorphised function
-pointer from registration; the tick never reads the registries.
+A rebuild collects every instance of every reflected value wire from
+`AppTypeRegistry` (`ReflectWire` / `ReflectBehaviour` plus `ComponentId`),
+Kahn-sorts the **entities** they connect, and emits, per entity in that order,
+inbound propagations followed by behaviours. Each step names types, not
+registry function pointers; the tick looks the types up in the type registry.
 
 ### Rebuild
 
-`GraphOrder` rebuilds when a `TopologyDirty` flag is set (starts set). Per-wire
-type watch systems notice insert/remove and set the flag; they live in a system
-set gated on an `Authoring` resource — **absent from a show build**. Authoring
-is plain ECS mutation; there is no `connect` API.
+`GraphOrder` rebuilds when a `TopologyDirty` flag is set (starts set).
+`Authoring`-gated `on_add` / `on_remove` hooks on each registered wire and
+behaviour type set the flag — **absent from a show build**. Authoring is
+plain ECS mutation; there is no `connect` API.
 
 A cycle never stops the render. The sort emits the acyclic part in topological
 order and appends cycle members in entity order, where they read the previous
@@ -233,6 +275,13 @@ Cycles are allowed; no special case for false cycles for now.
 The graph runs as a single **exclusive system in `FixedUpdate`**, rate decoupled
 from render framerate via `Time<Fixed>`. Serial evaluation, direct `&mut World`,
 immediate writes within the tick.
+
+For a `Propagate` step the tick `FromReflect`s a stack copy of the relationship
+(one `Entity`, `Copy`), fetches the producer's outlet and the consumer's inlet
+from the wire's type methods, and calls `propagate` on that copy. It does not
+pass `&mut World` into the trait. For a `Run` step it clones the inlets, seeds
+default state/outlet components when the types are present but missing, and
+calls `evaluate` with `Mut` state and outlets.
 
 `FixedUpdate` decouples tick rate from frame rate, not tick cost — a heavy cook
 still hitch the frame; `max_delta` may drop ticks under sustained overload.

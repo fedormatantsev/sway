@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy_ecs::change_detection::DetectChangesMut;
-use sway_graph::EditorPos;
+use sway_graph::{EditorPos, ReflectWire};
 
 use crate::field_wire::field_wire;
 
@@ -46,7 +46,8 @@ impl PbrMaterial {
 /// The outlet, in the sense of architecture §2: an entity is a material
 /// producer because it has one of these. Not authorable — a handle has no
 /// business round-tripping through a document.
-#[derive(Component, Default, Debug, Clone, PartialEq)]
+#[derive(Component, Reflect, Default, Debug, Clone, PartialEq)]
+#[reflect(Component, Default, PartialEq)]
 pub struct MaterialOut(pub Handle<StandardMaterial>);
 
 /// An ordinary `Changed<T>` system. The comparison the "never write an equal
@@ -82,17 +83,15 @@ field_wire!(
     /// would make every mesh look like a legal material producer.
     MaterialFrom / DrivesMaterial,
     MaterialOut => MeshMaterial3d<StandardMaterial>,
-    "material",
-    |t| &mut t.0,
-    |s| s.0.clone()
+    "0"
 );
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire_testing::assert_writes_only_on_change;
+    use crate::wire_testing::{assert_writes_only_on_change, propagate_wire};
     use bevy::asset::AssetPlugin;
-    use sway_graph::propagate_of;
+    use sway_graph::register_wire_type;
 
     fn material_app() -> App {
         let mut app = App::new();
@@ -107,6 +106,9 @@ mod tests {
             .insert(&Handle::default(), StandardMaterial::default())
             .expect("seeding the default handle succeeds");
         app.add_systems(Update, sync_pbr_materials);
+        app.register_type::<MaterialOut>();
+        app.register_type::<MeshMaterial3d<StandardMaterial>>();
+        register_wire_type::<MaterialFrom>(&mut app);
         app
     }
 
@@ -236,8 +238,8 @@ mod tests {
             .world_mut()
             .spawn(MeshMaterial3d::<StandardMaterial>::default())
             .id();
-        propagate_of::<MaterialFrom>(app.world_mut(), node, a);
-        propagate_of::<MaterialFrom>(app.world_mut(), node, b);
+        propagate_wire::<MaterialFrom>(app.world_mut(), node, a);
+        propagate_wire::<MaterialFrom>(app.world_mut(), node, b);
 
         let expected = app
             .world()
@@ -264,7 +266,7 @@ mod tests {
         let mut assets = Assets::<StandardMaterial>::default();
         let one = assets.add(StandardMaterial::default());
         let two = assets.add(StandardMaterial::default());
-        assert_writes_only_on_change::<MaterialFrom>(
+        assert_writes_only_on_change::<MaterialFrom, _, _>(
             MaterialOut(one),
             MaterialOut(two),
             MeshMaterial3d::<StandardMaterial>::default(),

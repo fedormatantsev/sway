@@ -1,29 +1,26 @@
 //! Engine-only wire fixtures. Deliberately not real nodes: these exist to
 //! exercise the contract, not to do anything musical.
 
-use bevy_ecs::change_detection::{DetectChangesMut, Mut};
+use std::any::TypeId;
+
+use bevy_ecs::change_detection::Mut;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::reflect::ReflectComponent;
 use bevy_ecs::world::World;
-use bevy_reflect::Reflect;
 use bevy_reflect::std_traits::ReflectDefault;
+use bevy_reflect::Reflect;
 
-use crate::wire::Wire;
+use crate::behaviour::Behaviour;
+use crate::ctx::TickCtx;
+use crate::wire::{ReflectWire, Wire};
 
-/// A producer's output. An outlet is a component (spec §2.1).
-///
-/// `Reflect`/`#[reflect(Component, Default, PartialEq)]` so Task 7's project
-/// tests can register it via `register_authorable` — that's the only
-/// consumer of this trait on this type, the tick path never reflects it.
+/// A producer's output. An outlet is a component.
 #[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
 #[reflect(Component, Default, PartialEq)]
 pub struct FloatOut(pub f32);
 
 /// A consumer with one driveable field and one derived one.
-///
-/// `Reflect`/`#[reflect(Component, Default, PartialEq)]` for the same reason
-/// as `FloatOut`.
 #[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
 #[reflect(Component, Default, PartialEq)]
 pub struct Gain {
@@ -31,21 +28,67 @@ pub struct Gain {
     pub value: f32,
 }
 
-#[derive(Component)]
+#[derive(Component, Reflect, Clone, Copy)]
 #[relationship(relationship_target = DrivesGain)]
+#[reflect(Component, Wire)]
 pub struct GainFrom(#[entities] pub Entity);
 
 #[derive(Component)]
 #[relationship_target(relationship = GainFrom)]
 pub struct DrivesGain(Vec<Entity>);
 
-impl Wire for GainFrom {
-    type Source = FloatOut;
-    type Target = Gain;
-    const NAME: &'static str = "factor";
+impl From<Entity> for GainFrom {
+    fn from(entity: Entity) -> Self {
+        Self(entity)
+    }
+}
 
-    fn propagate(src: &FloatOut, dst: Mut<Gain>) {
-        dst.map_unchanged(|g| &mut g.factor).set_if_neq(src.0);
+impl Wire for GainFrom {
+    fn producer(&self) -> Entity {
+        self.0
+    }
+
+    fn source_type(&self) -> TypeId {
+        TypeId::of::<FloatOut>()
+    }
+
+    fn target_type(&self) -> TypeId {
+        TypeId::of::<Gain>()
+    }
+
+    fn source_path(&self) -> &'static str {
+        "0"
+    }
+
+    fn target_path(&self) -> &'static str {
+        "factor"
+    }
+}
+
+impl Behaviour for Gain {
+    fn state_type(&self) -> Option<TypeId> {
+        None
+    }
+
+    fn outlet_type(&self) -> Option<TypeId> {
+        Some(TypeId::of::<FloatOut>())
+    }
+
+    fn evaluate(
+        &self,
+        _state: Option<Mut<dyn Reflect>>,
+        outlets: Option<Mut<dyn Reflect>>,
+        _ctx: &TickCtx,
+    ) {
+        let Some(mut outlets) = outlets else {
+            return;
+        };
+        let doubled = self.factor * 2.0;
+        let next = FloatOut(doubled);
+        if (*outlets).as_partial_reflect().reflect_partial_eq(&next) == Some(true) {
+            return;
+        }
+        let _ = outlets.try_apply(&next);
     }
 }
 

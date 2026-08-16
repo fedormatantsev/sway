@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped when the document shape changes incompatibly. An unknown version is
 /// rejected rather than guessed at.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "Project")]
@@ -38,7 +38,7 @@ pub struct EntityDoc {
     /// alphabetical is deterministic.
     #[serde(default)]
     pub components: BTreeMap<String, Box<RawValue>>,
-    /// Wire `NAME` -> the id of the producer.
+    /// Full reflected type path of a wire type -> the id of the producer.
     #[serde(default)]
     pub wires: BTreeMap<String, String>,
 }
@@ -100,21 +100,23 @@ mod tests {
 
     const MINIMAL: &str = r#"
 Project(
-    version: 1,
+    version: 2,
     entities: [
         Entity(
             id: "lfoA",
             components: {
                 // a comment, which RON keeps and the parser ignores
                 "Lfo": (beats: 8.0, amplitude: 0.5),
-                "FloatOut": (0.0),
             },
             wires: {},
         ),
         Entity(
             id: "cube",
             components: { "Transform": (translation: (0.8, 0.0, 0.0)) },
-            wires: { "translation.y": "lfoA", "parent": "group" },
+            wires: {
+                "sway_nodes::spatial::TranslationFrom": "lfoA",
+                "bevy_ecs::hierarchy::ChildOf": "group",
+            },
         ),
     ],
 )
@@ -124,20 +126,23 @@ Project(
     fn a_document_parses_into_entities_components_and_wires() {
         let doc = parse(MINIMAL).expect("parses");
 
-        assert_eq!(doc.version, 1);
+        assert_eq!(doc.version, 2);
         assert_eq!(doc.entities.len(), 2);
         assert_eq!(doc.entities[0].id, "lfoA");
-        assert_eq!(doc.entities[0].components.len(), 2);
+        assert_eq!(doc.entities[0].components.len(), 1);
         assert!(doc.entities[0].components.contains_key("Lfo"));
         assert_eq!(
             doc.entities[1]
                 .wires
-                .get("translation.y")
+                .get("sway_nodes::spatial::TranslationFrom")
                 .map(String::as_str),
             Some("lfoA")
         );
         assert_eq!(
-            doc.entities[1].wires.get("parent").map(String::as_str),
+            doc.entities[1]
+                .wires
+                .get("bevy_ecs::hierarchy::ChildOf")
+                .map(String::as_str),
             Some("group")
         );
     }
@@ -154,7 +159,7 @@ Project(
 
     #[test]
     fn missing_maps_default_to_empty() {
-        let doc = parse(r#"Project(version: 1, entities: [Entity(id: "bare")])"#).expect("parses");
+        let doc = parse(r#"Project(version: 2, entities: [Entity(id: "bare")])"#).expect("parses");
         assert!(doc.entities[0].components.is_empty());
         assert!(doc.entities[0].wires.is_empty());
     }
@@ -163,6 +168,12 @@ Project(
     fn a_syntax_error_is_reported_not_panicked() {
         let error = parse("Project(version: 1, entities: [").expect_err("must fail");
         assert!(matches!(error, ParseError::Ron(_)), "got {error:?}");
+    }
+
+    #[test]
+    fn version_1_is_rejected() {
+        let error = parse(r#"Project(version: 1, entities: [])"#).expect_err("must fail");
+        assert_eq!(error, ParseError::UnsupportedVersion(1));
     }
 
     #[test]
@@ -175,14 +186,14 @@ Project(
     fn a_duplicate_id_rejects_the_document() {
         // Spec §4.3: nothing in the document can be resolved unambiguously,
         // so this is a whole-reload failure rather than a per-item one.
-        let error = parse(r#"Project(version: 1, entities: [Entity(id: "a"), Entity(id: "a")])"#)
+        let error = parse(r#"Project(version: 2, entities: [Entity(id: "a"), Entity(id: "a")])"#)
             .expect_err("must fail");
         assert_eq!(error, ParseError::DuplicateId("a".to_string()));
     }
 
     #[test]
     fn an_empty_document_is_valid() {
-        let doc = parse("Project(version: 1, entities: [])").expect("parses");
+        let doc = parse("Project(version: 2, entities: [])").expect("parses");
         assert!(doc.entities.is_empty());
     }
 }

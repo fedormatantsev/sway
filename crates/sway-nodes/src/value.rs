@@ -1,18 +1,19 @@
 //! Value nodes: literals and arithmetic that produce an outlet.
 
 use bevy::prelude::*;
-use bevy_ecs::change_detection::DetectChangesMut;
-use sway_graph::{EditorPos, TickCtx};
+use bevy_ecs::change_detection::Mut;
+use bevy_reflect::Reflect;
+use sway_graph::{Behaviour, EditorPos, ReflectBehaviour, ReflectWire, TickCtx};
 
 use crate::field_wire::field_wire;
-use crate::outputs::{FloatOut, Vec3Out};
+use crate::outputs::{write_outlet, FloatOut, Vec3Out};
 
 /// A vector literal whose components are driveable (roadmap D5). Transform,
 /// colour and tint inlets take `Vec3`, so something has to produce one; this
 /// reads as a value in the graph rather than as a `Compose` operator, which is
 /// how both TouchDesigner and Houdini present it.
 #[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
-#[reflect(Component, Default, PartialEq)]
+#[reflect(Component, Default, PartialEq, Behaviour)]
 #[require(Vec3Out, EditorPos)]
 pub struct Vec3Value {
     pub x: f32,
@@ -20,14 +21,22 @@ pub struct Vec3Value {
     pub z: f32,
 }
 
-/// A behaviour, not a plain system: each axis may be wire-driven, so this has
-/// to run between those propagations and the propagation of its own outlet.
-pub fn vec3_behaviour(world: &mut World, entity: Entity, _ctx: &TickCtx) {
-    let Some(value) = world.get::<Vec3Value>(entity).copied() else {
-        return;
-    };
-    if let Some(mut out) = world.get_mut::<Vec3Out>(entity) {
-        out.set_if_neq(Vec3Out(Vec3::new(value.x, value.y, value.z)));
+impl Behaviour for Vec3Value {
+    fn state_type(&self) -> Option<std::any::TypeId> {
+        None
+    }
+
+    fn outlet_type(&self) -> Option<std::any::TypeId> {
+        Some(std::any::TypeId::of::<Vec3Out>())
+    }
+
+    fn evaluate(
+        &self,
+        _state: Option<Mut<dyn Reflect>>,
+        outlets: Option<Mut<dyn Reflect>>,
+        _ctx: &TickCtx,
+    ) {
+        write_outlet(outlets, Vec3Out(Vec3::new(self.x, self.y, self.z)));
     }
 }
 
@@ -35,27 +44,21 @@ field_wire!(
     /// Drives `Vec3.x`.
     Vec3XFrom / DrivesVec3X,
     FloatOut => Vec3Value,
-    "vec3.x",
-    |t| &mut t.x,
-    |s| s.0
+    "x"
 );
 
 field_wire!(
     /// Drives `Vec3.y`.
     Vec3YFrom / DrivesVec3Y,
     FloatOut => Vec3Value,
-    "vec3.y",
-    |t| &mut t.y,
-    |s| s.0
+    "y"
 );
 
 field_wire!(
     /// Drives `Vec3.z`.
     Vec3ZFrom / DrivesVec3Z,
     FloatOut => Vec3Value,
-    "vec3.z",
-    |t| &mut t.z,
-    |s| s.0
+    "z"
 );
 
 use crate::math::{MathOp, math_value, remap_value};
@@ -63,7 +66,7 @@ use crate::math::{MathOp, math_value, remap_value};
 /// Binary arithmetic. `b` is an authored field a wire may override, which is
 /// why there is no `Const` node: "LFO x 2" is one `Math` with `b: 2.0` unwired.
 #[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq)]
-#[reflect(Component, Default, PartialEq)]
+#[reflect(Component, Default, PartialEq, Behaviour)]
 #[require(FloatOut, EditorPos)]
 pub struct Math {
     pub op: MathOp,
@@ -71,13 +74,22 @@ pub struct Math {
     pub b: f32,
 }
 
-pub fn math_behaviour(world: &mut World, entity: Entity, _ctx: &TickCtx) {
-    let Some(node) = world.get::<Math>(entity).copied() else {
-        return;
-    };
-    let value = math_value(node.op, node.a, node.b);
-    if let Some(mut out) = world.get_mut::<FloatOut>(entity) {
-        out.set_if_neq(FloatOut(value));
+impl Behaviour for Math {
+    fn state_type(&self) -> Option<std::any::TypeId> {
+        None
+    }
+
+    fn outlet_type(&self) -> Option<std::any::TypeId> {
+        Some(std::any::TypeId::of::<FloatOut>())
+    }
+
+    fn evaluate(
+        &self,
+        _state: Option<Mut<dyn Reflect>>,
+        outlets: Option<Mut<dyn Reflect>>,
+        _ctx: &TickCtx,
+    ) {
+        write_outlet(outlets, FloatOut(math_value(self.op, self.a, self.b)));
     }
 }
 
@@ -85,25 +97,21 @@ field_wire!(
     /// Drives `Math.a`.
     MathAFrom / DrivesMathA,
     FloatOut => Math,
-    "math.a",
-    |t| &mut t.a,
-    |s| s.0
+    "a"
 );
 
 field_wire!(
     /// Drives `Math.b`.
     MathBFrom / DrivesMathB,
     FloatOut => Math,
-    "math.b",
-    |t| &mut t.b,
-    |s| s.0
+    "b"
 );
 
 /// Rescales `input` from one range to another. `input` is a field rather than
 /// an implicit inlet so that `RemapInputFrom` has something to write, exactly
 /// as `Math.a` does.
 #[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]
-#[reflect(Component, Default, PartialEq)]
+#[reflect(Component, Default, PartialEq, Behaviour)]
 #[require(FloatOut, EditorPos)]
 pub struct Remap {
     pub input: f32,
@@ -127,20 +135,32 @@ impl Default for Remap {
     }
 }
 
-pub fn remap_behaviour(world: &mut World, entity: Entity, _ctx: &TickCtx) {
-    let Some(node) = world.get::<Remap>(entity).copied() else {
-        return;
-    };
-    let value = remap_value(
-        node.input,
-        node.in_min,
-        node.in_max,
-        node.out_min,
-        node.out_max,
-        node.clamp,
-    );
-    if let Some(mut out) = world.get_mut::<FloatOut>(entity) {
-        out.set_if_neq(FloatOut(value));
+impl Behaviour for Remap {
+    fn state_type(&self) -> Option<std::any::TypeId> {
+        None
+    }
+
+    fn outlet_type(&self) -> Option<std::any::TypeId> {
+        Some(std::any::TypeId::of::<FloatOut>())
+    }
+
+    fn evaluate(
+        &self,
+        _state: Option<Mut<dyn Reflect>>,
+        outlets: Option<Mut<dyn Reflect>>,
+        _ctx: &TickCtx,
+    ) {
+        write_outlet(
+            outlets,
+            FloatOut(remap_value(
+                self.input,
+                self.in_min,
+                self.in_max,
+                self.out_min,
+                self.out_max,
+                self.clamp,
+            )),
+        );
     }
 }
 
@@ -148,9 +168,7 @@ field_wire!(
     /// Drives `Remap.input`.
     RemapInputFrom / DrivesRemapInput,
     FloatOut => Remap,
-    "remap.input",
-    |t| &mut t.input,
-    |s| s.0
+    "input"
 );
 
 #[cfg(test)]
@@ -211,17 +229,17 @@ mod tests {
 
     #[test]
     fn the_vec3_inlets_never_write_an_equal_value() {
-        assert_writes_only_on_change::<Vec3XFrom>(
+        assert_writes_only_on_change::<Vec3XFrom, _, _>(
             FloatOut(1.0),
             FloatOut(2.0),
             Vec3Value::default(),
         );
-        assert_writes_only_on_change::<Vec3YFrom>(
+        assert_writes_only_on_change::<Vec3YFrom, _, _>(
             FloatOut(1.0),
             FloatOut(2.0),
             Vec3Value::default(),
         );
-        assert_writes_only_on_change::<Vec3ZFrom>(
+        assert_writes_only_on_change::<Vec3ZFrom, _, _>(
             FloatOut(1.0),
             FloatOut(2.0),
             Vec3Value::default(),
@@ -275,9 +293,9 @@ mod tests {
 
     #[test]
     fn the_math_and_remap_inlets_never_write_an_equal_value() {
-        assert_writes_only_on_change::<MathAFrom>(FloatOut(1.0), FloatOut(2.0), Math::default());
-        assert_writes_only_on_change::<MathBFrom>(FloatOut(1.0), FloatOut(2.0), Math::default());
-        assert_writes_only_on_change::<RemapInputFrom>(
+        assert_writes_only_on_change::<MathAFrom, _, _>(FloatOut(1.0), FloatOut(2.0), Math::default());
+        assert_writes_only_on_change::<MathBFrom, _, _>(FloatOut(1.0), FloatOut(2.0), Math::default());
+        assert_writes_only_on_change::<RemapInputFrom, _, _>(
             FloatOut(1.0),
             FloatOut(2.0),
             Remap::default(),

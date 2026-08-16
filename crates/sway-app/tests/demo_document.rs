@@ -2,7 +2,7 @@
 //!
 //! Parses and applies the real `assets/demo.sway.ron`, then asserts the world
 //! against the document's own comment-drawn diagram. A renamed short name, a
-//! malformed payload, or a dropped `register_authorable`/`register_wire` call
+//! malformed payload, or a dropped `register_authorable`/`register_wire_type` call
 //! would otherwise leave the suite green and only surface when a human ran the
 //! app.
 //!
