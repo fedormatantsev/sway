@@ -24,7 +24,7 @@ where
     W: Wire + Component + From<Entity>,
 {
     world.entity_mut(dst).insert(W::from(src));
-    propagate_reflected(world, src, dst, TypeId::of::<W>());
+    propagate_reflected(world, src, dst, TypeId::of::<W>()).expect("propagate");
 }
 
 /// Propagates `source` twice and asserts the second write left `Changed` clear,
@@ -45,9 +45,9 @@ where
     let dst = app.world_mut().spawn(target).id();
     app.world_mut().entity_mut(dst).insert(W::from(src));
 
-    propagate_reflected(app.world_mut(), src, dst, TypeId::of::<W>());
+    propagate_reflected(app.world_mut(), src, dst, TypeId::of::<W>()).expect("propagate");
     app.world_mut().clear_trackers();
-    propagate_reflected(app.world_mut(), src, dst, TypeId::of::<W>());
+    propagate_reflected(app.world_mut(), src, dst, TypeId::of::<W>()).expect("propagate");
     assert_eq!(
         changed_count::<T>(app.world_mut()),
         0,
@@ -58,7 +58,7 @@ where
     let other = app.world_mut().spawn(different).id();
     app.world_mut().entity_mut(dst).insert(W::from(other));
     app.world_mut().clear_trackers();
-    propagate_reflected(app.world_mut(), other, dst, TypeId::of::<W>());
+    propagate_reflected(app.world_mut(), other, dst, TypeId::of::<W>()).expect("propagate");
     assert_eq!(
         changed_count::<T>(app.world_mut()),
         1,

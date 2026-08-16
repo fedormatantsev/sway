@@ -38,7 +38,9 @@ pub fn graph_tick(world: &mut World) {
         match *step {
             Step::Propagate {
                 src, dst, type_id, ..
-            } => dispatch::propagate_reflected(world, src, dst, type_id),
+            } => {
+                let _ = dispatch::propagate_reflected(world, src, dst, type_id);
+            }
             Step::Run { entity, type_id } => {
                 dispatch::evaluate_reflected(world, entity, type_id, &ctx)
             }

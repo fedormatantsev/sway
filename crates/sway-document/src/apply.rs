@@ -294,7 +294,9 @@ fn apply_wires(
             .copied();
         let current = {
             let registry = type_registry.read();
-            stack_wire(&registry, world, entity, type_id).map(|wire| wire.producer())
+            stack_wire(&registry, world, entity, type_id)
+                .ok()
+                .map(|wire| wire.producer())
         };
         if wanted == current {
             continue;

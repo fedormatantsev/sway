@@ -6,9 +6,7 @@ use bevy_ecs::change_detection::Mut;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::world::World;
-use bevy_reflect::{
-    PartialReflect, Reflect, ReflectMut, ReflectRef, reflect_trait,
-};
+use bevy_reflect::{PartialReflect, Reflect, ReflectMut, ReflectRef, reflect_trait};
 use bevy_transform::components::Transform;
 
 use crate::dispatch;
@@ -147,9 +145,14 @@ impl Wire for ChildOf {
 
 /// `FromReflect`s the wire on `dst`, fetches outlet/inlet from its type
 /// methods, and calls [`Wire::propagate`]. Missing source, target, or
-/// entities is a no-op.
-pub fn propagate_reflected(world: &mut World, src: Entity, dst: Entity, type_id: TypeId) {
-    dispatch::propagate_reflected(world, src, dst, type_id);
+/// entities returns [`Err`] without mutating the other entity.
+pub fn propagate_reflected(
+    world: &mut World,
+    src: Entity,
+    dst: Entity,
+    type_id: TypeId,
+) -> dispatch::Result<()> {
+    dispatch::propagate_reflected(world, src, dst, type_id)
 }
 
 #[cfg(test)]
@@ -173,16 +176,18 @@ mod tests {
         (world, src, dst)
     }
 
-    fn propagate(world: &mut World, src: Entity, dst: Entity) {
-        propagate_reflected(world, src, dst, TypeId::of::<GainFrom>());
+    fn propagate(world: &mut World, src: Entity, dst: Entity) -> dispatch::Result<()> {
+        propagate_reflected(world, src, dst, TypeId::of::<GainFrom>())
     }
 
     #[test]
     fn propagate_copies_the_source_into_the_target_field() {
         let (mut world, src, dst) = wire_world();
-        world.entity_mut(src).insert(crate::test_wires::FloatOut(3.5));
+        world
+            .entity_mut(src)
+            .insert(crate::test_wires::FloatOut(3.5));
 
-        propagate(&mut world, src, dst);
+        propagate(&mut world, src, dst).expect("propagate");
 
         assert_eq!(world.get::<Gain>(dst).map(|g| g.factor), Some(3.5));
     }
@@ -190,10 +195,13 @@ mod tests {
     #[test]
     fn a_despawned_producer_leaves_the_consumer_untouched() {
         let (mut world, src, dst) = wire_world();
-        world.entity_mut(dst).insert(Gain { factor: 1.25, value: 0.0 });
+        world.entity_mut(dst).insert(Gain {
+            factor: 1.25,
+            value: 0.0,
+        });
         world.despawn(src);
 
-        propagate(&mut world, src, dst);
+        assert!(propagate(&mut world, src, dst).is_err());
 
         assert_eq!(
             world.get::<Gain>(dst).map(|g| g.factor),
@@ -212,7 +220,7 @@ mod tests {
         let dst = spawn_gain(app.world_mut(), 1.25);
         app.world_mut().entity_mut(dst).insert(GainFrom(src));
 
-        propagate(app.world_mut(), src, dst);
+        assert!(propagate(app.world_mut(), src, dst).is_err());
 
         assert_eq!(app.world().get::<Gain>(dst).map(|g| g.factor), Some(1.25));
     }
@@ -227,7 +235,7 @@ mod tests {
         let dst = app.world_mut().spawn_empty().id();
         app.world_mut().entity_mut(dst).insert(GainFrom(src));
 
-        propagate(app.world_mut(), src, dst);
+        assert!(propagate(app.world_mut(), src, dst).is_err());
 
         assert!(app.world().get::<Gain>(dst).is_none());
     }
@@ -235,10 +243,15 @@ mod tests {
     #[test]
     fn the_source_value_is_read_not_the_wire_component() {
         let (mut world, src, dst) = wire_world();
-        world.entity_mut(src).insert(crate::test_wires::FloatOut(-2.0));
-        world.entity_mut(dst).insert(Gain { factor: 0.0, value: 0.0 });
+        world
+            .entity_mut(src)
+            .insert(crate::test_wires::FloatOut(-2.0));
+        world.entity_mut(dst).insert(Gain {
+            factor: 0.0,
+            value: 0.0,
+        });
 
-        propagate(&mut world, src, dst);
+        propagate(&mut world, src, dst).expect("propagate");
 
         assert_eq!(world.get::<Gain>(dst).map(|g| g.factor), Some(-2.0));
     }
@@ -246,12 +259,17 @@ mod tests {
     #[test]
     fn equal_value_does_not_dirty_the_target() {
         let (mut world, src, dst) = wire_world();
-        world.entity_mut(src).insert(crate::test_wires::FloatOut(3.5));
-        world.entity_mut(dst).insert(Gain { factor: 0.0, value: 0.0 });
+        world
+            .entity_mut(src)
+            .insert(crate::test_wires::FloatOut(3.5));
+        world.entity_mut(dst).insert(Gain {
+            factor: 0.0,
+            value: 0.0,
+        });
 
-        propagate(&mut world, src, dst);
+        propagate(&mut world, src, dst).expect("propagate");
         world.clear_trackers();
-        propagate(&mut world, src, dst);
+        propagate(&mut world, src, dst).expect("propagate");
 
         assert!(
             !world.entity(dst).get_ref::<Gain>().unwrap().is_changed(),

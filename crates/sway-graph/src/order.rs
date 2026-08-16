@@ -5,13 +5,13 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use std::any::TypeId;
 
+use crate::behaviour::ReflectBehaviour;
+use crate::diagnostics::GraphDiagnostics;
+use crate::dispatch::{entities_with_type, entity_has_type, stack_wire};
+use crate::wire::ReflectWire;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_ecs::world::World;
-use crate::behaviour::ReflectBehaviour;
-use crate::diagnostics::GraphDiagnostics;
-use crate::dispatch::{entity_has_type, entities_with_type, stack_wire};
-use crate::wire::ReflectWire;
 
 /// `Entity::Ord` is DESCENDING in raw spawn index for bevy_ecs 0.19.0: its
 /// NonMaxU32 niche encoding stores the bitwise complement of the index.
@@ -152,12 +152,7 @@ pub fn rebuild_order(world: &mut World) {
         let registry = type_registry.read();
         let wire_types: Vec<(TypeId, &'static str)> = registry
             .iter_with_data::<ReflectWire>()
-            .map(|(registration, _)| {
-                (
-                    registration.type_id(),
-                    registration.type_info().type_path(),
-                )
-            })
+            .map(|(registration, _)| (registration.type_id(), registration.type_info().type_path()))
             .collect();
         let behaviour_types: Vec<TypeId> = registry
             .iter_with_data::<ReflectBehaviour>()
@@ -165,7 +160,7 @@ pub fn rebuild_order(world: &mut World) {
             .collect();
         for (type_id, type_path) in wire_types {
             for dst in entities_with_type(world, type_id) {
-                let Some(wire) = stack_wire(&registry, world, dst, type_id) else {
+                let Ok(wire) = stack_wire(&registry, world, dst, type_id) else {
                     continue;
                 };
                 links.push(Link {
@@ -203,7 +198,7 @@ pub fn rebuild_order(world: &mut World) {
     if let Some(type_registry) = world.get_resource::<AppTypeRegistry>().cloned() {
         let registry = type_registry.read();
         for link in &links {
-            let Some(wire) = stack_wire(&registry, world, link.dst, link.type_id) else {
+            let Ok(wire) = stack_wire(&registry, world, link.dst, link.type_id) else {
                 continue;
             };
             if !entity_has_type(world, link.src, wire.source_type()) {
@@ -485,7 +480,10 @@ mod tests {
         let diagnostics = app
             .world()
             .resource::<crate::diagnostics::GraphDiagnostics>();
-        assert_eq!(diagnostics.missing_source, vec![(bare, GainFrom::type_path())]);
+        assert_eq!(
+            diagnostics.missing_source,
+            vec![(bare, GainFrom::type_path())]
+        );
     }
 
     #[test]

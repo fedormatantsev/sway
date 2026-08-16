@@ -86,7 +86,7 @@ pub fn to_document(world: &mut World) -> ProjectDoc {
 
             let mut wire_map = BTreeMap::new();
             for (type_id, type_path) in &wire_types {
-                let Some(wire) = stack_wire(&type_registry, world, *entity, *type_id) else {
+                let Ok(wire) = stack_wire(&type_registry, world, *entity, *type_id) else {
                     continue;
                 };
                 let Some(src_id) = ids.get(&wire.producer()) else {

@@ -15,34 +15,62 @@ use crate::behaviour::ReflectBehaviour;
 use crate::ctx::TickCtx;
 use crate::wire::{ReflectWire, Wire};
 
-pub fn propagate_reflected(world: &mut World, src: Entity, dst: Entity, type_id: TypeId) {
-    let Some(type_registry) = world.get_resource::<AppTypeRegistry>().cloned() else {
-        return;
-    };
+pub type Result<T> = std::result::Result<T, DispatchError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchError {
+    MissingTypeRegistry,
+    UnregisteredType,
+    MissingTypeData,
+    MissingEntity,
+    MissingComponent,
+    ReflectFailed,
+}
+
+impl core::fmt::Display for DispatchError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::MissingTypeRegistry => "AppTypeRegistry is not in the world",
+            Self::UnregisteredType => "type is not in the type registry",
+            Self::MissingTypeData => "type is missing required reflect type data",
+            Self::MissingEntity => "entity does not exist",
+            Self::MissingComponent => "entity is missing the required component",
+            Self::ReflectFailed => "reflected value could not be reconstructed",
+        })
+    }
+}
+
+impl core::error::Error for DispatchError {}
+
+pub fn propagate_reflected(
+    world: &mut World,
+    src: Entity,
+    dst: Entity,
+    type_id: TypeId,
+) -> Result<()> {
+    let type_registry = world
+        .get_resource::<AppTypeRegistry>()
+        .cloned()
+        .ok_or(DispatchError::MissingTypeRegistry)?;
     let registry = type_registry.read();
-    let Some(wire) = stack_wire(&registry, world, dst, type_id) else {
-        return;
-    };
-    let source_type = wire.source_type();
-    let target_type = wire.target_type();
-    let Some(outlet_reflect) = reflect_component(&registry, source_type) else {
-        return;
-    };
-    let Some(inlet_reflect) = reflect_component(&registry, target_type) else {
-        return;
-    };
+    let wire = stack_wire(&registry, world, dst, type_id)?;
+    let outlet_reflect =
+        reflect_component(&registry, wire.source_type()).ok_or(DispatchError::MissingTypeData)?;
+    let inlet_reflect =
+        reflect_component(&registry, wire.target_type()).ok_or(DispatchError::MissingTypeData)?;
     drop(registry);
 
-    let Ok([src_ref, dst_mut]) = world.get_entity_mut([src, dst]) else {
-        return;
-    };
-    let Some(outlet) = outlet_reflect.reflect(src_ref) else {
-        return;
-    };
-    let Some(inlet) = inlet_reflect.reflect_mut(dst_mut) else {
-        return;
-    };
+    let [src_ref, dst_mut] = world
+        .get_entity_mut([src, dst])
+        .map_err(|_| DispatchError::MissingEntity)?;
+    let outlet = outlet_reflect
+        .reflect(src_ref)
+        .ok_or(DispatchError::MissingComponent)?;
+    let inlet = inlet_reflect
+        .reflect_mut(dst_mut)
+        .ok_or(DispatchError::MissingComponent)?;
     wire.propagate(outlet.as_partial_reflect(), inlet);
+    Ok(())
 }
 
 pub fn evaluate_reflected(world: &mut World, entity: Entity, type_id: TypeId, ctx: &TickCtx) {
@@ -86,20 +114,35 @@ pub fn evaluate_reflected(world: &mut World, entity: Entity, type_id: TypeId, ct
     if let (Some(reflect_component), Some(reflect_default)) =
         (state_reflect.as_ref(), state_default.as_ref())
     {
-        ensure_component(world, entity, reflect_component, reflect_default, &type_registry);
+        ensure_component(
+            world,
+            entity,
+            reflect_component,
+            reflect_default,
+            &type_registry,
+        );
     }
     if let (Some(reflect_component), Some(reflect_default)) =
         (outlet_reflect.as_ref(), outlet_default.as_ref())
     {
-        ensure_component(world, entity, reflect_component, reflect_default, &type_registry);
+        ensure_component(
+            world,
+            entity,
+            reflect_component,
+            reflect_default,
+            &type_registry,
+        );
     }
 
     let Ok(entity_world_mut) = world.get_entity_mut(entity) else {
         return;
     };
     let mut entity_mut = EntityMut::from(entity_world_mut);
-    let (state, outlets) =
-        reflect_state_and_outlets(&mut entity_mut, state_reflect.as_ref(), outlet_reflect.as_ref());
+    let (state, outlets) = reflect_state_and_outlets(
+        &mut entity_mut,
+        state_reflect.as_ref(),
+        outlet_reflect.as_ref(),
+    );
     behaviour.evaluate(state, outlets, ctx);
 }
 
@@ -108,15 +151,31 @@ pub fn stack_wire(
     world: &World,
     dst: Entity,
     type_id: TypeId,
-) -> Option<Box<dyn Wire>> {
-    let registration = registry.get(type_id)?;
-    let reflect_component = registration.data::<ReflectComponent>()?;
-    let reflect_wire = registration.data::<ReflectWire>()?;
-    let from_reflect = registration.data::<ReflectFromReflect>()?;
-    let entity_ref = world.get_entity(dst).ok()?;
-    let reflected = reflect_component.reflect(entity_ref)?;
-    let owned = from_reflect.from_reflect(reflected.as_partial_reflect())?;
-    reflect_wire.get_boxed(owned).ok()
+) -> Result<Box<dyn Wire>> {
+    let registration = registry
+        .get(type_id)
+        .ok_or(DispatchError::UnregisteredType)?;
+    let reflect_component = registration
+        .data::<ReflectComponent>()
+        .ok_or(DispatchError::MissingTypeData)?;
+    let reflect_wire = registration
+        .data::<ReflectWire>()
+        .ok_or(DispatchError::MissingTypeData)?;
+    let from_reflect = registration
+        .data::<ReflectFromReflect>()
+        .ok_or(DispatchError::MissingTypeData)?;
+    let entity_ref = world
+        .get_entity(dst)
+        .map_err(|_| DispatchError::MissingEntity)?;
+    let reflected = reflect_component
+        .reflect(entity_ref)
+        .ok_or(DispatchError::MissingComponent)?;
+    let owned = from_reflect
+        .from_reflect(reflected.as_partial_reflect())
+        .ok_or(DispatchError::ReflectFailed)?;
+    reflect_wire
+        .get_boxed(owned)
+        .map_err(|_| DispatchError::ReflectFailed)
 }
 
 pub fn make_wire_component(
@@ -233,7 +292,8 @@ pub fn connect_is_legal(world: &World, type_path: &str, src: Entity, dst: Entity
     let Some(wire) = reflect_wire.get(owned.as_ref()) else {
         return false;
     };
-    entity_has_type(world, src, wire.source_type()) && entity_has_type(world, dst, wire.target_type())
+    entity_has_type(world, src, wire.source_type())
+        && entity_has_type(world, dst, wire.target_type())
 }
 
 fn ensure_component(
