@@ -14,7 +14,7 @@ use bevy_reflect::std_traits::ReflectDefault;
 use bevy_reflect::{PartialReflect, ReflectMut, ReflectRef, TypeData};
 use crossbeam_channel::Receiver;
 
-use crate::ctx::EditorPos;
+use crate::ctx::{EditorPos, Selection};
 
 /// Looks up one piece of `TypeData` (e.g. [`ReflectComponent`],
 /// [`ReflectDefault`]) for a document-registered component, by its
@@ -63,6 +63,7 @@ pub enum EditorCommand {
     MoveNode { entity: Entity, pos: Vec2 },
     Connect { wire: &'static str, src: Entity, dst: Entity },
     Disconnect { wire: &'static str, dst: Entity },
+    Select { entity: Option<Entity> },
 }
 
 /// The receiving half, held by the world. Present only in an editor build.
@@ -159,6 +160,11 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
                 }
             }
             world.despawn(*entity);
+            if let Some(mut selection) = world.get_resource_mut::<Selection>()
+                && selection.0 == Some(*entity)
+            {
+                selection.0 = None;
+            }
         }
         EditorCommand::SetField { entity, component, field, value } => {
             let Some(reflect_component) = reflect_data_for::<ReflectComponent>(world, component)
@@ -265,6 +271,17 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
                 return;
             };
             remove(world, *dst);
+        }
+        EditorCommand::Select { entity } => {
+            // A selection naming a despawned entity is a no-op rather than a
+            // stale pointer.
+            let entity = entity.filter(|e| world.get_entity(*e).is_ok());
+            let Some(mut selection) = world.get_resource_mut::<Selection>() else {
+                return;
+            };
+            if selection.0 != entity {
+                selection.0 = entity;
+            }
         }
     }
 }
@@ -671,5 +688,41 @@ mod tests {
             1,
             "the new edge reached the order in the same frame the command arrived",
         );
+    }
+
+    #[test]
+    fn select_sets_the_selection_resource() {
+        let mut world = World::new();
+        world.init_resource::<crate::Selection>();
+        let entity = world.spawn_empty().id();
+
+        apply_editor_command(&mut world, &EditorCommand::Select { entity: Some(entity) });
+
+        assert_eq!(world.resource::<crate::Selection>().0, Some(entity));
+    }
+
+    #[test]
+    fn selecting_nothing_clears_it() {
+        let mut world = World::new();
+        let entity = world.spawn_empty().id();
+        world.insert_resource(crate::Selection(Some(entity)));
+
+        apply_editor_command(&mut world, &EditorCommand::Select { entity: None });
+
+        assert_eq!(world.resource::<crate::Selection>().0, None);
+    }
+
+    #[test]
+    fn deleting_the_selected_entity_clears_the_selection() {
+        // Otherwise the inspector and the gizmo both keep pointing at a dead
+        // entity, and the gizmo would draw at a stale transform.
+        let mut world = World::new();
+        world.init_resource::<crate::Selection>();
+        let entity = world.spawn(EditorPos(Vec2::ZERO)).id();
+        apply_editor_command(&mut world, &EditorCommand::Select { entity: Some(entity) });
+
+        apply_editor_command(&mut world, &EditorCommand::Delete { entity });
+
+        assert_eq!(world.resource::<crate::Selection>().0, None);
     }
 }

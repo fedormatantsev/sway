@@ -2780,15 +2780,30 @@ This is M7's exit criterion. Run it in one unbroken session, and have the human 
 
 Run: `cargo run -p sway-app -- --editor`
 
-1. Alt+drag to frame the cube.
-2. Click it: tree row, node box and inspector all follow.
-3. Drag the X handle: the cube moves, and the inspector's `Transform` updates as it goes.
-4. Press E: rotation rings. Drag one: the cube turns.
-5. Press R: scale handles. Drag one: the cube scales.
-6. Save As to a new path. Quit. Relaunch. Open that path.
-7. The cube is where it was left.
+The demo document has three meshes: `cubeA` and `cubeB`, both with a wire-driven
+`translation` (M7-7 — a translate-drag on either springs back on the next tick;
+that is designed behaviour, not a bug, and is the negative case at the end of
+this walkthrough, not something to "fix"), and `cubeC`, with an authored,
+unwired `Transform` — the one mesh whose translate-drag actually holds. The
+script below uses `cubeC` wherever the step needs a drag to stick.
 
-Also confirm the negative case the spec accepts: with the demo's `Vec3`→`translation` wire connected, dragging the cube's translate handle springs back on the next tick (spec M7-7). That is the designed behaviour, not a bug — note it in the commit message so it is not "fixed" later by accident.
+1. Alt+drag to frame the scene.
+2. Click `cubeA`: tree row, node box and inspector all follow.
+3. Press E: rotation rings appear on `cubeA`. Drag one: the cube turns, and
+   holds (rotation is unwired).
+4. Press R: scale handles appear. Drag one: the cube scales, and holds
+   (scale is unwired).
+5. Select `cubeC` (click it in the tree or in the canvas). Press W and drag
+   its translate handle: the cube moves, the inspector's `Transform` updates
+   as it goes, and it holds afterward (translation is unwired on this one).
+6. Save As to a new path. Quit. Relaunch. Open that path.
+7. `cubeA`'s rotation, `cubeA`'s scale, and `cubeC`'s new position all
+   survived the round trip.
+8. Separately, confirm the negative case the spec accepts: select `cubeA` or
+   `cubeB`, drag its translate handle, and watch it spring back on the next
+   tick once released (spec M7-7, the `Vec3`→`translation` wire winning back
+   the field). That is designed behaviour, not a bug — note it in the commit
+   message so it is not "fixed" later by accident.
 
 - [ ] **Step 6: Commit**
 

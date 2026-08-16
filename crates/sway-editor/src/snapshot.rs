@@ -11,7 +11,9 @@ use bevy_reflect::{PartialReflect, ReflectRef};
 use bevy_transform::components::Transform;
 use kurbo::Point;
 use sway_graph::order::{GraphOrder, Step};
-use sway_graph::{ComponentDocRegistry, EditorPos, GraphDiagnostics, WireRegistry};
+use sway_graph::{
+    ComponentDocRegistry, EditorPos, GraphDiagnostics, HiddenFromEditor, Selection, WireRegistry,
+};
 use sway_midi::{MusicalTime, Transport};
 
 /// The editor's display key for a node box.
@@ -82,6 +84,7 @@ pub struct WorldSnapshot {
     pub transport: TransportView,
     pub inspector: InspectorView,
     pub palette: Vec<&'static str>,
+    pub selection: Option<Entity>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -326,6 +329,9 @@ pub fn short_type_name(path: &str) -> String {
 }
 
 pub fn capture(world: &World) -> WorldSnapshot {
+    let selection = world
+        .get_resource::<Selection>()
+        .and_then(|selection| selection.0);
     WorldSnapshot {
         tree: capture_tree(world),
         nodes: capture_nodes(world),
@@ -335,8 +341,9 @@ pub fn capture(world: &World) -> WorldSnapshot {
             .cloned()
             .unwrap_or_default(),
         transport: capture_transport(world),
-        inspector: InspectorView::default(),
+        inspector: selection.map(|entity| inspect(world, entity)).unwrap_or_default(),
         palette: capture_palette(world),
+        selection,
     }
 }
 
@@ -359,11 +366,13 @@ fn graph_entities(world: &World) -> Vec<Entity> {
     entities
 }
 
-/// Every entity the canvas draws: those carrying `EditorPos` (spec M6-4).
+/// Every entity the canvas draws: those carrying `EditorPos` (spec M6-4),
+/// excluding anything marked [`HiddenFromEditor`].
 fn canvas_entities(world: &World) -> Vec<Entity> {
     let mut entities: Vec<Entity> = world
         .iter_entities()
         .filter(|entity| entity.contains::<EditorPos>())
+        .filter(|entity| !entity.contains::<HiddenFromEditor>())
         .map(|entity| entity.id())
         .collect();
     entities.sort();
@@ -494,6 +503,9 @@ fn capture_tree(world: &World) -> Vec<TreeRow> {
     let mut scene_roots: Vec<Entity> = world
         .iter_entities()
         .filter(|entity| entity.contains::<Transform>())
+        // The transform gizmo's own handle meshes (spec M7-8) carry
+        // `Transform` but are implementation detail, not scene content.
+        .filter(|entity| !entity.contains::<HiddenFromEditor>())
         .filter(|entity| match entity.get::<ChildOf>() {
             Some(ChildOf(parent)) => world.get::<Transform>(*parent).is_none(),
             None => true,
@@ -542,6 +554,7 @@ fn push_scene_subtree(
             .iter()
             .copied()
             .filter(|child| world.get::<Transform>(*child).is_some())
+            .filter(|child| world.get::<HiddenFromEditor>(*child).is_none())
             .collect();
         spatial.sort_unstable();
         for child in spatial {
@@ -694,6 +707,32 @@ mod tests {
         let before = entities.len();
         entities.dedup();
         assert_eq!(entities.len(), before);
+    }
+
+    #[test]
+    fn gizmo_handle_meshes_stay_out_of_the_scene_tree() {
+        // Bevy's transform gizmo renderer spawns ~10 mesh entities carrying
+        // `Transform`, and `capture_tree` walks every `Transform` entity.
+        // `sway-editor` cannot name the renderer's own marker types (that
+        // would require `bevy_gizmos`, which pulls in `bevy_render`), so it
+        // filters on `HiddenFromEditor` instead -- see that type's doc
+        // comment in `sway-graph`.
+        //
+        // A bare `bevy_ecs::World` already carries one entity of its own
+        // (Bevy's internal bookkeeping, present even before anything here
+        // spawns a thing), so this asserts the two marked entities are
+        // absent by id rather than asserting the tree is empty outright.
+        let mut world = World::new();
+        let gizmo_a = world.spawn((Transform::default(), HiddenFromEditor)).id();
+        let gizmo_b = world.spawn((Transform::default(), HiddenFromEditor)).id();
+
+        let snap = capture(&world);
+
+        assert!(
+            !snap.tree.iter().any(|row| row.entity == gizmo_a || row.entity == gizmo_b),
+            "the gizmo's own meshes must not appear as scene rows: {:?}",
+            snap.tree,
+        );
     }
 
     #[test]
@@ -925,5 +964,39 @@ mod tests {
         let parent = node.inlets.iter().find(|i| i.wire == "parent").unwrap();
 
         assert!(!parent.accepts_from.contains(&both));
+    }
+
+    #[test]
+    fn capture_reports_the_selection_and_inspects_it_in_one_pass() {
+        // Before M7 the presenter had to ask the widget tree who was selected,
+        // then call `inspect` separately. With selection in the world, capture
+        // can answer both.
+        let mut app = bevy_app::App::new();
+        app.add_plugins(sway_graph::WiresPlugin)
+            .add_plugins(sway_nodes::WireNodesPlugin);
+        let entity = app
+            .world_mut()
+            .spawn((sway_nodes::Oscillator::default(), EditorPos(Vec2::ZERO)))
+            .id();
+        app.world_mut().insert_resource(Selection(Some(entity)));
+
+        let snap = capture(app.world());
+
+        assert_eq!(snap.selection, Some(entity));
+        assert!(
+            !snap.inspector.components.is_empty(),
+            "a selected entity must arrive already inspected",
+        );
+    }
+
+    #[test]
+    fn an_empty_selection_inspects_nothing() {
+        let mut app = bevy_app::App::new();
+        app.add_plugins(sway_graph::WiresPlugin)
+            .add_plugins(sway_nodes::WireNodesPlugin);
+
+        let snap = capture(app.world());
+        assert_eq!(snap.selection, None);
+        assert_eq!(snap.inspector, InspectorView::default());
     }
 }

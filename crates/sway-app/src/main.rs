@@ -189,6 +189,7 @@ fn main() {
     let editor = args.editor;
 
     let (editor_tx, editor_rx) = crossbeam_channel::unbounded();
+    let (viewport_tx, viewport_rx) = crossbeam_channel::unbounded();
 
     // Everything demo-specific is built into the closure the shell calls
     // once the window, shared device, and viewport texture exist --
@@ -200,7 +201,9 @@ fn main() {
 
         if editor {
             app.insert_resource(sway_graph::Authoring)
-                .insert_resource(sway_graph::EditorRx(editor_rx));
+                .insert_resource(sway_graph::EditorRx(editor_rx))
+                .insert_resource(sway_graph::ViewportInputRx(viewport_rx))
+                .add_plugins(sway_runtime::EditorViewportPlugin);
         }
 
         app.add_plugins((
@@ -283,5 +286,6 @@ fn main() {
         editor,
         build_app,
         commands: editor_tx,
+        viewport_input: viewport_tx,
     });
 }

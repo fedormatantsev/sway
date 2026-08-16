@@ -54,6 +54,7 @@ impl Plugin for WiresPlugin {
             .init_resource::<TopologyDirty>()
             .init_resource::<WireTickCount>()
             .init_resource::<crate::diagnostics::GraphDiagnostics>()
+            .init_resource::<crate::ctx::Selection>()
             .register_type::<crate::ctx::EditorPos>()
             .add_systems(FixedUpdate, (rebuild_order, graph_tick).chain());
 

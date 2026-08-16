@@ -10,7 +10,12 @@
 //!   lfoA ──amplitude──▶ lfoB
 //!   lfoA ──vec3.y────▶ vec3A ──translation──▶ cubeA ─┐
 //!   lfoB ──vec3.y────▶ vec3B ──translation──▶ cubeB ─┤─parent─▶ group
-//!   mat  ──material──▶ cubeA, cubeB
+//!   mat  ──material──▶ cubeA, cubeB, cubeC
+//!                                   cubeC ───────────┘─parent─▶ group
+//!
+//! `cubeC` carries an authored `Transform` and no `translation` wire — the
+//! one mesh in the demo whose translate-drag holds (M7 Task 15's exit
+//! criterion needs this; cubeA/cubeB spring back on the next tick by design).
 
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::prelude::*;
@@ -68,6 +73,7 @@ fn demo_document_loads_and_reconciles_cleanly() {
             "camera".to_string(),
             "cubeA".to_string(),
             "cubeB".to_string(),
+            "cubeC".to_string(),
             "group".to_string(),
             "lfoA".to_string(),
             "lfoB".to_string(),
@@ -87,6 +93,7 @@ fn demo_document_loads_and_reconciles_cleanly() {
     let vec3_b = entity_named(world, "vec3B");
     let cube_a = entity_named(world, "cubeA");
     let cube_b = entity_named(world, "cubeB");
+    let cube_c = entity_named(world, "cubeC");
     let group = entity_named(world, "group");
     let material = entity_named(world, "mat");
     let camera = entity_named(world, "camera");
@@ -115,12 +122,31 @@ fn demo_document_loads_and_reconciles_cleanly() {
         Some(material)
     );
     assert_eq!(
+        world.get::<MaterialFrom>(cube_c).map(|w| w.0),
+        Some(material)
+    );
+    assert_eq!(
         world.get::<ChildOf>(cube_a).map(|c| c.parent()),
         Some(group)
     );
     assert_eq!(
         world.get::<ChildOf>(cube_b).map(|c| c.parent()),
         Some(group)
+    );
+    assert_eq!(
+        world.get::<ChildOf>(cube_c).map(|c| c.parent()),
+        Some(group)
+    );
+    // cubeC is the one demo mesh with no `translation` wire (M7-7's negative
+    // case needs a mesh that does *not* spring back on the next tick).
+    assert!(
+        world.get::<TranslationFrom>(cube_c).is_none(),
+        "cubeC must not carry a translation wire",
+    );
+    assert_eq!(
+        world.get::<Transform>(cube_c).map(|t| t.translation),
+        Some(Vec3::new(0.0, 1.6, -0.8)),
+        "cubeC's authored Transform should survive apply() unchanged",
     );
 
     // D4: the document names one component per node and Bevy supplies the rest.

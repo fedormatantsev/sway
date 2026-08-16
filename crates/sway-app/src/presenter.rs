@@ -9,7 +9,7 @@ use bevy::math::UVec2;
 use crossbeam_channel::Sender;
 use masonry_core::core::CursorIcon;
 use sway_gpu::{Compositor, GpuContext, Quad, UiRenderer, UiTexture, ViewportTexture, WindowSurface};
-use sway_graph::EditorCommand;
+use sway_graph::{EditorCommand, ViewportInput};
 use winit::dpi::PhysicalSize;
 
 /// Blits the viewport fullscreen. No masonry, no vello.
@@ -70,8 +70,9 @@ impl EditorPresenter {
         size: PhysicalSize<u32>,
         scale_factor: f64,
         commands: Sender<EditorCommand>,
+        viewport_input: Sender<ViewportInput>,
     ) -> Self {
-        let editor = sway_editor::EditorUi::new(size, scale_factor, commands);
+        let editor = sway_editor::EditorUi::new(size, scale_factor, commands, viewport_input);
         let ui_texture = UiTexture::new(&gpu.device, size.width.max(1), size.height.max(1));
         let ui_renderer = UiRenderer::new(gpu.device.clone(), gpu.queue.clone());
         Self {
@@ -90,6 +91,11 @@ impl EditorPresenter {
     /// What the toolbar has asked for. Drained by the shell each redraw.
     pub fn take_file_requests(&mut self) -> Vec<sway_editor::FileRequest> {
         self.editor.take_file_requests()
+    }
+
+    /// What the toolbar has asked for. Drained by the shell each redraw.
+    pub fn take_view_requests(&mut self) -> Vec<sway_editor::ViewRequest> {
+        self.editor.take_view_requests()
     }
 
     /// Forwards one winit window event to the masonry widget tree. Most
@@ -124,11 +130,7 @@ impl EditorPresenter {
     /// load-bearing. A one-frame lag in a diagnostic view is invisible;
     /// reordering `present` for it would not be.
     fn apply_snapshot(&mut self, app: &App) {
-        let mut snapshot = sway_editor::snapshot::capture(app.world());
-        if let Some(entity) = self.editor.selected_entity() {
-            snapshot.inspector = sway_editor::snapshot::inspect(app.world(), entity);
-        }
-        self.editor.apply_snapshot(&snapshot);
+        self.editor.apply_snapshot(&sway_editor::snapshot::capture(app.world()));
     }
 
     /// One frame, in the fixed, load-bearing order (controller dispatch

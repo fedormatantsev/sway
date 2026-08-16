@@ -23,7 +23,7 @@ use masonry::widgets::{Button, ButtonPress, Label};
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
 
-use crate::FileRequest;
+use crate::{FileRequest, ViewRequest};
 use crate::snapshot::WorldSnapshot;
 
 /// Height of the strip, in logical pixels.
@@ -42,11 +42,13 @@ pub struct TransportBar {
     fields: Vec<String>,
     generation: u64,
     playing: bool,
-    /// Open / Save / Save As, in that order. Built once; never rebuilt by a
+    /// Open / Save / Save As / Camera, in that order. Built once; never rebuilt by a
     /// snapshot.
-    buttons: [WidgetPod<Button>; 3],
+    buttons: [WidgetPod<Button>; 4],
     /// What the toolbar has asked for since the shell last drained it.
     requests: Vec<FileRequest>,
+    /// What the toolbar has asked for since the shell last drained it.
+    view_requests: Vec<ViewRequest>,
 }
 
 impl Default for TransportBar {
@@ -66,8 +68,10 @@ impl TransportBar {
                 WidgetPod::new(Button::with_text("Open")),
                 WidgetPod::new(Button::with_text("Save")),
                 WidgetPod::new(Button::with_text("Save As")),
+                WidgetPod::new(Button::with_text("Camera")),
             ],
             requests: Vec::new(),
+            view_requests: Vec::new(),
         }
     }
 
@@ -91,6 +95,10 @@ impl TransportBar {
 
     pub fn save_as_button_id(&self) -> WidgetId {
         self.buttons[2].id()
+    }
+
+    pub fn camera_button_id(&self) -> WidgetId {
+        self.buttons[3].id()
     }
 }
 
@@ -141,6 +149,12 @@ impl TransportBar {
     pub fn take_file_requests(this: &mut WidgetMut<'_, Self>) -> Vec<FileRequest> {
         std::mem::take(&mut this.widget.requests)
     }
+
+    /// Drains what the toolbar has asked for. Called once per frame by the
+    /// shell, through `EditorUi::take_view_requests`.
+    pub fn take_view_requests(this: &mut WidgetMut<'_, Self>) -> Vec<ViewRequest> {
+        std::mem::take(&mut this.widget.view_requests)
+    }
 }
 
 impl Widget for TransportBar {
@@ -156,14 +170,25 @@ impl Widget for TransportBar {
         if action.downcast_ref::<ButtonPress>().is_none() {
             return;
         }
-        let request = match self.buttons.iter().position(|b| b.id() == source) {
-            Some(0) => FileRequest::Open,
-            Some(1) => FileRequest::Save,
-            Some(2) => FileRequest::SaveAs,
+        match self.buttons.iter().position(|b| b.id() == source) {
+            Some(0) => {
+                self.requests.push(FileRequest::Open);
+                ctx.set_handled();
+            }
+            Some(1) => {
+                self.requests.push(FileRequest::Save);
+                ctx.set_handled();
+            }
+            Some(2) => {
+                self.requests.push(FileRequest::SaveAs);
+                ctx.set_handled();
+            }
+            Some(3) => {
+                self.view_requests.push(ViewRequest::ToggleCamera);
+                ctx.set_handled();
+            }
             _ => return,
-        };
-        self.requests.push(request);
-        ctx.set_handled();
+        }
     }
 
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
@@ -263,16 +288,16 @@ mod tests {
 
     fn harness_with(snap: WorldSnapshot) -> TestHarness<TransportBar> {
         // Wider than `TestHarnessParams::DEFAULT_SIZE` (400px): three
-        // `FIELD_WIDTH` columns plus three `BUTTON_WIDTH` buttons plus
-        // `PADDING` need 588px, and a strip clipped narrower than its own
-        // content is also unclickable in the harness -- `find_widget_under_pointer`
+        // `FIELD_WIDTH` columns plus four `BUTTON_WIDTH` buttons plus
+        // `PADDING` need ~660px (12 + 360 + 288), and a strip clipped narrower than
+        // its own content is also unclickable in the harness -- `find_widget_under_pointer`
         // rejects a point outside the root's own clip path before it ever
         // looks at a child. The real editor window is always wider than
         // this; only the click tests below need the room.
         let mut harness = TestHarness::create_with_size(
             DefaultProperties::default(),
             TransportBar::new().prepare(),
-            (700, 100),
+            (772, 100),
         );
         harness.edit_root_widget(|mut bar| {
             TransportBar::apply_snapshot(&mut bar, &snap);
@@ -347,6 +372,22 @@ mod tests {
             assert!(
                 TransportBar::take_file_requests(&mut bar).is_empty(),
                 "the shell must not act on the same request twice",
+            );
+        });
+    }
+
+    #[test]
+    fn the_camera_button_asks_the_shell_to_toggle() {
+        use crate::ViewRequest;
+        let mut harness = harness_with(snapshot(false, 120.0, "001.1.1", true));
+        let camera_id = harness.root_widget().camera_button_id();
+
+        harness.mouse_click_on(camera_id, Some(masonry::core::PointerButton::Primary));
+
+        harness.edit_root_widget(|mut bar| {
+            assert_eq!(
+                TransportBar::take_view_requests(&mut bar),
+                vec![ViewRequest::ToggleCamera],
             );
         });
     }
