@@ -14,11 +14,11 @@ struct TraceInput {
     tick_hz: f64,
     ticks: u32,
     #[serde(default)]
-    events: Vec<(f64, MidiEvent)>,
+    events: Vec<(f64, TraceMidi)>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
-struct MidiEvent {
+struct TraceMidi {
     status: u8,
     data1: u8,
     data2: u8,
@@ -51,7 +51,7 @@ fn load_input(name: &str) -> TraceInput {
 }
 
 fn note_message(
-    message: MidiEvent,
+    message: TraceMidi,
     channel: u8,
     note_lo: u8,
     note_hi: u8,
@@ -70,17 +70,17 @@ fn note_message(
     }
 }
 
-fn cc_value(message: MidiEvent, channel: u8, cc: u8) -> Option<f32> {
+fn cc_value(message: TraceMidi, channel: u8, cc: u8) -> Option<f32> {
     (message.status & 0xf0 == 0xb0 && message.status & 0x0f == channel && message.data1 == cc)
         .then(|| message.data2 as f32 / 127.0)
 }
 
 fn due_this_tick(
-    events: &[(f64, MidiEvent)],
+    events: &[(f64, TraceMidi)],
     tick_start: f64,
     tick_end: f64,
     dt: f32,
-) -> Vec<(f32, MidiEvent)> {
+) -> Vec<(f32, TraceMidi)> {
     events
         .iter()
         .filter(|(time, _)| *time > tick_start && *time <= tick_end)
@@ -138,7 +138,7 @@ impl Runner {
         &mut self,
         tick_start: f64,
         dt: f32,
-        messages: &[(f32, MidiEvent)],
+        messages: &[(f32, TraceMidi)],
     ) -> Vec<Snapshot> {
         match self {
             Self::Envelope {

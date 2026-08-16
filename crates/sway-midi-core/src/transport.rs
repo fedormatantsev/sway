@@ -62,9 +62,9 @@ impl ClockEstimator {
         // A pulse that does not land strictly after the previous one carries no
         // new phase information the fit can use — it is indistinguishable from
         // "the same pulse observed again." This happens for real: a caller can
-        // hand several same-frame MIDI events a shared "now" timestamp (see
-        // `sway-app`'s `feed_midi`, which does exactly this for host_time == 0
-        // messages), collapsing them onto one instant. Blindly assigning such a
+        // hand several same-frame MIDI events a shared "now" timestamp (the
+        // plugin feed step does exactly this for host_time == 0 messages),
+        // collapsing them onto one instant. Blindly assigning such a
         // pulse a fresh index would tell the fit "a pulse happened in zero
         // time," dragging the slope toward zero — and because the *next*
         // pulse's index is inferred from this fit, the error compounds pulse
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn same_instant_duplicate_pulses_do_not_corrupt_the_fit() {
-        // This is what `feed_midi`'s host_time == 0 handling produces when more
+        // This is what the plugin's host_time == 0 handling produces when more
         // than one real clock pulse is queued when a frame drains: every pulse
         // in that batch shares the identical mapped timestamp. Before the fix,
         // this fed the regression a "pulse happened in zero time" sample, and

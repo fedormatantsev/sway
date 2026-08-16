@@ -72,10 +72,12 @@ HDMI. The runtime runs whether or not a graph is loaded.
 **Document (`sway-document`)** is out of `sway-graph`. It reads and writes the
 world only through ECS authoring — no parallel snapshot model inside the engine.
 
-**Supporting crates:** `sway-nodes` (non-MIDI built-ins), `sway-midi` (MIDI IO,
-transport, and MIDI/transport nodes), `sway-geo` (geometry tables and CPU
-operators), `sway-editor` (masonry UI on the live world), `sway-gpu` (single
-device-creation pin for the bevy↔vello coupling).
+**Supporting crates:** `sway-nodes` (built-in components, outlets, wires, and
+behaviours), `sway-midi-core` (MIDI IO, messages, and pulse-clock math),
+`sway-midi` (Bevy MIDI plugin, transport snapshot, and `MidiTime`),
+`sway-geo` (geometry tables and CPU operators), `sway-editor` (masonry UI on
+the live world), `sway-gpu` (single device-creation pin for the bevy↔vello
+coupling).
 
 ## 2. Decoupling and the wire contract
 
@@ -250,11 +252,12 @@ Consequences:
 
 ### Transport ownership
 
-`sway-graph` is MIDI-agnostic. Clock ingestion, phase estimation, tempo,
-start/stop/continue, and `Time<Transport>` (or equivalent) are registered by
-**`sway-midi`**. Tempo-synced behaviours are ordinary MIDI-family components that
-read that resource. Advancing transport is a MIDI-family system ordered before
-the graph tick.
+`sway-graph` is MIDI-agnostic. **`sway-midi-core`** owns MIDI IO, typed
+messages, and the Bevy-free `PulseClock`. **`sway-midi`** owns the Bevy plugin,
+its inbox and tick buffers, the `Transport` snapshot resource, and the
+`MidiTime` source. Each fixed tick drains timestamped messages into
+`PulseClock`, samples a fresh `Transport`, and writes `MidiTime` before the
+graph tick. `sway-graph` owns no beat clock or transport type.
 
 ## 5. Editor integration and what Bevy owns
 
@@ -287,12 +290,12 @@ not months of dependency patching.
 | Dirty reaction after writes | `Changed<T>` (+ no-equal-write rule) |
 | Editor metadata / reflect payloads | `bevy_reflect` |
 | Fixed tick rate / accumulator | `bevy_time` (`Time<Fixed>`) |
-| Beat / transport clock | **`sway-midi`** |
+| MIDI IO, typed messages, pulse-grid clock math | **`sway-midi-core`** |
+| Beat / transport snapshot + `MidiTime` | **`sway-midi`** |
 | Topological order, step list, walk, graph diagnostics | **`sway-graph`** |
 | Event-wire buffers + pre-tick clear/copy | **`sway-events`** |
 | Document parse/emit | **`sway-document`** via ECS |
 | Geometry tables / operators | **`sway-geo`** (CPU; dormant for the MVP, §6) |
-| MIDI IO + phase estimation + MIDI nodes | **`sway-midi`** |
 
 `sway-graph` must not depend on `bevy_render`, MIDI types, or the document
 format.
@@ -349,9 +352,8 @@ Values, geometry, and transforms are components on ordinary entities. A wire
 writes the real component; Bevy takes over from there.
 
 ```
-PreUpdate     MIDI IO → timestamped buffers
-              (authoring) topology watches mark dirty
-FixedUpdate   advance transport (sway-midi)
+PreUpdate     (authoring) topology watches mark dirty
+FixedUpdate   MIDI feed → drain → sample Transport → write MidiTime
               rebuild GraphOrder if dirty
               sway-events: clear wire buffers → copy TriggerOut → buffers
               graph tick (Propagate / Run)
@@ -411,8 +413,9 @@ sway-graph        Wire trait, registries, order, tick, graph diagnostics
                   (no MIDI, no document, no bevy_render)
 sway-events       event wires, per-wire buffers, pre-tick clear/copy
 sway-document     on-disk format; read/write only via ECS authoring
-sway-nodes        non-MIDI built-in components, wires, behaviours
-sway-midi         MIDI IO, transport clock, MIDI/transport nodes
+sway-nodes        built-in components/outlets, wires, behaviours
+sway-midi-core    MIDI IO, typed messages, PulseClock (no Bevy)
+sway-midi         Bevy plugin, Transport snapshot, MidiTime
 sway-geo          Geometry attribute tables and CPU operators
 sway-runtime      headless Bevy app; services; pipelines
 sway-editor       masonry UI; links the runtime directly
@@ -451,7 +454,8 @@ need a separate schema crate.
 - Events as in §3; value wires and event wires are distinct. Event payloads are
   generic (`TriggerOut<P>`).
 - Document lives outside `sway-graph`; authoring API is the ECS.
-- Transport and MIDI nodes live in `sway-midi`; the graph stays MIDI-free.
+- MIDI IO and pulse-clock math live in `sway-midi-core`; the `Transport`
+  snapshot and `MidiTime` live in `sway-midi`; the graph stays MIDI-free.
 - Fixed graph tick retained for continuous values.
 - Components and wires are strongly typed throughout. Transform, colour and
   tint inlets take `Vec3`, not per-axis floats; a `Vec3 { x, y, z }` value node

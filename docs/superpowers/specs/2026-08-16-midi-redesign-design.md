@@ -48,7 +48,7 @@ nodes must only *read* it.
 | D4 | `Transport` is a Bevy resource in `sway-midi`, replaced each tick. `Time<Transport>` is deleted. Core has no `Transport` type. |
 | D5 | `Oscillator` in `sway-nodes` takes time as a wired float. It does not depend on MIDI. |
 | D6 | `MidiTime` in `sway-midi` writes `FloatOut = ppq` as `f32`. That is the beat-time source. |
-| D7 | `FloatOut` and `Vec3Out` move to `sway-graph` so `MidiTime` can write an outlet without depending on `sway-nodes`. |
+| D7 | Overridden during implementation: `FloatOut` and `Vec3Out` remain in `sway-nodes`; `sway-midi` depends on `sway-nodes` for `FloatOut`. |
 
 ## Crate layout
 
@@ -65,18 +65,18 @@ sway-midi          Bevy plugin
   MusicalTime, MidiTime node
   feed → drain → clock → midi time, before graph_tick
 
-sway-nodes         Oscillator (time/period/shape/phase/amplitude)
+sway-nodes         FloatOut, Vec3Out
+                   Oscillator (time/period/shape/phase/amplitude)
                    no sway-midi / sway-midi-core dependency
 
 sway-graph         no beat clock, no Transport types
-                   FloatOut, Vec3Out (D7)
 
 sway-app           open_input + add_plugins(MidiPlugin)
 sway-editor        readout from Res<Transport>
 ```
 
-`sway-midi` depends on `sway-midi-core`, `sway-graph`, and Bevy. It re-exports
-`open_input`, `list_sources`, `list_destinations`, and
+`sway-midi` depends on `sway-midi-core`, `sway-graph`, `sway-nodes`, and Bevy.
+It re-exports `open_input`, `list_sources`, `list_destinations`, and
 `VIRTUAL_DESTINATION_NAME`, so `sway-app` depends only on `sway-midi`.
 `sway-nodes` depends on neither MIDI crate.
 
@@ -232,10 +232,9 @@ Zero-inlet authorable source. `#[require(FloatOut, EditorPos)]`. Palette name
 so it runs before the tick (architecture §2 behaviour table).
 `MidiTime → Oscillator.time` therefore lands in the same tick via `TimeFrom`.
 
-`MidiTime` uses `sway_graph::EditorPos` and `sway_graph::FloatOut` (D7).
+`MidiTime` uses `sway_graph::EditorPos` and `sway_nodes::FloatOut`.
 `TimeFrom` is a `sway-nodes` wire (`FloatOut → Oscillator.time`). `MidiTime`
-only writes `FloatOut`; it does not register `TimeFrom`. `sway-midi` does not
-depend on `sway-nodes`.
+only writes `FloatOut`; it does not register `TimeFrom`.
 
 ## Oscillator (`sway-nodes`)
 
@@ -332,7 +331,7 @@ Inspector: `Lfo.beats` becomes `Oscillator.period`. Palette: `"Lfo"` →
 | `MidiClockOffset`, `feed_midi` | plugin feed/drain |
 | `sway-nodes::MidiPlugin` | `sway-midi::MidiPlugin` |
 | `Time<Transport>`, `TransportState`, `TransportTime` in `sway-graph` | `sway-midi::Transport` |
-| `FloatOut` / `Vec3Out` in `sway-nodes` | `sway-graph` |
+| `FloatOut` / `Vec3Out` in `sway-nodes` | unchanged |
 | `Lfo` | `Oscillator` |
 | freewheel path in `advance_transport` | hold |
 

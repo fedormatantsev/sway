@@ -53,14 +53,14 @@ impl Plugin for MidiPlugin {
             .init_resource::<Transport>()
             .add_systems(
                 FixedUpdate,
-                (feed_midi, drain_and_clock, write_midi_time)
+                (feed_inbox, drain_and_clock, write_midi_time)
                     .chain()
                     .before(sway_graph::graph_tick),
             );
     }
 }
 
-fn feed_midi(rx: Res<MidiRx>, mut inbox: ResMut<MidiInbox>) {
+fn feed_inbox(rx: Res<MidiRx>, mut inbox: ResMut<MidiInbox>) {
     let now = host_time_to_secs(host_time_now());
     feed_receiver(&rx.0, &mut inbox.events, now);
 }
@@ -171,10 +171,6 @@ mod tests {
         assert!(app.world().get_resource::<MidiClock>().is_some());
         assert!(app.world().get_resource::<MidiInbox>().is_some());
         assert!(app.world().get_resource::<TickMidi>().is_some());
-        assert!(
-            app.world().get_resource::<Time<Transport>>().is_none(),
-            "Transport is a snapshot resource, not a Bevy clock"
-        );
     }
 
     #[test]

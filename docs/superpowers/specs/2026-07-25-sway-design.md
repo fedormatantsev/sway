@@ -85,7 +85,8 @@ Sprite layers with per-pixel depth and atlas animation (`SpriteLayer`,
 
 `sway-events` with generic `TriggerOut<P>` payloads; `MidiNote` and
 `BeatTrigger` emitters; `Envelope`; `MidiCc`; event edges in the canvas. Folds
-in the MIDI-nodes → `sway-midi` move.
+in the remaining MIDI nodes. The MIDI crate split and `MidiTime` are complete;
+`MidiNote`, `BeatTrigger`, and `Envelope` remain in M9.
 
 *Exit:* a note drives an envelope drives a material, authored in the editor.
 
