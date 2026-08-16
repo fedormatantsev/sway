@@ -11,7 +11,7 @@ use bevy_reflect::{PartialReflect, ReflectRef};
 use bevy_transform::components::Transform;
 use kurbo::Point;
 use sway_graph::order::{GraphOrder, Step};
-use sway_graph::{ComponentDocRegistry, EditorPos, GraphDiagnostics, TransportTime, WireRegistry};
+use sway_graph::{ComponentDocRegistry, EditorPos, GraphDiagnostics, Selection, TransportTime, WireRegistry};
 
 /// The editor's display key for a node box.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -81,6 +81,7 @@ pub struct WorldSnapshot {
     pub transport: TransportView,
     pub inspector: InspectorView,
     pub palette: Vec<&'static str>,
+    pub selection: Option<Entity>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -316,6 +317,9 @@ pub fn short_type_name(path: &str) -> String {
 }
 
 pub fn capture(world: &World) -> WorldSnapshot {
+    let selection = world
+        .get_resource::<Selection>()
+        .and_then(|selection| selection.0);
     WorldSnapshot {
         tree: capture_tree(world),
         nodes: capture_nodes(world),
@@ -325,8 +329,9 @@ pub fn capture(world: &World) -> WorldSnapshot {
             .cloned()
             .unwrap_or_default(),
         transport: capture_transport(world),
-        inspector: InspectorView::default(),
+        inspector: selection.map(|entity| inspect(world, entity)).unwrap_or_default(),
         palette: capture_palette(world),
+        selection,
     }
 }
 
@@ -872,5 +877,39 @@ mod tests {
         let parent = node.inlets.iter().find(|i| i.wire == "parent").unwrap();
 
         assert!(!parent.accepts_from.contains(&both));
+    }
+
+    #[test]
+    fn capture_reports_the_selection_and_inspects_it_in_one_pass() {
+        // Before M7 the presenter had to ask the widget tree who was selected,
+        // then call `inspect` separately. With selection in the world, capture
+        // can answer both.
+        let mut app = bevy_app::App::new();
+        app.add_plugins(sway_graph::WiresPlugin)
+            .add_plugins(sway_nodes::WireNodesPlugin);
+        let entity = app
+            .world_mut()
+            .spawn((sway_nodes::Lfo::default(), EditorPos(Vec2::ZERO)))
+            .id();
+        app.world_mut().insert_resource(Selection(Some(entity)));
+
+        let snap = capture(app.world());
+
+        assert_eq!(snap.selection, Some(entity));
+        assert!(
+            !snap.inspector.components.is_empty(),
+            "a selected entity must arrive already inspected",
+        );
+    }
+
+    #[test]
+    fn an_empty_selection_inspects_nothing() {
+        let mut app = bevy_app::App::new();
+        app.add_plugins(sway_graph::WiresPlugin)
+            .add_plugins(sway_nodes::WireNodesPlugin);
+
+        let snap = capture(app.world());
+        assert_eq!(snap.selection, None);
+        assert_eq!(snap.inspector, InspectorView::default());
     }
 }
