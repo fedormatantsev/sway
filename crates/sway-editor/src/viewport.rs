@@ -329,6 +329,69 @@ mod tests {
     }
 
     #[test]
+    fn scroll_reports_the_sign_dolly_treats_as_zooming_in() {
+        // `dolly()` (`sway-runtime`, `camera.rs`) documents "positive
+        // `amount` dollies in", and `navigate_editor_camera` feeds it
+        // `delta.y * 0.05` straight from `ViewportInput::Scroll` -- so a
+        // positive `Scroll.delta.y` out of this widget must mean "zoom in"
+        // for the two to agree. Nothing in `on_pointer_event`'s `Scroll` arm
+        // inverts the sign (`to_pixel_delta`/`to_logical` are unit
+        // conversions only), so a `LineDelta` with a positive y -- one wheel
+        // tick "forward", the same input `canvas.rs`'s own
+        // `scroll_line_delta_zooms_dpi_invariantly` test drives -- must
+        // arrive as a positive `delta.y`, not a flipped one.
+        use masonry::core::{PointerScrollEvent, ScrollDelta};
+
+        let (mut harness, rx) = harness();
+        let state = PointerState {
+            position: PhysicalPosition { x: 100.0, y: 50.0 },
+            ..Default::default()
+        };
+        harness.process_pointer_event(PointerEvent::Scroll(PointerScrollEvent {
+            pointer: PRIMARY_MOUSE,
+            delta: ScrollDelta::LineDelta(0.0, 1.0),
+            state,
+        }));
+
+        let Some(ViewportInput::Scroll { delta, .. }) =
+            rx.try_iter().find(|e| matches!(e, ViewportInput::Scroll { .. }))
+        else {
+            panic!("no Scroll reached the channel");
+        };
+        assert!(delta.y > 0.0, "a forward wheel tick must forward a positive delta.y; got {}", delta.y);
+    }
+
+    #[test]
+    fn pinch_reports_the_sign_dolly_treats_as_zooming_in() {
+        // Same pipeline, the pinch gesture: `dolly()` gets `delta * 4.0`
+        // straight from `ViewportInput::Pinch`, and `on_pointer_event`'s
+        // `Gesture(Pinch)` arm casts the value through unchanged (`delta: *delta
+        // as f32`), so a positive `PointerGesture::Pinch` -- fingers spreading
+        // apart, the same sign `canvas.rs`'s own `pinch_zooms_about_the_cursor`
+        // test treats as zooming in -- must arrive as a positive
+        // `ViewportInput::Pinch::delta`.
+        use masonry::core::{PointerGesture, PointerGestureEvent};
+
+        let (mut harness, rx) = harness();
+        let state = PointerState {
+            position: PhysicalPosition { x: 100.0, y: 50.0 },
+            ..Default::default()
+        };
+        harness.process_pointer_event(PointerEvent::Gesture(PointerGestureEvent {
+            pointer: PRIMARY_MOUSE,
+            gesture: PointerGesture::Pinch(0.1),
+            state,
+        }));
+
+        let Some(ViewportInput::Pinch { delta }) =
+            rx.try_iter().find(|e| matches!(e, ViewportInput::Pinch { .. }))
+        else {
+            panic!("no Pinch reached the channel");
+        };
+        assert!(delta > 0.0, "fingers spreading apart must forward a positive delta; got {delta}");
+    }
+
+    #[test]
     fn a_cancel_is_forwarded() {
         // A drag whose capture is lost must be abandoned world-side. M6 Task
         // 14 shipped a stuck rubber band by omitting exactly this.

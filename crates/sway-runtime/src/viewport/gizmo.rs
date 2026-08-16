@@ -1041,6 +1041,33 @@ mod tests {
     }
 
     #[test]
+    fn scale_mode_grows_the_object_along_one_axis() {
+        // `TransformGizmoMode::Scale`'s write arm had no drag test before
+        // this (Phase 5 review): only reached indirectly via mode-switching,
+        // never by an actual drag changing `Transform::scale`.
+        // `cursor_over_axis` already covers Scale's handle geometry -- it
+        // groups `Translate | Scale` under the same "handle tip at
+        // `gizmo_pos + dir * (axis_length * scale)`" formula -- so no
+        // extension was needed there.
+        let (mut app, cube) = app_with_a_focused_gizmo();
+        app.world_mut().resource_mut::<TransformGizmoSettings>().mode = TransformGizmoMode::Scale;
+        let before = *app.world().get::<Transform>(cube).unwrap();
+        let start = cursor_over_axis(&mut app, TransformGizmoAxis::X);
+        press_on_axis(&mut app, TransformGizmoAxis::X, start);
+        // Dragging the handle further from the gizmo's origin must grow the
+        // scale along that axis; the handle sits away from centre along +X,
+        // so this drag moves the cursor further still.
+        drag_to(&mut app, start + Vec2::new(0.10, 0.0));
+
+        let after = app.world().get::<Transform>(cube).unwrap();
+        assert!(after.scale.x > before.scale.x + 1e-3, "x scale did not grow: {:?}", after.scale);
+        assert!((after.scale.y - before.scale.y).abs() < 1e-4, "y scale changed: {:?}", after.scale);
+        assert!((after.scale.z - before.scale.z).abs() < 1e-4, "z scale changed: {:?}", after.scale);
+        assert!(after.scale.x >= MIN_SCALE, "scale must respect the MIN_SCALE floor: {:?}", after.scale);
+        assert_eq!(after.translation, before.translation, "scale must not move the object");
+    }
+
+    #[test]
     fn a_drag_on_a_handle_does_not_also_select_something() {
         // `pick_on_click` runs after this system and skips while a drag is
         // active. If it did not, grabbing a handle would reselect whatever mesh
