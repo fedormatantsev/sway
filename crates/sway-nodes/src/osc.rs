@@ -12,7 +12,7 @@ use sway_graph::{Behaviour, EditorPos, ReflectBehaviour, ReflectWire, TickCtx};
 
 use crate::field_wire::field_wire;
 use crate::lfo::{Waveform, wave};
-use crate::outputs::{write_outlet, FloatOut};
+use crate::outputs::{FloatOut, write_outlet};
 
 /// Time, period in time units, shape, phase offset in cycles, and amplitude.
 #[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]

@@ -8,8 +8,8 @@ use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::reflect::ReflectComponent;
 use bevy_ecs::world::World;
-use bevy_reflect::std_traits::ReflectDefault;
 use bevy_reflect::Reflect;
+use bevy_reflect::std_traits::ReflectDefault;
 
 use crate::behaviour::Behaviour;
 use crate::ctx::TickCtx;

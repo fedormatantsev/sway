@@ -6,7 +6,7 @@ use bevy_reflect::Reflect;
 use sway_graph::{Behaviour, EditorPos, ReflectBehaviour, ReflectWire, TickCtx};
 
 use crate::field_wire::field_wire;
-use crate::outputs::{write_outlet, FloatOut, Vec3Out};
+use crate::outputs::{FloatOut, Vec3Out, write_outlet};
 
 /// A vector literal whose components are driveable (roadmap D5). Transform,
 /// colour and tint inlets take `Vec3`, so something has to produce one; this
@@ -293,8 +293,16 @@ mod tests {
 
     #[test]
     fn the_math_and_remap_inlets_never_write_an_equal_value() {
-        assert_writes_only_on_change::<MathAFrom, _, _>(FloatOut(1.0), FloatOut(2.0), Math::default());
-        assert_writes_only_on_change::<MathBFrom, _, _>(FloatOut(1.0), FloatOut(2.0), Math::default());
+        assert_writes_only_on_change::<MathAFrom, _, _>(
+            FloatOut(1.0),
+            FloatOut(2.0),
+            Math::default(),
+        );
+        assert_writes_only_on_change::<MathBFrom, _, _>(
+            FloatOut(1.0),
+            FloatOut(2.0),
+            Math::default(),
+        );
         assert_writes_only_on_change::<RemapInputFrom, _, _>(
             FloatOut(1.0),
             FloatOut(2.0),

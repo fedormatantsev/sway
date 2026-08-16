@@ -113,7 +113,10 @@ mod tests {
     #[test]
     fn translation_and_scale_write_the_whole_vector() {
         let mut app = spatial_app();
-        let src = app.world_mut().spawn(Vec3Out(Vec3::new(1.0, 2.0, 3.0))).id();
+        let src = app
+            .world_mut()
+            .spawn(Vec3Out(Vec3::new(1.0, 2.0, 3.0)))
+            .id();
         let dst = app.world_mut().spawn(Transform::default()).id();
 
         propagate_wire::<TranslationFrom>(app.world_mut(), src, dst);
@@ -129,7 +132,10 @@ mod tests {
         // Degrees because that is what an author types. The wire converts, so
         // nothing downstream ever sees a degree.
         let mut app = spatial_app();
-        let src = app.world_mut().spawn(Vec3Out(Vec3::new(0.0, 90.0, 0.0))).id();
+        let src = app
+            .world_mut()
+            .spawn(Vec3Out(Vec3::new(0.0, 90.0, 0.0)))
+            .id();
         let dst = app.world_mut().spawn(Transform::default()).id();
 
         propagate_wire::<RotationFrom>(app.world_mut(), src, dst);
