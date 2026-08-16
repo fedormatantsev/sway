@@ -49,7 +49,10 @@ impl PulseClock {
                 self.t_last = Some(t);
                 self.frozen_ppq = 0.0;
             }
-            MidiMessage::Continue => self.playing = true,
+            MidiMessage::Continue => {
+                self.playing = true;
+                self.t_last = Some(t);
+            }
             MidiMessage::Stop => {
                 self.frozen_ppq = self.ppq(t);
                 self.playing = false;
@@ -73,7 +76,7 @@ impl PulseClock {
         let spp = self.estimator.secs_per_pulse().unwrap_or(0.5 / 24.0);
         let frac = if spp > 0.0 { (t - t_last) / spp } else { 0.0 };
         let frac = frac.clamp(0.0, 1.0 - f64::EPSILON);
-        (self.pulse_index as f64 + frac) / f64::from(PULSES_PER_QUARTER)
+        self.frozen_ppq + frac / f64::from(PULSES_PER_QUARTER)
     }
 
     pub fn bpm(&self) -> f64 {
@@ -183,6 +186,20 @@ mod tests {
         assert_eq!(c.ppq(t), stopped);
         c.push(t + SPP_120, MidiMessage::Clock);
         assert!((c.ppq(t + SPP_120) - (stopped + 1.0 / 24.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn continue_after_stop_between_pulses_preserves_ppq() {
+        let mut c = PulseClock::new();
+        let t = play(&mut c, 12, SPP_120, 0.0);
+        let stop_t = t + SPP_120 / 4.0;
+        c.push(stop_t, MidiMessage::Stop);
+        let stopped = c.ppq(stop_t);
+
+        let continue_t = stop_t + 1.0;
+        c.push(continue_t, MidiMessage::Continue);
+
+        assert!((c.ppq(continue_t) - stopped).abs() < 1e-12);
     }
 
     #[test]
