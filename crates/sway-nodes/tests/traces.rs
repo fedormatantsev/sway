@@ -56,7 +56,7 @@ fn clock_events(spec: &ClockSpec) -> Vec<(f64, RawMidi)> {
                 events.push((
                     at + random.next_signed(spec.jitter),
                     RawMidi {
-                        status: sway_midi::CLOCK,
+                        status: sway_midi_core::CLOCK,
                         data1: 0,
                         data2: 0,
                     },

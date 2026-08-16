@@ -4,4 +4,11 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
+sway-midi-core.workspace = true
+sway-graph.workspace = true
+bevy.workspace = true
+bevy_app.workspace = true
+bevy_ecs.workspace = true
+bevy_reflect.workspace = true
+bevy_time.workspace = true
 crossbeam-channel.workspace = true

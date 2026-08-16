@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/sway-geo", "crates/sway-graph", "crates/sway-document", "crates/sway-nodes", "crates/sway-midi", "crates/sway-app", "crates/sway-runtime", "crates/sway-gpu", "crates/sway-editor"]
+members = ["crates/sway-geo", "crates/sway-graph", "crates/sway-document", "crates/sway-nodes", "crates/sway-midi-core", "crates/sway-midi", "crates/sway-app", "crates/sway-runtime", "crates/sway-gpu", "crates/sway-editor"]
 
 [workspace.package]
 edition = "2024"
@@ -20,6 +20,7 @@ sway-graph = { path = "crates/sway-graph" }
 sway-document = { path = "crates/sway-document" }
 sway-nodes = { path = "crates/sway-nodes" }
 crossbeam-channel = "0.5"
+sway-midi-core = { path = "crates/sway-midi-core" }
 sway-midi = { path = "crates/sway-midi" }
 sway-runtime = { path = "crates/sway-runtime" }
 sway-gpu = { path = "crates/sway-gpu" }

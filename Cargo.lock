@@ -5716,6 +5716,20 @@ dependencies = [
 name = "sway-midi"
 version = "0.1.0"
 dependencies = [
+ "bevy",
+ "bevy_app",
+ "bevy_ecs",
+ "bevy_reflect",
+ "bevy_time",
+ "crossbeam-channel",
+ "sway-graph",
+ "sway-midi-core",
+]
+
+[[package]]
+name = "sway-midi-core"
+version = "0.1.0"
+dependencies = [
  "crossbeam-channel",
 ]
 
@@ -5731,7 +5745,7 @@ dependencies = [
  "ron",
  "serde",
  "sway-graph",
- "sway-midi",
+ "sway-midi-core",
 ]
 
 [[package]]

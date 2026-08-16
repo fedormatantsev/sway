@@ -1,0 +1,7 @@
+[package]
+name = "sway-midi-core"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+crossbeam-channel.workspace = true

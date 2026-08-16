@@ -334,7 +334,7 @@ mod tests {
 
         let inbox = app.world().resource::<MidiInbox>();
         assert_eq!(inbox.events.len(), 1);
-        assert_eq!(inbox.events[0].1.status, sway_midi::CLOCK);
+        assert_eq!(inbox.events[0].1.status, 0xF8);
     }
 
     #[test]

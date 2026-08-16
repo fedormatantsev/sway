@@ -19,7 +19,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Res, ResMut};
 use bevy_time::{Fixed, Time};
 use sway_graph::{Transport, TransportState, TransportTime};
-use sway_midi::ClockEstimator;
+use sway_midi_core::ClockEstimator;
 
 use crate::TickMidi;
 
@@ -54,14 +54,14 @@ pub fn advance_transport(
 
     for &(offset, message) in &tick_midi.events {
         match message.status {
-            sway_midi::CLOCK => clock.estimator.push_pulse(tick_start + offset as f64),
-            sway_midi::START => {
+            sway_midi_core::CLOCK => clock.estimator.push_pulse(tick_start + offset as f64),
+            sway_midi_core::START => {
                 time.transport_mut().state = TransportState::Playing;
                 reposition = Some(0.0);
             }
-            sway_midi::CONTINUE => time.transport_mut().state = TransportState::Playing,
-            sway_midi::STOP => time.transport_mut().state = TransportState::Stopped,
-            sway_midi::SONG_POSITION => {
+            sway_midi_core::CONTINUE => time.transport_mut().state = TransportState::Playing,
+            sway_midi_core::STOP => time.transport_mut().state = TransportState::Stopped,
+            sway_midi_core::SONG_POSITION => {
                 // 14-bit, LSB first, counting sixteenths.
                 let sixteenths = (u16::from(message.data2) << 7) | u16::from(message.data1);
                 reposition = Some(f64::from(sixteenths) / 4.0);
@@ -143,7 +143,7 @@ mod tests {
         let pulses = (beats * 24.0) as usize;
         let mut inbox = app.world_mut().resource_mut::<MidiInbox>();
         for pulse in 0..pulses {
-            inbox.push(start + pulse as f64 * spp, raw(sway_midi::CLOCK));
+            inbox.push(start + pulse as f64 * spp, raw(sway_midi_core::CLOCK));
         }
         start + pulses as f64 * spp
     }
@@ -167,7 +167,7 @@ mod tests {
         let mut app = transport_app();
         app.world_mut()
             .resource_mut::<MidiInbox>()
-            .push(0.0, raw(sway_midi::START));
+            .push(0.0, raw(sway_midi_core::START));
         queue_clock(&mut app, 0.0, 120.0, 4.0);
         run_until(&mut app, 2.0);
 
@@ -184,7 +184,7 @@ mod tests {
         let mut app = transport_app();
         app.world_mut()
             .resource_mut::<MidiInbox>()
-            .push(0.0, raw(sway_midi::START));
+            .push(0.0, raw(sway_midi_core::START));
         queue_clock(&mut app, 0.0, 120.0, 8.0);
         run_until(&mut app, 2.0);
 
@@ -224,11 +224,11 @@ mod tests {
         let mut app = transport_app();
         app.world_mut()
             .resource_mut::<MidiInbox>()
-            .push(0.0, raw(sway_midi::START));
+            .push(0.0, raw(sway_midi_core::START));
         queue_clock(&mut app, 0.0, 120.0, 2.0); // pulses over [0.0, 1.0)
         app.world_mut()
             .resource_mut::<MidiInbox>()
-            .push(1.0, raw(sway_midi::STOP));
+            .push(1.0, raw(sway_midi_core::STOP));
         run_until(&mut app, 1.5);
         let frozen = beats(&app);
 
@@ -237,7 +237,7 @@ mod tests {
 
         app.world_mut()
             .resource_mut::<MidiInbox>()
-            .push(2.0, raw(sway_midi::CONTINUE));
+            .push(2.0, raw(sway_midi_core::CONTINUE));
         queue_clock(&mut app, 2.0, 120.0, 4.0); // pulses over [2.0, 4.0)
         run_until(&mut app, 1.0);
         assert!(beats(&app) > frozen, "continue resumes");
@@ -252,14 +252,14 @@ mod tests {
         let mut app = transport_app();
         app.world_mut()
             .resource_mut::<MidiInbox>()
-            .push(0.0, raw(sway_midi::START));
+            .push(0.0, raw(sway_midi_core::START));
         queue_clock(&mut app, 0.0, 120.0, 8.0);
         run_until(&mut app, 2.0);
         assert!(beats(&app) > 3.0);
 
         app.world_mut()
             .resource_mut::<MidiInbox>()
-            .push(2.0, raw(sway_midi::START));
+            .push(2.0, raw(sway_midi_core::START));
         app.update();
         assert!(
             beats(&app) < 0.1,
@@ -275,7 +275,7 @@ mod tests {
         app.world_mut().resource_mut::<MidiInbox>().push(
             0.0,
             RawMidi {
-                status: sway_midi::SONG_POSITION,
+                status: sway_midi_core::SONG_POSITION,
                 data1: 8,
                 data2: 0,
             },
@@ -291,7 +291,7 @@ mod tests {
         let mut app = transport_app();
         app.world_mut()
             .resource_mut::<MidiInbox>()
-            .push(0.0, raw(sway_midi::START));
+            .push(0.0, raw(sway_midi_core::START));
         queue_clock(&mut app, 0.0, 120.0, 4.0);
         run_until(&mut app, 2.0);
         let before = beats(&app);
@@ -311,7 +311,7 @@ mod tests {
         let mut app = transport_app();
         app.world_mut()
             .resource_mut::<MidiInbox>()
-            .push(0.0, raw(sway_midi::START));
+            .push(0.0, raw(sway_midi_core::START));
         queue_clock(&mut app, 0.0, 120.0, 4.0);
         run_until(&mut app, 2.0);
         run_until(&mut app, 1.0); // dropout
@@ -333,7 +333,7 @@ mod tests {
         let mut app = transport_app();
         app.world_mut()
             .resource_mut::<MidiInbox>()
-            .push(0.0, raw(sway_midi::START));
+            .push(0.0, raw(sway_midi_core::START));
         let end = queue_clock(&mut app, 0.0, 120.0, 4.0);
         queue_clock(&mut app, end, 90.0, 6.0);
         run_until(&mut app, 6.0);
@@ -352,7 +352,7 @@ mod tests {
         let mut app = transport_app();
         app.world_mut()
             .resource_mut::<MidiInbox>()
-            .push(0.0, raw(sway_midi::START));
+            .push(0.0, raw(sway_midi_core::START));
         queue_clock(&mut app, 0.0, 120.0, 2.0);
         app.update();
         assert_eq!(
