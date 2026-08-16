@@ -206,7 +206,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod click_tests {
+pub(crate) mod click_tests {
     use super::*;
     use crate::viewport::{ViewportCamera, ViewportCameraRole};
     use sway_graph::{Selection, ViewportButton, ViewportInput, ViewportModifiers};
@@ -224,7 +224,7 @@ mod click_tests {
     /// registers the whole plugin. Sending through the channel instead is
     /// both correct and the more faithful test: it is genuinely how a click
     /// reaches this system in production.
-    fn app_with_a_cube() -> (App, Entity, crossbeam_channel::Sender<ViewportInput>) {
+    pub(crate) fn app_with_a_cube() -> (App, Entity, crossbeam_channel::Sender<ViewportInput>) {
         let gpu = sway_gpu::GpuContext::new(None);
         let size = UVec2::new(64, 64);
         let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);

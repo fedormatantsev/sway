@@ -85,6 +85,13 @@ impl Plugin for EditorViewportPlugin {
             )
             .add_systems(
                 PostUpdate,
+                (gizmo::set_gizmo_mode, gizmo::viewport_gizmo_hover)
+                    .chain()
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .before(ViewportSystems::Pick),
+            )
+            .add_systems(
+                PostUpdate,
                 pick::pick_on_click
                     .in_set(ViewportSystems::Pick)
                     .after(bevy::transform::TransformSystems::Propagate)

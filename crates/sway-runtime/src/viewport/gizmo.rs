@@ -11,13 +11,26 @@
 //! geometry, however, is public — `intersect_plane`, `axis_direction`,
 //! `point_to_segment_dist` and the rest — so only the input plumbing is
 //! rewritten here, against normalized viewport coordinates.
+//!
+//! `set_gizmo_mode` and `viewport_gizmo_hover` are the mode-key and hover
+//! halves of that rewrite. `viewport_gizmo_hover` is a faithful port of
+//! Bevy's private `transform_gizmo_hover`
+//! (`bevy_gizmos-0.19.0/src/transform_gizmo.rs:282-395`): the same geometry,
+//! the same public constants and settings, with only the cursor source
+//! changed (a `ViewportInput::Move`/`Down` position converted through
+//! `cursor_in_viewport_pixels`, rather than `Window::cursor_position()`) and
+//! the "exactly one camera" fallback dropped, since `mark_gizmo_camera`
+//! above always keeps exactly one `TransformGizmoCamera` marked.
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::gizmos::transform_gizmo::{
-    TransformGizmoCamera, TransformGizmoFocus, TransformGizmoMeshMarker, TransformGizmoRoot,
+    effective_space, gizmo_rotation, point_to_ring_screen_dist, point_to_segment_dist,
+    TransformGizmoAxis, TransformGizmoCamera, TransformGizmoFocus, TransformGizmoMeshMarker,
+    TransformGizmoMode, TransformGizmoRoot, TransformGizmoSettings, TransformGizmoState,
+    AXIS_START_OFFSET, VIEW_CIRCLE_MAJOR, VIEW_RING_MAJOR,
 };
 use bevy::prelude::*;
-use sway_graph::{HiddenFromEditor, Selection};
+use sway_graph::{HiddenFromEditor, Selection, ViewportInput, ViewportKey};
 
 /// Keeps `TransformGizmoFocus` on the selection, and only there.
 pub fn follow_selection(
@@ -120,11 +133,168 @@ pub fn disable_gizmo_camera_clear(
     }
 }
 
+/// The cursor in the viewport pixel space `world_to_viewport` reports in.
+///
+/// Bevy's own gizmo reads `window.cursor_position()`; there is no window
+/// here, so the normalized position from the widget is scaled by the
+/// camera's own viewport size — the same conversion `viewport_ray` (in
+/// `pick.rs`) does.
+fn cursor_in_viewport_pixels(camera: &Camera, pos: Vec2) -> Option<Vec2> {
+    Some(pos * camera.logical_viewport_size()?)
+}
+
+/// Switches `TransformGizmoSettings::mode` on `ViewportKey::{Translate,
+/// Rotate, Scale}` (spec M7-9). Bevy's own gizmo deliberately leaves mode
+/// switching to the host app — see the module doc on
+/// `bevy::gizmos::transform_gizmo` — so there is nothing upstream to reuse
+/// here, only the mapping.
+pub fn set_gizmo_mode(
+    events: Res<crate::viewport::ViewportEvents>,
+    mut settings: ResMut<TransformGizmoSettings>,
+) {
+    for event in &events.0 {
+        let ViewportInput::Key { key } = event else {
+            continue;
+        };
+        let mode = match key {
+            ViewportKey::Translate => TransformGizmoMode::Translate,
+            ViewportKey::Rotate => TransformGizmoMode::Rotate,
+            ViewportKey::Scale => TransformGizmoMode::Scale,
+        };
+        if settings.mode != mode {
+            settings.mode = mode;
+        }
+    }
+}
+
+/// Which handle is under the cursor. A port of Bevy's private
+/// `transform_gizmo_hover` with the window removed; the geometry — `scale`
+/// from `screen_scale_factor`, `point_to_segment_dist` for translate/scale
+/// handles, `point_to_ring_screen_dist` for rotate rings and the view
+/// handle — is Bevy's own, unchanged.
+pub fn viewport_gizmo_hover(
+    events: Res<crate::viewport::ViewportEvents>,
+    focus: Query<&GlobalTransform, With<TransformGizmoFocus>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<TransformGizmoCamera>>,
+    settings: Res<TransformGizmoSettings>,
+    mut state: ResMut<TransformGizmoState>,
+) {
+    // Bevy's own hover system returns early here too: recomputing while a
+    // drag is in progress would change the hovered axis out from under the
+    // cursor mid-drag.
+    if state.active {
+        return;
+    }
+    let Some(pos) = events.0.iter().rev().find_map(|event| match event {
+        ViewportInput::Move { pos, .. } | ViewportInput::Down { pos, .. } => Some(*pos),
+        _ => None,
+    }) else {
+        return;
+    };
+    let Some(global_tf) = focus.iter().next() else {
+        state.hovered_axis = None;
+        return;
+    };
+    let Some((camera, cam_tf)) = cameras.iter().next() else {
+        state.hovered_axis = None;
+        return;
+    };
+    let Some(cursor) = cursor_in_viewport_pixels(camera, pos) else {
+        state.hovered_axis = None;
+        return;
+    };
+
+    let gizmo_pos = global_tf.translation();
+    let space = effective_space(&settings);
+    let rotation = gizmo_rotation(global_tf, space);
+
+    let scale = if settings.screen_scale_factor > 0.0 {
+        (cam_tf.translation() - gizmo_pos).length() * settings.screen_scale_factor
+    } else {
+        1.0
+    };
+
+    let axes = [
+        (TransformGizmoAxis::X, rotation * Vec3::X),
+        (TransformGizmoAxis::Y, rotation * Vec3::Y),
+        (TransformGizmoAxis::Z, rotation * Vec3::Z),
+    ];
+
+    let mut best_axis = None;
+    let mut best_dist = f32::MAX;
+    let threshold = settings.axis_hit_distance;
+
+    for (axis, dir) in &axes {
+        let dist = match settings.mode {
+            TransformGizmoMode::Translate | TransformGizmoMode::Scale => {
+                let start = gizmo_pos + *dir * (AXIS_START_OFFSET * scale);
+                let endpoint = gizmo_pos + *dir * (settings.axis_length * scale);
+                let Some(start_screen) = camera.world_to_viewport(cam_tf, start).ok() else {
+                    continue;
+                };
+                let Some(end_screen) = camera.world_to_viewport(cam_tf, endpoint).ok() else {
+                    continue;
+                };
+                point_to_segment_dist(cursor, start_screen, end_screen)
+            }
+            TransformGizmoMode::Rotate => point_to_ring_screen_dist(
+                cursor,
+                camera,
+                cam_tf,
+                gizmo_pos,
+                *dir,
+                settings.rotate_ring_radius * scale,
+            ),
+        };
+        if dist < threshold && dist < best_dist {
+            best_dist = dist;
+            best_axis = Some(*axis);
+        }
+    }
+
+    // The view-plane / view-axis handle. Falls out of the ported geometry
+    // for free — same camera, same `cursor` — so it is kept rather than
+    // dropped.
+    let view_dist = match settings.mode {
+        TransformGizmoMode::Translate => {
+            if let Ok(center_screen) = camera.world_to_viewport(cam_tf, gizmo_pos) {
+                let screen_radius = VIEW_CIRCLE_MAJOR * scale;
+                let edge_world = gizmo_pos + cam_tf.right() * screen_radius;
+                if let Ok(edge_screen) = camera.world_to_viewport(cam_tf, edge_world) {
+                    let r = (edge_screen - center_screen).length();
+                    let d = (cursor - center_screen).length();
+                    (d - r).abs()
+                } else {
+                    f32::MAX
+                }
+            } else {
+                f32::MAX
+            }
+        }
+        TransformGizmoMode::Rotate => {
+            let cam_forward = cam_tf.forward().as_vec3();
+            point_to_ring_screen_dist(
+                cursor,
+                camera,
+                cam_tf,
+                gizmo_pos,
+                cam_forward,
+                VIEW_RING_MAJOR * scale,
+            )
+        }
+        TransformGizmoMode::Scale => f32::MAX,
+    };
+
+    if view_dist < threshold && view_dist < best_dist {
+        best_axis = Some(TransformGizmoAxis::View);
+    }
+
+    state.hovered_axis = best_axis;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::gizmos::transform_gizmo::{TransformGizmoFocus, TransformGizmoSettings};
-    use sway_graph::Selection;
 
     #[test]
     fn the_selection_carries_the_gizmo_focus() {
@@ -238,5 +408,110 @@ mod tests {
             "only one camera carries the marker at a time",
         );
         assert!(app.world().get::<TransformGizmoCamera>(scene).is_some());
+    }
+
+    /// The `Sender` half of `app_with_a_cube`'s channel, stashed as a
+    /// resource so `hover` can reach it without widening
+    /// `app_with_a_focused_gizmo`'s return type past `(App, Entity)`.
+    /// `drain_viewport_input` (wired in by `EditorViewportPlugin`, which
+    /// `app_with_a_cube` adds) unconditionally clears `ViewportEvents` every
+    /// `PreUpdate` — see its doc comment — so writing straight into that
+    /// resource before `app.update()` would be wiped before
+    /// `viewport_gizmo_hover` ever ran; sending through the channel instead
+    /// is the same fix `pick.rs`'s own `click_tests` already documents.
+    #[derive(Resource)]
+    struct HoverChannel(crossbeam_channel::Sender<ViewportInput>);
+
+    /// Builds on `pick::click_tests::app_with_a_cube`: the cube becomes the
+    /// gizmo focus by way of `Selection` (exactly how the real editor drives
+    /// it — `follow_selection` does the rest), and the scene camera gets
+    /// `TransformGizmoCamera` by way of `ViewportCamera` (`mark_gizmo_camera`
+    /// does the rest). The cube sits at the origin; the camera looks at it
+    /// from `(0, 0, 10)` down `-Z` with `+Y` up, so world `+X` (the X handle)
+    /// reads as screen-right of centre and world `+Y` (the Y handle) as
+    /// screen-up — a deterministic, camera-aligned layout to hover-test
+    /// against.
+    fn app_with_a_focused_gizmo() -> (App, Entity) {
+        use crate::viewport::ViewportCamera;
+        use crate::viewport::pick::click_tests::app_with_a_cube;
+
+        let (mut app, cube, tx) = app_with_a_cube();
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
+        app.world_mut().resource_mut::<Selection>().0 = Some(cube);
+        app.update();
+        assert!(
+            app.world().get::<TransformGizmoFocus>(cube).is_some(),
+            "follow_selection should have focused the cube",
+        );
+        assert!(
+            app.world().get::<TransformGizmoCamera>(cube).is_none(),
+            "the marker belongs on the camera, not the cube",
+        );
+        app.insert_resource(HoverChannel(tx));
+        (app, cube)
+    }
+
+    /// Delivers one `ViewportInput::Move` at `pos` and lets it reach
+    /// `viewport_gizmo_hover` — see `HoverChannel`'s doc comment for why this
+    /// goes through the channel rather than `ViewportEvents` directly.
+    fn hover(app: &mut App, pos: Vec2) {
+        app.world()
+            .resource::<HoverChannel>()
+            .0
+            .send(ViewportInput::Move { pos, modifiers: sway_graph::ViewportModifiers::default() })
+            .unwrap();
+        app.update();
+    }
+
+    #[test]
+    fn the_mode_keys_switch_modes() {
+        let mut app = App::new();
+        app.init_resource::<crate::viewport::ViewportEvents>()
+            .init_resource::<TransformGizmoSettings>()
+            .add_systems(Update, set_gizmo_mode);
+
+        for (key, expected) in [
+            (ViewportKey::Rotate, TransformGizmoMode::Rotate),
+            (ViewportKey::Scale, TransformGizmoMode::Scale),
+            (ViewportKey::Translate, TransformGizmoMode::Translate),
+        ] {
+            app.world_mut().resource_mut::<crate::viewport::ViewportEvents>().0 =
+                vec![ViewportInput::Key { key }];
+            app.update();
+            assert_eq!(app.world().resource::<TransformGizmoSettings>().mode, expected);
+        }
+    }
+
+    #[test]
+    fn hovering_an_axis_reports_it() {
+        // A gizmo at the origin, a camera on +Z: a cursor to the right of centre
+        // must land on the X handle and nothing else.
+        let (mut app, _focus) = app_with_a_focused_gizmo();
+        hover(&mut app, Vec2::new(0.62, 0.5));
+        assert_eq!(
+            app.world().resource::<TransformGizmoState>().hovered_axis,
+            Some(TransformGizmoAxis::X),
+        );
+    }
+
+    #[test]
+    fn hovering_empty_space_reports_nothing() {
+        let (mut app, _focus) = app_with_a_focused_gizmo();
+        hover(&mut app, Vec2::new(0.05, 0.95));
+        assert_eq!(app.world().resource::<TransformGizmoState>().hovered_axis, None);
+    }
+
+    #[test]
+    fn hover_is_frozen_during_a_drag() {
+        // Bevy's own hover system returns early when `state.active`; ours must
+        // too, or the axis would change under the cursor mid-drag.
+        let (mut app, _focus) = app_with_a_focused_gizmo();
+        app.world_mut().resource_mut::<TransformGizmoState>().active = true;
+        app.world_mut().resource_mut::<TransformGizmoState>().hovered_axis = Some(TransformGizmoAxis::Y);
+        hover(&mut app, Vec2::new(0.62, 0.5));
+        assert_eq!(
+            app.world().resource::<TransformGizmoState>().hovered_axis,
+            Some(TransformGizmoAxis::Y),
+        );
     }
 }
