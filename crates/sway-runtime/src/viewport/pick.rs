@@ -78,8 +78,12 @@ pub fn pick_on_click(
     mut ray_cast: MeshRayCast,
     mut selection: ResMut<sway_graph::Selection>,
 ) {
-    // A drag on a gizmo handle is not a pick. Task 15 makes this reachable;
-    // until then `active` is always false.
+    // A drag on a gizmo handle is not a pick. `Option<Res<...>>` rather than
+    // a plain `Res`: `pick_on_click` (Tasks 11-12) predates the gizmo
+    // (Tasks 13-15) and does not otherwise depend on it, so this keeps that
+    // ordering real — `pick_on_click` still runs correctly (picking is
+    // simply never suppressed) if registered anywhere `TransformGizmoState`
+    // was never inserted, rather than panicking on a missing resource.
     if gizmo_state.is_some_and(|state| state.active) {
         return;
     }

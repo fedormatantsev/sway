@@ -12,7 +12,9 @@ Can the scene be composed by dragging, not by typing numbers?
 
 ## Answer
 
-Yes. `cargo test --workspace` on HEAD `f8d4bfd`: **413 passed, 0 failed, 2
+Yes. `cargo test --workspace` at `f8d4bfd` (Task 15, the last feature-adding
+commit — the branch has since gained docs-only fix-round commits on top; see
+"What was built" below, not a moving HEAD reference): **413 passed, 0 failed, 2
 ignored** (the pre-existing `an_async_file_dialog_future_polls_pending_without_an_executor`
 in `sway-app`, opens a real file dialog, run by hand when bumping `rfd`; and the
 pre-existing `field_wire!` doctest in `sway-nodes`, ignored since M5). By eye:
@@ -25,8 +27,10 @@ confirm transform writes) was performed — this is a standing gap, recorded in
 
 ## What was built
 
-Fifteen tasks in five phases, one commit per task (plus one named fix-round commit
-where Phase 4 review sent a task back):
+Sixteen tasks in six phases, one commit per task, plus two docs-only fix-round
+commits: `e95fd9b` (Task 12, Phase 4 review sent it back) and `7bac8fa`
+(Task 16, correcting this report's own verdict and section heading after a
+later pass):
 
 - `8b316ce` — Task 1: `ViewportInput` data types and channel, graph-side driver
   (`ViewportInputRx` resource). `cargo test -p sway-graph`: 72 passed (69 existing
@@ -67,7 +71,7 @@ where Phase 4 review sent a task back):
   fix to the overlay camera proactively, justified by doc/code mismatch in the
   pinned crate. `cargo test --workspace`: 450+ passed (345 from prior + 45 sway-runtime
   + 60+ from other crates).
-- `b808c78` — Task 14: Gizmo mode keys (T/R/S) and handle hover state. Ported
+- `b808c78` — Task 14: Gizmo mode keys (W/E/R) and handle hover state. Ported
   Bevy's private `transform_gizmo_hover`, verifying geometry against pinned source.
   `cargo test -p sway-runtime`: 49 passed (45 + 4 new).
 - `f8d4bfd` — Task 15: Drag a gizmo handle to transform the selection. Ported
