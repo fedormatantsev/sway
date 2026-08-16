@@ -83,6 +83,13 @@ pub enum FileRequest {
     SaveAs,
 }
 
+/// A view change the shell performs, asked for by the toolbar. Separate from
+/// [`FileRequest`] because it touches the world rather than the disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewRequest {
+    ToggleCamera,
+}
+
 /// Builds the root widget: a transport strip above four panes.
 ///
 /// ```text
@@ -300,6 +307,13 @@ impl EditorUi {
     pub fn take_file_requests(&mut self) -> Vec<FileRequest> {
         self.root.edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
             TransportBar::take_file_requests(&mut bar)
+        })
+    }
+
+    /// What the toolbar has asked the shell to do since the last call.
+    pub fn take_view_requests(&mut self) -> Vec<ViewRequest> {
+        self.root.edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
+            TransportBar::take_view_requests(&mut bar)
         })
     }
 

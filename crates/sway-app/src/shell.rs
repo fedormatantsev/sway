@@ -21,7 +21,7 @@ use std::task::{Context, Poll, Waker};
 use bevy::app::App;
 use bevy::math::UVec2;
 use crossbeam_channel::Sender;
-use sway_editor::FileRequest;
+use sway_editor::{FileRequest, ViewRequest};
 use sway_gpu::{Compositor, GpuContext, ViewportTexture, WindowSurface};
 use sway_graph::{EditorCommand, ViewportInput};
 use winit::application::ApplicationHandler;
@@ -149,24 +149,46 @@ impl Running {
 
         // The toolbar's requests, then one poll of whatever dialog is open.
         // Both only exist on the editor path; the show path has no toolbar.
-        if let Presenter::Editor(presenter) = &mut self.presenter {
-            let requests = presenter.take_file_requests();
-            for request in requests {
-                if self.pending_dialog.is_some() {
-                    // A modal dialog is already up; ignore the rest.
-                    break;
-                }
-                match request {
-                    FileRequest::Save => match self.current_path() {
-                        Some(path) => self.save(&path),
-                        // Never saved: Save means Save As.
-                        None => self.pending_dialog = Some(Dialog::save()),
-                    },
-                    FileRequest::SaveAs => self.pending_dialog = Some(Dialog::save()),
-                    FileRequest::Open => self.pending_dialog = Some(Dialog::open()),
+        let (requests, view_requests) = if let Presenter::Editor(presenter) = &mut self.presenter {
+            (presenter.take_file_requests(), presenter.take_view_requests())
+        } else {
+            (vec![], vec![])
+        };
+
+        for request in requests {
+            if self.pending_dialog.is_some() {
+                // A modal dialog is already up; ignore the rest.
+                break;
+            }
+            match request {
+                FileRequest::Save => match self.current_path() {
+                    Some(path) => self.save(&path),
+                    // Never saved: Save means Save As.
+                    None => self.pending_dialog = Some(Dialog::save()),
+                },
+                FileRequest::SaveAs => self.pending_dialog = Some(Dialog::save()),
+                FileRequest::Open => self.pending_dialog = Some(Dialog::open()),
+            }
+        }
+
+        for request in view_requests {
+            match request {
+                ViewRequest::ToggleCamera => {
+                    let world = self.app.world_mut();
+                    if let Some(mut active) = world.get_resource_mut::<sway_runtime::viewport::camera::ViewportCamera>() {
+                        *active = match *active {
+                            sway_runtime::viewport::camera::ViewportCamera::Editor => {
+                                sway_runtime::viewport::camera::ViewportCamera::Scene
+                            }
+                            sway_runtime::viewport::camera::ViewportCamera::Scene => {
+                                sway_runtime::viewport::camera::ViewportCamera::Editor
+                            }
+                        };
+                    }
                 }
             }
         }
+
         self.poll_dialog();
 
         // Keeps the loop continuous: vsync (the surface is `Fifo`) paces us,
