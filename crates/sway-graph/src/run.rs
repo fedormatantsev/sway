@@ -51,6 +51,7 @@ impl Plugin for WiresPlugin {
             .init_resource::<WireTickCount>()
             .init_resource::<crate::diagnostics::GraphDiagnostics>()
             .init_resource::<Time<crate::transport::Transport>>()
+            .init_resource::<crate::ctx::Selection>()
             .register_type::<crate::transport::Transport>()
             .register_type::<crate::transport::TransportState>()
             .register_type::<crate::ctx::EditorPos>()
