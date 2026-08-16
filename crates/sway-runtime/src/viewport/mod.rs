@@ -40,10 +40,18 @@ pub struct EditorViewportPlugin;
 
 impl Plugin for EditorViewportPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ViewportEvents>().add_systems(
-            PreUpdate,
-            drain_viewport_input.in_set(ViewportSystems::Drain),
-        );
+        app.init_resource::<ViewportEvents>()
+            .add_systems(
+                PreUpdate,
+                drain_viewport_input.in_set(ViewportSystems::Drain),
+            )
+            .add_systems(Startup, camera::spawn_editor_camera)
+            .add_systems(
+                PreUpdate,
+                camera::navigate_editor_camera
+                    .in_set(ViewportSystems::Camera)
+                    .after(ViewportSystems::Drain),
+            );
     }
 }
 
