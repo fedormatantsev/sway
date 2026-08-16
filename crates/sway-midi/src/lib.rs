@@ -1,5 +1,7 @@
 //! Direct CoreMIDI input for sway. No wrapper crates: the FFI is in `ffi`.
 
+mod clock;
+
 pub mod ffi;
 
 pub mod input;
@@ -10,6 +12,7 @@ pub mod parser;
 
 pub mod transport;
 
+pub use clock::PulseClock;
 pub use input::{MidiInput, VIRTUAL_DESTINATION_NAME, open_input};
 pub use message::{MidiMessage, TimedMidi};
 pub use parser::{CLOCK, CONTINUE, SONG_POSITION, START, STOP, StreamParser};
