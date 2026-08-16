@@ -1,5 +1,7 @@
 //! Viewport interaction: the world half. Spec M7.
 
+pub mod camera;
+
 use bevy::prelude::*;
 use sway_graph::{ViewportInput, ViewportInputRx};
 
