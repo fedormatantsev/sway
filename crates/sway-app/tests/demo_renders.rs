@@ -104,6 +104,10 @@ fn the_demo_document_renders_its_cubes() {
         sway_graph::WiresPlugin,
         sway_nodes::WireNodesPlugin,
         sway_midi::MidiPlugin { rx },
+        // Registered here too (mirroring main.rs), because the document now
+        // names sprite-material components and wires and `apply()` below
+        // needs them registered to stay clean.
+        sway_runtime::SpriteMaterialPlugin,
     ));
     app.finish();
     app.cleanup();

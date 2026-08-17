@@ -7,12 +7,15 @@ use sway_graph::EditorPos;
 /// A mesh named by path. The sub-asset label is part of the path —
 /// `"cube.gltf#Mesh0/Primitive0"` — because a glTF file holds many meshes.
 ///
-/// `Mesh3d` and `MeshMaterial3d` are required rather than inserted by the
-/// system below so that a `MaterialFrom` wire always has a target to write
-/// into, even before anything has loaded.
+/// `Mesh3d` is required rather than inserted by the system below so that the
+/// handle exists before anything has loaded. No material component is
+/// required: `MeshMaterial3d<M>` is typed per material kind, so requiring one
+/// kind would leave a mesh wired to a second kind carrying two material
+/// components and drawn once per kind (design D5). Each material wire supplies
+/// the component it writes into instead.
 #[derive(Component, Reflect, Default, Debug, Clone, PartialEq)]
 #[reflect(Component, Default, PartialEq)]
-#[require(Transform, Visibility, Mesh3d, MeshMaterial3d<StandardMaterial>, EditorPos)]
+#[require(Transform, Visibility, Mesh3d, EditorPos)]
 pub struct MeshAsset {
     pub path: String,
 }
@@ -87,9 +90,17 @@ mod tests {
     }
 
     #[test]
-    fn require_supplies_everything_the_renderer_needs() {
+    fn require_supplies_everything_the_renderer_needs_except_a_material() {
         // Mesh3d requires Transform but NOT Visibility, which is why Visibility
         // is on MeshAsset's own require list. Without it nothing draws.
+        //
+        // The material is the one companion deliberately absent. A required
+        // MeshMaterial3d<StandardMaterial> would come back the moment someone
+        // reaches for "why is my new mesh invisible", and would silently
+        // reintroduce the double-draw D5 removes: a mesh later wired to a
+        // second material kind would carry both components and be extracted by
+        // both MaterialPlugins. A freshly created MeshAsset rendering nothing
+        // until a material is wired is the accepted cost of that.
         let mut app = asset_app();
         let entity = app.world_mut().spawn(MeshAsset::default()).id();
 
@@ -99,8 +110,8 @@ mod tests {
         assert!(
             app.world()
                 .get::<MeshMaterial3d<StandardMaterial>>(entity)
-                .is_some(),
-            "the material wire needs a target component to write into"
+                .is_none(),
+            "a mesh carries no material until a material wire supplies one"
         );
     }
 }

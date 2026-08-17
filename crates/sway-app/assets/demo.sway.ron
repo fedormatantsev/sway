@@ -21,6 +21,69 @@
 // whose drag actually holds — cubeA/cubeB's translate handle springs back on
 // the next tick by design, M7-7, which makes them useless for proving a
 // translate-drag "sticks").
+//
+// Below the cube group sits a second content kind: two sprite layers, added
+// for add-sprite-material. Same conventions, same `midiTime`, no new kind of
+// component to learn:
+//
+//   midiTime ────time─────▶ spriteOsc, spriteOsc2
+//   spriteOsc ───input────▶ spriteRemap ───frame───▶ spriteMat ─┐
+//   spriteOsc2 ──input────▶ spriteRemap2 ──frame───▶ spriteMat2 ┤
+//   colorSeq ───colorRun──▶ spriteMat, spriteMat2                │
+//   depthSeq ───depthRun──▶ spriteMat, spriteMat2                │
+//   spriteMat ───material─▶ spritePlane                          │
+//   spriteMat2 ──material─▶ spritePlane2 ◀──────────────────────┘
+//
+// `frame` is never authored and never a bespoke animation component — design
+// D3/D4's whole point. It is three nodes that already exist: `MidiTime` (the
+// same node the cubes' LFOs read) feeds an `Oscillator` running `Saw`, whose
+// -1..1 output `Remap` rescales to 0..30, the sequence's frame count. Nobody
+// clamps on the write side: `SpriteMaterial`'s read-side `layer_index` is
+// what keeps a `Remap` output that reaches exactly 30.0 on frame 29 rather
+// than sampling out of range (D4) — spriteRemap's `out_max: 30.0` is
+// deliberately exact, not `29.0`, to let that safeguard do its job. The two
+// layers run the same period but opposite phase (`spriteOsc2.phase: 0.5`),
+// so they are never on the same frame — a visible "own frame offset" per
+// layer without a second animation mechanism.
+//
+// `colorSeq` and `depthSeq` are each wired to *both* materials — one
+// `FrameSequence` loading a folder once and feeding two consumers is D7's
+// "one sequence serves many consumers" scenario, proved by sharing rather
+// than asserted.
+//
+// Depth sign: the sprite assets' own convention is 0.0 = nearest the camera,
+// 1.0 = farthest (`sprite_material.wgsl`'s header). The shader's vertex stage
+// displaces `+world_normal * (height - depth_pivot) * depth_range` — its own
+// comment calls this "standard displacement-map convention: a value above
+// the pivot pushes out along the normal", and flags that as the *opposite*
+// sign to the asset convention above, which was authored to the older M8
+// spike's "higher = farther from camera" rule. Both sprite planes face the
+// camera near enough to treat their local +Z as "toward camera" (spritePlane
+// exactly; spritePlane2 within its 30° yaw), so a positive `depth_range`
+// would push the brighter, farther pixels *toward* the camera and the
+// darker, nearer pixels *away* from it — backwards. `depth_range` is
+// therefore authored negative on both layers, which restores the intended
+// reading without touching the shader or the assets.
+//
+// spritePlane's placement is chosen to interpenetrate `cubeC`
+// (`translation: (0.0, 1.6, -0.8)`, half-extent 1.0, so
+// x ∈ [-1, 1], y ∈ [0.6, 2.6], z ∈ [-1.8, 0.2]). With `depth_pivot: 0.5` and
+// the measured relief 0.158..0.889 (see the change's task-3.1 notes),
+// max displacement is `(0.889 - 0.5) * 3.75 ≈ 1.459` one way and
+// `(0.5 - 0.158) * 3.75 ≈ 1.283` the other. spritePlane sits at
+// `(0.0, 1.6, -0.6)`, unrotated (local +Z ≈ world +Z ≈ toward the camera), so
+// its relief spans world z ∈ [-0.6 - 1.459, -0.6 + 1.283] = [-2.06, 0.68] —
+// which fully contains cubeC's z ∈ [-1.8, 0.2] — while its 1.4×1.4 footprint
+// (x ∈ [-0.7, 0.7], y ∈ [0.9, 2.3]) sits entirely inside cubeC's x/y
+// cross-section. The relief therefore passes all the way through the cube,
+// not just grazes it.
+//
+// spritePlane2 overlaps spritePlane (base (0.3, 1.5, -0.5), size 1.2×1.2,
+// its own `depth_range: -3.5`) and carries a 30° yaw about Y
+// (`rotation: (0.0, 0.258819, 0.0, 0.965926)`), so its relief's displacement
+// axis is not parallel to spritePlane's — the two reliefs interleave rather
+// than sitting as parallel sheets, which is what makes both "two sprite
+// layers interpenetrate" and (Task 4.2) the parallax check reachable by eye.
 Project(
     version: 2,
     entities: [
@@ -129,6 +192,131 @@ Project(
                 "Transform": (),
                 "EditorPos": ((260.0, 100.0)),
             },
+        ),
+        // ---------------------------------------------------------------
+        // Sprite layer (add-sprite-material). See the header diagram and
+        // the depth-sign / interpenetration arithmetic above.
+        // ---------------------------------------------------------------
+        Entity(
+            id: "colorSeq",
+            components: {
+                "FrameSequence": (folder: "sprites/pulse_color", color_space: Display),
+                "EditorPos": ((-220.0, 480.0)),
+            },
+        ),
+        Entity(
+            id: "depthSeq",
+            components: {
+                // Data, not Display: this run is heights, not colour, and
+                // reading it through an sRGB view would warp every
+                // displacement (design D8).
+                "FrameSequence": (folder: "sprites/pulse_depth", color_space: Data),
+                "EditorPos": ((-220.0, 540.0)),
+            },
+        ),
+        Entity(
+            id: "spriteOsc",
+            components: {
+                "Oscillator": (time: 0.0, period: 6.0, shape: Saw, phase: 0.0, amplitude: 1.0),
+                "EditorPos": ((-460.0, 420.0)),
+            },
+            wires: { "sway_nodes::osc::TimeFrom": "midiTime" },
+        ),
+        Entity(
+            id: "spriteOsc2",
+            components: {
+                // Same period, opposite phase: the two layers are always on
+                // different frames without a second animation mechanism.
+                "Oscillator": (time: 0.0, period: 6.0, shape: Saw, phase: 0.5, amplitude: 1.0),
+                "EditorPos": ((-460.0, 620.0)),
+            },
+            wires: { "sway_nodes::osc::TimeFrom": "midiTime" },
+        ),
+        Entity(
+            id: "spriteRemap",
+            components: {
+                // -1..1 (Saw's own range) to 0..30 (the sequence's 30
+                // frames). out_max is exactly 30.0 on purpose — D4's
+                // read-side clamp is what turns a value that reaches it into
+                // layer 29, not a `29.0` authored here to dodge that.
+                "Remap": (in_min: -1.0, in_max: 1.0, out_min: 0.0, out_max: 30.0, clamp: false),
+                "EditorPos": ((-220.0, 420.0)),
+            },
+            wires: { "sway_nodes::value::RemapInputFrom": "spriteOsc" },
+        ),
+        Entity(
+            id: "spriteRemap2",
+            components: {
+                "Remap": (in_min: -1.0, in_max: 1.0, out_min: 0.0, out_max: 30.0, clamp: false),
+                "EditorPos": ((-220.0, 620.0)),
+            },
+            wires: { "sway_nodes::value::RemapInputFrom": "spriteOsc2" },
+        ),
+        Entity(
+            id: "spriteMat",
+            components: {
+                // depth_range negative: see the header's depth-sign note.
+                "SpriteMaterial": (depth_range: -3.75, depth_pivot: 0.5),
+                "EditorPos": ((20.0, 420.0)),
+            },
+            wires: {
+                "sway_runtime::sprite_material::ColorRunFrom": "colorSeq",
+                "sway_runtime::sprite_material::DepthRunFrom": "depthSeq",
+                "sway_runtime::sprite_material::FrameFrom": "spriteRemap",
+            },
+        ),
+        Entity(
+            id: "spriteMat2",
+            components: {
+                // A tint (own colour) and its own depth_range, both
+                // authored rather than wired — nothing here says a
+                // material's per-layer knobs must be graph-driven, only
+                // that frame timing is (D3/D4).
+                "SpriteMaterial": (
+                    tint: (1.0, 0.82, 0.86),
+                    depth_range: -3.5,
+                    depth_pivot: 0.5,
+                ),
+                "EditorPos": ((20.0, 620.0)),
+            },
+            wires: {
+                "sway_runtime::sprite_material::ColorRunFrom": "colorSeq",
+                "sway_runtime::sprite_material::DepthRunFrom": "depthSeq",
+                "sway_runtime::sprite_material::FrameFrom": "spriteRemap2",
+            },
+        ),
+        Entity(
+            id: "spritePlane",
+            components: {
+                "PlaneMesh": (size: (1.4, 1.4)),
+                // Authored Transform, no translation wire, like cubeC — this
+                // placement is static, chosen to interpenetrate cubeC (see
+                // the header's arithmetic).
+                "Transform": (
+                    translation: (0.0, 1.6, -0.6),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "EditorPos": ((260.0, 420.0)),
+            },
+            wires: { "sway_runtime::sprite_material::SpriteMaterialFrom": "spriteMat" },
+        ),
+        Entity(
+            id: "spritePlane2",
+            components: {
+                "PlaneMesh": (size: (1.2, 1.2)),
+                // 30° yaw about Y — a non-trivial authored rotation, so its
+                // relief's displacement axis is not parallel to
+                // spritePlane's (interleaving reliefs) and so Task 4.2's
+                // parallax check has a rotated layer to look at.
+                "Transform": (
+                    translation: (0.3, 1.5, -0.5),
+                    rotation: (0.0, 0.258819, 0.0, 0.965926),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "EditorPos": ((260.0, 620.0)),
+            },
+            wires: { "sway_runtime::sprite_material::SpriteMaterialFrom": "spriteMat2" },
         ),
     ],
 )

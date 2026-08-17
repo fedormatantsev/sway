@@ -212,6 +212,11 @@ fn main() {
             sway_document::ProjectPlugin,
             sway_nodes::WireNodesPlugin,
             sway_midi::MidiPlugin { rx },
+            // Registers both sprite nodes, all six wires, `MaterialPlugin`
+            // and the three sync systems (frame_sequence + sprite_material)
+            // in one call. Added here rather than only on a `--demo` path so
+            // the project document (the `None` arm below) can use it too.
+            sway_runtime::SpriteMaterialPlugin,
         ))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
         .add_systems(Update, (log_monitors, log_fps));

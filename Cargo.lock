@@ -5758,6 +5758,7 @@ dependencies = [
  "naga",
  "sway-gpu",
  "sway-graph",
+ "sway-nodes",
 ]
 
 [[package]]

@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_ecs::change_detection::DetectChangesMut;
 use sway_graph::{EditorPos, ReflectWire};
 
-use crate::field_wire::field_wire;
+use crate::field_wire;
 
 /// A PBR material as a node. Colours are `Vec3` rather than `Color` because
 /// roadmap D5 makes every colour inlet a `Vec3` wire, and the field a wire
@@ -79,11 +79,17 @@ pub fn sync_pbr_materials(
 field_wire!(
     /// Hands a material node's asset to a mesh. Sourced from `MaterialOut`
     /// rather than from `MeshMaterial3d` so the editor's legality rule stays
-    /// exact — every mesh carries a `MeshMaterial3d`, and sourcing from that
-    /// would make every mesh look like a legal material producer.
+    /// exact — a `MeshMaterial3d` is what a material *consumer* ends up with,
+    /// and sourcing from it would make every wired mesh look like a legal
+    /// material producer.
+    ///
+    /// `supplies_target` because under design D5 no mesh node hands out a
+    /// `MeshMaterial3d<StandardMaterial>` any more; this wire is the only
+    /// thing that puts one on a mesh, and takes it away again on disconnect.
     MaterialFrom / DrivesMaterial,
     MaterialOut => MeshMaterial3d<StandardMaterial>,
-    "0"
+    "0",
+    supplies_target
 );
 
 #[cfg(test)]
@@ -91,7 +97,32 @@ mod tests {
     use super::*;
     use crate::wire_testing::{assert_writes_only_on_change, propagate_wire};
     use bevy::asset::AssetPlugin;
+    use bevy::render::render_resource::AsBindGroup;
     use sway_graph::register_wire_type;
+
+    /// A second material kind, with no bindings and no shader, so that "a mesh
+    /// never carries two material kinds at once" is reachable at all. The real
+    /// second kind is `SpriteMaterial`, which design D6 puts in `sway-runtime`
+    /// and therefore out of this crate's reach; delete this the moment a real
+    /// one is available here.
+    #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
+    struct OtherMaterial {}
+
+    impl Material for OtherMaterial {}
+
+    #[derive(Component, Reflect, Default, Debug, Clone, PartialEq)]
+    #[reflect(Component, Default, PartialEq)]
+    struct OtherMaterialOut(Handle<OtherMaterial>);
+
+    field_wire!(
+        /// The stand-in for `SpriteMaterialFrom`: same `supplies_target`
+        /// arrangement, a different `M`, which is exactly the axis the
+        /// two-kinds scenario turns on.
+        OtherMaterialFrom / DrivesOtherMaterial,
+        OtherMaterialOut => MeshMaterial3d<OtherMaterial>,
+        "0",
+        supplies_target
+    );
 
     fn material_app() -> App {
         let mut app = App::new();
@@ -109,6 +140,10 @@ mod tests {
         app.register_type::<MaterialOut>();
         app.register_type::<MeshMaterial3d<StandardMaterial>>();
         register_wire_type::<MaterialFrom>(&mut app);
+        app.init_asset::<OtherMaterial>();
+        app.register_type::<OtherMaterialOut>();
+        app.register_type::<MeshMaterial3d<OtherMaterial>>();
+        register_wire_type::<OtherMaterialFrom>(&mut app);
         app
     }
 
@@ -270,6 +305,157 @@ mod tests {
             MaterialOut(one),
             MaterialOut(two),
             MeshMaterial3d::<StandardMaterial>::default(),
+        );
+    }
+
+    #[test]
+    fn connecting_a_material_wire_supplies_the_component_and_the_producers_handle() {
+        // The failure this catches is the whole of D5's risk: MeshAsset no
+        // longer requires MeshMaterial3d, so a wire that only copies fields
+        // would find no target component, the copy would silently do nothing,
+        // and the mesh would never render. The entity here is deliberately
+        // spawned bare.
+        let mut app = material_app();
+        let node = app.world_mut().spawn(PbrMaterial::default()).id();
+        app.update();
+        let mesh = app.world_mut().spawn_empty().id();
+        assert!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(mesh)
+                .is_none(),
+            "the mesh starts with no material of its own"
+        );
+
+        propagate_wire::<MaterialFrom>(app.world_mut(), node, mesh);
+
+        let expected = app
+            .world()
+            .get::<MaterialOut>(node)
+            .expect("required")
+            .0
+            .clone();
+        assert_ne!(
+            expected,
+            Handle::default(),
+            "the producer allocated an asset"
+        );
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(mesh)
+                .map(|m| m.0.clone()),
+            Some(expected),
+            "the hook supplied the component and the field copy filled it"
+        );
+    }
+
+    #[test]
+    fn disconnecting_a_material_wire_removes_the_component_it_supplied() {
+        // Without this the component the hook inserted outlives the wire, and
+        // a disconnected mesh keeps rendering with a material nothing points
+        // at — which also puts it back in the two-kinds hazard D5 removes.
+        let mut app = material_app();
+        let node = app.world_mut().spawn(PbrMaterial::default()).id();
+        app.update();
+        let mesh = app.world_mut().spawn_empty().id();
+        propagate_wire::<MaterialFrom>(app.world_mut(), node, mesh);
+
+        app.world_mut().entity_mut(mesh).remove::<MaterialFrom>();
+
+        assert!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(mesh)
+                .is_none(),
+            "the wire took its target component with it"
+        );
+    }
+
+    #[test]
+    fn rewiring_a_material_wire_does_not_drop_the_material_component() {
+        // A relationship component is immutable, so re-pointing a wire is an
+        // insert over an insert, and `on_discard` — where the withdraw hook has
+        // to live, because sway-graph's topology bookkeeping already owns
+        // `on_remove` — fires on exactly that. Without the hook's deferred
+        // "is the wire actually gone" re-check, every rewire would tear the
+        // material off and put back a default handle, so the mesh would flash
+        // the engine's fallback white until the next propagate.
+        //
+        // Deliberately no propagate after the rewire: a propagate would rewrite
+        // the handle and hide the tear. The new producer's handle arrives on the
+        // next tick; what must hold here is that the component never left.
+        let mut app = material_app();
+        let first = app.world_mut().spawn(PbrMaterial::default()).id();
+        let second = app
+            .world_mut()
+            .spawn(PbrMaterial {
+                metallic: 1.0,
+                ..default()
+            })
+            .id();
+        app.update();
+        let mesh = app.world_mut().spawn_empty().id();
+        propagate_wire::<MaterialFrom>(app.world_mut(), first, mesh);
+        let delivered = app
+            .world()
+            .get::<MeshMaterial3d<StandardMaterial>>(mesh)
+            .expect("the wire supplied it")
+            .0
+            .clone();
+
+        app.world_mut()
+            .entity_mut(mesh)
+            .insert(MaterialFrom(second));
+
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(mesh)
+                .map(|m| m.0.clone()),
+            Some(delivered),
+            "the rewire left the material component untouched"
+        );
+    }
+
+    #[test]
+    fn a_mesh_wired_to_two_material_kinds_in_turn_carries_exactly_one() {
+        // The scenario D5 exists for. Two material components on one entity
+        // means two MaterialPlugins extract it and the mesh is drawn twice, so
+        // what must hold is that swapping the wire swaps the component set
+        // wholesale rather than accumulating kinds.
+        let mut app = material_app();
+        let standard = app.world_mut().spawn(PbrMaterial::default()).id();
+        app.update();
+        let other_handle = app
+            .world_mut()
+            .resource_mut::<Assets<OtherMaterial>>()
+            .add(OtherMaterial {});
+        let other = app.world_mut().spawn(OtherMaterialOut(other_handle)).id();
+        let mesh = app.world_mut().spawn_empty().id();
+
+        propagate_wire::<MaterialFrom>(app.world_mut(), standard, mesh);
+        assert!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(mesh)
+                .is_some()
+                && app
+                    .world()
+                    .get::<MeshMaterial3d<OtherMaterial>>(mesh)
+                    .is_none(),
+            "one kind in, and only that kind"
+        );
+
+        app.world_mut().entity_mut(mesh).remove::<MaterialFrom>();
+        propagate_wire::<OtherMaterialFrom>(app.world_mut(), other, mesh);
+
+        assert!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(mesh)
+                .is_none(),
+            "the first kind's component left with its wire"
+        );
+        assert!(
+            app.world()
+                .get::<MeshMaterial3d<OtherMaterial>>(mesh)
+                .is_some(),
+            "the second kind's wire supplied its own"
         );
     }
 

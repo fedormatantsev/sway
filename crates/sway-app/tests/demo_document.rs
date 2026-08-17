@@ -17,22 +17,34 @@
 //! one mesh in the demo whose translate-drag holds (M7 Task 15's exit
 //! criterion needs this; cubeA/cubeB spring back on the next tick by design).
 
+use bevy::asset::AssetPlugin;
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::prelude::*;
 use sway_document::{DocId, to_document};
 use sway_nodes::{
-    AmplitudeFrom, MaterialFrom, MaterialOut, Oscillator, TimeFrom, TranslationFrom, Vec3YFrom,
+    AmplitudeFrom, MaterialFrom, MaterialOut, Oscillator, RemapInputFrom, TimeFrom,
+    TranslationFrom, Vec3YFrom,
 };
+use sway_runtime::{ColorRunFrom, DepthRunFrom, FrameFrom, SpriteMaterialFrom};
 
 const DEMO_DOCUMENT: &str = include_str!("../assets/demo.sway.ron");
 
 fn demo_app() -> App {
     let mut app = App::new();
     let (_tx, rx) = crossbeam_channel::unbounded();
+    // `TaskPoolPlugin` + `AssetPlugin`, not the full `SpriteMaterialPlugin`'s
+    // render dependencies: this app never calls `update()`, only `apply()`,
+    // and `SpriteMaterialPlugin::build` opens with `embedded_asset!`, which
+    // panics without `AssetPlugin`'s `EmbeddedAssetRegistry`. Follows the
+    // same minimal-app shape `sprite_material.rs`'s and `frame_sequence.rs`'s
+    // own unit tests use.
     app.add_plugins((
+        bevy::app::TaskPoolPlugin::default(),
+        AssetPlugin::default(),
         sway_graph::WiresPlugin,
         sway_nodes::WireNodesPlugin,
         sway_midi::MidiPlugin { rx },
+        sway_runtime::SpriteMaterialPlugin,
     ));
     app
 }
@@ -75,19 +87,29 @@ fn demo_document_loads_and_reconciles_cleanly() {
         ids,
         vec![
             "camera".to_string(),
+            "colorSeq".to_string(),
             "cubeA".to_string(),
             "cubeB".to_string(),
             "cubeC".to_string(),
+            "depthSeq".to_string(),
             "group".to_string(),
             "lfoA".to_string(),
             "lfoB".to_string(),
             "mat".to_string(),
             "midiTime".to_string(),
+            "spriteMat".to_string(),
+            "spriteMat2".to_string(),
+            "spriteOsc".to_string(),
+            "spriteOsc2".to_string(),
+            "spritePlane".to_string(),
+            "spritePlane2".to_string(),
+            "spriteRemap".to_string(),
+            "spriteRemap2".to_string(),
             "sun".to_string(),
             "vec3A".to_string(),
             "vec3B".to_string(),
         ],
-        "exactly the demo's 11 entities should carry a DocId"
+        "exactly the demo's 22 entities should carry a DocId"
     );
 
     let midi_time = entity_named(world, "midiTime");
@@ -151,6 +173,88 @@ fn demo_document_loads_and_reconciles_cleanly() {
         world.get::<Transform>(cube_c).map(|t| t.translation),
         Some(Vec3::new(0.0, 1.6, -0.8)),
         "cubeC's authored Transform should survive apply() unchanged",
+    );
+
+    // The sprite layer (add-sprite-material): same wire-model, reusing
+    // `midiTime` rather than adding a second time source (D3).
+    let color_seq = entity_named(world, "colorSeq");
+    let depth_seq = entity_named(world, "depthSeq");
+    let sprite_osc = entity_named(world, "spriteOsc");
+    let sprite_osc2 = entity_named(world, "spriteOsc2");
+    let sprite_remap = entity_named(world, "spriteRemap");
+    let sprite_remap2 = entity_named(world, "spriteRemap2");
+    let sprite_mat = entity_named(world, "spriteMat");
+    let sprite_mat2 = entity_named(world, "spriteMat2");
+    let sprite_plane = entity_named(world, "spritePlane");
+    let sprite_plane2 = entity_named(world, "spritePlane2");
+
+    assert_eq!(
+        world.get::<TimeFrom>(sprite_osc).map(|w| w.0),
+        Some(midi_time),
+        "spriteOsc reuses the document's own midiTime"
+    );
+    assert_eq!(
+        world.get::<TimeFrom>(sprite_osc2).map(|w| w.0),
+        Some(midi_time),
+        "spriteOsc2 reuses the document's own midiTime too"
+    );
+    assert_eq!(
+        world.get::<RemapInputFrom>(sprite_remap).map(|w| w.0),
+        Some(sprite_osc)
+    );
+    assert_eq!(
+        world.get::<RemapInputFrom>(sprite_remap2).map(|w| w.0),
+        Some(sprite_osc2)
+    );
+    assert_eq!(
+        world.get::<ColorRunFrom>(sprite_mat).map(|w| w.0),
+        Some(color_seq)
+    );
+    assert_eq!(
+        world.get::<DepthRunFrom>(sprite_mat).map(|w| w.0),
+        Some(depth_seq)
+    );
+    assert_eq!(
+        world.get::<FrameFrom>(sprite_mat).map(|w| w.0),
+        Some(sprite_remap)
+    );
+    assert_eq!(
+        world.get::<ColorRunFrom>(sprite_mat2).map(|w| w.0),
+        Some(color_seq),
+        "the colour run is shared by both materials (D7's 'one sequence serves many consumers')"
+    );
+    assert_eq!(
+        world.get::<DepthRunFrom>(sprite_mat2).map(|w| w.0),
+        Some(depth_seq),
+        "the depth run is shared too"
+    );
+    assert_eq!(
+        world.get::<FrameFrom>(sprite_mat2).map(|w| w.0),
+        Some(sprite_remap2)
+    );
+    assert_eq!(
+        world.get::<SpriteMaterialFrom>(sprite_plane).map(|w| w.0),
+        Some(sprite_mat)
+    );
+    assert_eq!(
+        world.get::<SpriteMaterialFrom>(sprite_plane2).map(|w| w.0),
+        Some(sprite_mat2)
+    );
+    assert!(
+        world
+            .get::<sway_runtime::FrameSequenceOut>(color_seq)
+            .is_some(),
+        "FrameSequence requires FrameSequenceOut"
+    );
+    assert!(
+        world
+            .get::<sway_runtime::SpriteMaterialOut>(sprite_mat)
+            .is_some(),
+        "SpriteMaterial requires SpriteMaterialOut"
+    );
+    assert!(
+        world.get::<Mesh3d>(sprite_plane).is_some(),
+        "PlaneMesh requires Mesh3d"
     );
 
     // D4: the document names one component per node and Bevy supplies the rest.

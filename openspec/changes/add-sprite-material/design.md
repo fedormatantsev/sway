@@ -279,6 +279,22 @@ at all) and `R16Unorm` / `Rgba16Unorm` need the non-default wgpu feature
 - **Blend order between interleaved layers** → see Non-Goals. Constrains how large
   `depth_range` can be relative to layer spacing; an authorial limit, not a bug.
 - **`MeshAsset` renders nothing until wired** → see D5. Accepted.
+- **Two material wires on one mesh still draw it twice** → D5's hooks give
+  *sequential* exclusivity only. Removing `MaterialFrom` takes its
+  `MeshMaterial3d<StandardMaterial>` with it, so swapping one wire for another
+  leaves exactly one material kind — but an entity that carries `MaterialFrom`
+  and `SpriteMaterialFrom` *simultaneously* ends up with both components, both
+  `MaterialPlugin`s extract it, and the mesh is drawn twice. Each wire's hook can
+  only see its own type, so nothing in the mechanism can notice the other kind.
+  Accepted for now, and deliberately not papered over: the visible symptom is
+  double-drawing, not a crash or a corrupted document, and disconnecting either
+  wire restores the correct state. Closing it means a shared marker component
+  that every material wire supplies — a material-consumer token whose own hook
+  evicts the previously registered kind — which is a change to the wire model
+  rather than to this material, and is better made when a third material kind
+  gives it a second reason to exist. No diagnostic is emitted for it: the
+  editor's connect-legality rule is where the collision should be refused, and
+  that is M6's ground.
 - **Colour and depth sequences must agree in length** → nothing enforces it across
   two separately-loaded sequences. The material reports a diagnostic naming both when
   they disagree, and clamps to the shorter. They need *not* agree in resolution:

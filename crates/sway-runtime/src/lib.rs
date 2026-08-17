@@ -4,16 +4,28 @@
 //! Per spec §5 the goal here is knowledge, not architecture — expect most of
 //! this to be rewritten at M5.
 
+pub mod frame_sequence;
 pub mod headless;
 pub mod point_cloud;
 pub mod scatter;
 pub mod shader_validation;
 pub mod sprite_depth_spike;
 pub mod sprite_layer;
+pub mod sprite_material;
 pub mod viewport;
 
+pub use frame_sequence::{
+    ColorSpace, FrameSequence, FrameSequenceOut, FrameSequenceState, SequenceError,
+    assemble_layers, sort_frames_by_name, sync_frame_sequences,
+};
 pub use point_cloud::PointCloudPlugin;
 pub use scatter::ScatterPlugin;
 pub use sprite_depth_spike::SpriteDepthPlugin;
 pub use sprite_layer::SpriteLayerPlugin;
+pub use sprite_material::{
+    ColorRunFrom, DepthRunFrom, FrameFrom, OpacityFrom, SpriteMaterial, SpriteMaterialAsset,
+    SpriteMaterialFrom, SpriteMaterialOut, SpriteMaterialPlugin, SpriteMaterialState,
+    SpriteMaterialUniform, SpriteMeshBounds, TintFrom, inflate_local_aabb, layer_index,
+    max_displacement, sync_sprite_material_bounds, sync_sprite_materials,
+};
 pub use viewport::EditorViewportPlugin;

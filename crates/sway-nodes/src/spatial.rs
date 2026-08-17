@@ -7,7 +7,7 @@ use bevy_ecs::change_detection::Mut;
 use bevy_reflect::{PartialReflect, Reflect};
 use sway_graph::{ReflectWire, Wire};
 
-use crate::field_wire::field_wire;
+use crate::field_wire;
 use crate::outputs::Vec3Out;
 
 field_wire!(

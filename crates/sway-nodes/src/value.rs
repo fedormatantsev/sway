@@ -5,7 +5,7 @@ use bevy_ecs::change_detection::Mut;
 use bevy_reflect::Reflect;
 use sway_graph::{Behaviour, EditorPos, ReflectBehaviour, ReflectWire, TickCtx};
 
-use crate::field_wire::field_wire;
+use crate::field_wire;
 use crate::outputs::{FloatOut, Vec3Out, write_outlet};
 
 /// A vector literal whose components are driveable (roadmap D5). Transform,

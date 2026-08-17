@@ -3,13 +3,14 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 
 mod beat;
 mod envelope;
-mod field_wire;
+pub mod field_wire;
 mod lfo;
 mod math;
 mod mesh_asset;
 mod osc;
 mod outputs;
 mod pbr_material;
+mod plane_mesh;
 mod scene;
 mod spatial;
 mod value;
@@ -24,6 +25,7 @@ pub use mesh_asset::*;
 pub use osc::*;
 pub use outputs::*;
 pub use pbr_material::*;
+pub use plane_mesh::*;
 pub use scene::*;
 pub use spatial::*;
 pub use value::*;
@@ -79,6 +81,14 @@ impl bevy_app::Plugin for WireNodesPlugin {
                 .run_if(bevy_ecs::prelude::resource_exists::<bevy::prelude::AssetServer>),
         );
 
+        sway_graph::register_authorable::<PlaneMesh>(app, "PlaneMesh");
+        app.add_systems(
+            bevy_app::Update,
+            build_plane_meshes.run_if(
+                bevy_ecs::prelude::resource_exists::<bevy::prelude::Assets<bevy::prelude::Mesh>>,
+            ),
+        );
+
         sway_graph::register_wire_type::<MaterialFrom>(app);
         sway_graph::register_authorable::<PbrMaterial>(app, "PbrMaterial");
         app.add_systems(
@@ -122,6 +132,7 @@ mod tests {
                 "MeshAsset",
                 "Oscillator",
                 "PbrMaterial",
+                "PlaneMesh",
                 "PointLight",
                 "Remap",
                 "SceneCamera",

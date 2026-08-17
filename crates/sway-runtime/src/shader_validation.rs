@@ -30,6 +30,12 @@ const PREPROCESSOR_SHADERS: &[&str] = &[
     "point_cloud.wgsl",
     "sprite_layer.wgsl",
     "sprite_depth_spike.wgsl",
+    // Imports `bevy_pbr::mesh_functions` and
+    // `bevy_pbr::view_transformations` for the model matrix, the world normal
+    // and the clip-space projection. Redeclaring any of those would misalign
+    // against Bevy's real bindings, so giving up naga validation here is the
+    // cheaper of the two failures — the same trade `sprite_layer.wgsl` makes.
+    "sprite_material.wgsl",
 ];
 
 #[cfg(test)]
