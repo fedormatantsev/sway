@@ -79,6 +79,21 @@ pub struct Inspector {
     pending: HashMap<(&'static str, String), String>,
 }
 
+/// Parses exactly `N` comma-separated floats, or nothing.
+///
+/// Every component must parse and the count must match. The earlier
+/// `Vec3`-only version discarded unparseable components instead, so
+/// `"1, abc, 2, 3"` committed as `(1, 2, 3)` — a typo silently became a
+/// different vector. Shared by both vector kinds so they cannot drift.
+fn parse_components<const N: usize>(text: &str) -> Option<[f32; N]> {
+    let mut parts = text.split(',');
+    let mut out = [0.0; N];
+    for slot in out.iter_mut() {
+        *slot = parts.next()?.trim().parse::<f32>().ok()?;
+    }
+    parts.next().is_none().then_some(out)
+}
+
 impl Inspector {
     pub fn new(commands: Sender<EditorCommand>) -> Self {
         Self {
@@ -144,16 +159,14 @@ impl Inspector {
             FieldKind::Bool => FieldValue::Bool(text == "true"),
             FieldKind::Enum(_) => FieldValue::Enum(text.to_string()),
             FieldKind::Str => FieldValue::Str(text.to_string()),
-            FieldKind::Vec3 => {
-                let parts: Vec<f32> = text
-                    .split(',')
-                    .filter_map(|p| p.trim().parse::<f32>().ok())
-                    .collect();
-                if parts.len() != 3 {
-                    return;
-                }
-                FieldValue::Vec3(bevy_math::Vec3::new(parts[0], parts[1], parts[2]))
-            }
+            FieldKind::Vec2 => match parse_components::<2>(text) {
+                Some([x, y]) => FieldValue::Vec2(bevy_math::Vec2::new(x, y)),
+                None => return,
+            },
+            FieldKind::Vec3 => match parse_components::<3>(text) {
+                Some([x, y, z]) => FieldValue::Vec3(bevy_math::Vec3::new(x, y, z)),
+                None => return,
+            },
             FieldKind::Opaque => return,
         };
 
@@ -282,8 +295,8 @@ impl Inspector {
                     FieldKind::Opaque | FieldKind::Enum(_) => RowKind::ReadOnly(WidgetPod::new(
                         Label::new(format!("{}  {}", field.name, field.value)),
                     )),
-                    // Float, Int, Str and Vec3 all commit as text; `commit`
-                    // parses each against its own kind.
+                    // Float, Int, Str, Vec2 and Vec3 all commit as text;
+                    // `commit` parses each against its own kind.
                     _ => {
                         let text_input = TextInput::new(&field.value);
                         let input_area = text_input.area_pod().id();
@@ -669,6 +682,45 @@ mod tests {
             "got {:?}",
             commands[0],
         );
+    }
+
+    #[test]
+    fn committing_a_vec2_sends_a_two_component_value() {
+        // A `Vec2` row previously rendered read-only, so `PlaneMesh`'s `size`
+        // could be seen but not edited. It must commit as `Vec2`, not as a
+        // `Vec3` with a spare zero — reflection matches on the concrete type
+        // and the write would be dropped.
+        let (mut harness, rx) = harness_with(FieldKind::Vec2, "1.00, 2.00");
+
+        harness.edit_root_widget(|mut inspector| {
+            Inspector::commit_for_test(&mut inspector, 1, "1.5, -2.5");
+        });
+
+        let commands: Vec<_> = rx.try_iter().collect();
+        assert_eq!(commands.len(), 1);
+        assert!(
+            matches!(
+                &commands[0],
+                EditorCommand::SetField { value: FieldValue::Vec2(v), .. }
+                    if *v == bevy_math::Vec2::new(1.5, -2.5)
+            ),
+            "got {:?}",
+            commands[0],
+        );
+    }
+
+    #[test]
+    fn a_vector_with_the_wrong_component_count_sends_nothing() {
+        // Both directions: too few and too many. The old `Vec3` parse
+        // filtered unparseable components out before counting, so a typo
+        // could still reach the right count and commit a different vector.
+        for text in ["1.5", "1.5, 2.5, 3.5", "1.5, oops"] {
+            let (mut harness, rx) = harness_with(FieldKind::Vec2, "1.00, 2.00");
+            harness.edit_root_widget(|mut inspector| {
+                Inspector::commit_for_test(&mut inspector, 1, text);
+            });
+            assert_eq!(rx.try_iter().count(), 0, "{text:?} must not commit");
+        }
     }
 
     #[test]

@@ -47,6 +47,7 @@ pub enum FieldValue {
     /// A unit enum variant, by name.
     Enum(String),
     Str(String),
+    Vec2(Vec2),
     Vec3(Vec3),
 }
 
@@ -106,6 +107,38 @@ pub fn apply_editor_commands(world: &mut World) {
     for command in &commands {
         apply_editor_command(world, command);
     }
+}
+
+/// Boxes an inspector integer as the concrete integer type of the field it is
+/// about to be applied to.
+///
+/// The inspector has exactly one integer commit path — parse the typed text as
+/// `i64`, send `FieldValue::Int` — but the field on the other end may be any
+/// width the snapshot's `kind_of` classifies as an integer. Reflection matches
+/// on the concrete type, so the value has to be narrowed here or the write is
+/// rejected.
+///
+/// Out-of-range values **saturate** rather than being dropped. A dropped write
+/// is the failure this function exists to fix: it looks identical to a UI that
+/// ignored the keystroke, because the inspector re-reads the unchanged field
+/// and snaps back. Saturating lands on the nearest representable value, which
+/// is visible immediately. Note the cast must be explicit — `-1i64 as u32`
+/// wraps to `u32::MAX`, which would be a far worse answer than `0`.
+///
+/// `None` for a field that is not an integer at all, which the caller turns
+/// into a no-op.
+fn int_as(existing: &dyn PartialReflect, value: i64) -> Option<Box<dyn PartialReflect>> {
+    macro_rules! narrow {
+        ($($t:ty),+ $(,)?) => {$(
+            if existing.try_downcast_ref::<$t>().is_some() {
+                let saturated = <$t>::try_from(value)
+                    .unwrap_or(if value < 0 { <$t>::MIN } else { <$t>::MAX });
+                return Some(Box::new(saturated));
+            }
+        )+};
+    }
+    narrow!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
+    None
 }
 
 /// One command. Split out from [`apply_editor_commands`] so tests can drive it
@@ -221,9 +254,18 @@ pub fn apply_editor_command(world: &mut World, command: &EditorCommand) {
 
             let replacement: Box<dyn PartialReflect> = match value {
                 FieldValue::Float(v) => Box::new(*v),
-                FieldValue::Int(v) => Box::new(*v),
+                // Boxed as the field's own integer type, not as `i64`.
+                // Reflection matches on the concrete type, so a boxed `i64`
+                // applied to a `u32` field is a mismatch that `try_apply`
+                // rejects — and the rejection is discarded below, which
+                // turned every non-`i64` integer edit into a silent no-op.
+                FieldValue::Int(v) => match int_as(existing, *v) {
+                    Some(boxed) => boxed,
+                    None => return,
+                },
                 FieldValue::Bool(v) => Box::new(*v),
                 FieldValue::Str(v) => Box::new(v.clone()),
+                FieldValue::Vec2(v) => Box::new(*v),
                 FieldValue::Vec3(v) => Box::new(*v),
                 FieldValue::Enum(variant) => {
                     // A unit variant is addressed by name against the field's
@@ -516,6 +558,13 @@ mod tests {
     struct Knobs {
         gain: f32,
         steps: i64,
+        /// A second integer width, deliberately not `i64`. The inspector
+        /// classifies every integer field as `FieldKind::Int` and commits it
+        /// as `i64`, so `i64` is the one width where the reflected write
+        /// happens to land on a matching type — testing only that width
+        /// hides the failure for every other one.
+        subdivisions: u32,
+        origin: Vec2,
         on: bool,
     }
 
@@ -570,6 +619,92 @@ mod tests {
         let knobs = app.world().get::<Knobs>(entity).copied().unwrap();
         assert_eq!(knobs.steps, 9);
         assert!(knobs.on);
+    }
+
+    #[test]
+    fn set_field_writes_an_int_whose_field_is_not_i64() {
+        // The inspector has one integer commit path: parse as `i64`, send
+        // `FieldValue::Int`. The field it lands on can be any integer width
+        // `kind_of` accepts (`i32`, `u32`, `usize`, ...). Applying a boxed
+        // `i64` to a `u32` field is a reflected type mismatch, `try_apply`
+        // returns `Err`, and the error is discarded — so the edit silently
+        // does nothing and the inspector snaps back to the old value on the
+        // next refresh. First reachable through `PlaneMesh`'s `horizontal` /
+        // `vertical` subdivision counts, which are `u32`.
+        let mut app = knobs_app();
+        let entity = app.world_mut().spawn(Knobs::default()).id();
+
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::SetField {
+                entity,
+                component: "Knobs",
+                field: "subdivisions".to_string(),
+                value: FieldValue::Int(31),
+            },
+        );
+
+        assert_eq!(
+            app.world().get::<Knobs>(entity).map(|k| k.subdivisions),
+            Some(31)
+        );
+    }
+
+    #[test]
+    fn set_field_writes_a_vec2() {
+        // `Vec2` is a distinct reflected type from `Vec3`, so the two-
+        // component case needs its own `FieldValue` arm — sending a `Vec3`
+        // with a spare zero would be the same silent type mismatch that made
+        // integer edits vanish. First reachable through `PlaneMesh`'s `size`.
+        let mut app = knobs_app();
+        let entity = app.world_mut().spawn(Knobs::default()).id();
+
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::SetField {
+                entity,
+                component: "Knobs",
+                field: "origin".to_string(),
+                value: FieldValue::Vec2(Vec2::new(1.5, -2.5)),
+            },
+        );
+
+        assert_eq!(
+            app.world().get::<Knobs>(entity).map(|k| k.origin),
+            Some(Vec2::new(1.5, -2.5))
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_int_saturates_rather_than_wrapping_or_vanishing() {
+        // Nothing stops an author typing a negative subdivision count. The
+        // two ways to get this wrong are both worse than clamping: `as`
+        // would wrap -1 into u32::MAX (a 4-billion-segment mesh), and
+        // dropping the write is the silent no-op this whole fix removes.
+        let mut app = knobs_app();
+        let entity = app
+            .world_mut()
+            .spawn(Knobs {
+                subdivisions: 7,
+                ..Default::default()
+            })
+            .id();
+
+        apply_editor_command(
+            app.world_mut(),
+            &EditorCommand::SetField {
+                entity,
+                component: "Knobs",
+                field: "subdivisions".to_string(),
+                value: FieldValue::Int(-1),
+            },
+        );
+
+        assert_eq!(
+            app.world().get::<Knobs>(entity).map(|k| k.subdivisions),
+            Some(0),
+            "a negative count clamps to zero, never wraps to u32::MAX"
+        );
     }
 
     #[test]

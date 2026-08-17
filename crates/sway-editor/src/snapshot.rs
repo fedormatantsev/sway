@@ -59,6 +59,7 @@ pub enum FieldKind {
     /// Every variant name, current one included.
     Enum(Vec<String>),
     Str,
+    Vec2,
     Vec3,
     /// Anything the walk could not classify — rendered read-only, and the
     /// signal that a type wants editor `TypeData`.
@@ -200,6 +201,9 @@ fn kind_of(value: &dyn PartialReflect) -> FieldKind {
     }
     if value.try_downcast_ref::<String>().is_some() {
         return FieldKind::Str;
+    }
+    if value.try_downcast_ref::<bevy_math::Vec2>().is_some() {
+        return FieldKind::Vec2;
     }
     if value.try_downcast_ref::<bevy_math::Vec3>().is_some() {
         return FieldKind::Vec3;
@@ -979,6 +983,15 @@ mod tests {
             .find(|f| f.name == "period")
             .unwrap();
         assert_eq!(period.kind, FieldKind::Float);
+
+        // A Vec2 must not fall through to `Opaque`, which the inspector
+        // renders read-only — that is what made `PlaneMesh`'s `size`
+        // display but refuse to take an edit.
+        assert_eq!(
+            kind_of(&bevy_math::Vec2::ZERO),
+            FieldKind::Vec2,
+            "a two-component vector is editable, not opaque"
+        );
 
         let shape = oscillator
             .fields
