@@ -87,24 +87,24 @@
 
 ## 4. Verify by eye (architecture §9 — no pixel-diff tests)
 
-- [ ] 4.1 Run windowed and confirm the sequence animates from transport, that swapping
+- [x] 4.1 Run windowed and confirm the sequence animates from transport, that swapping
       the oscillator's `Saw` for `Triangle` turns the loop into ping-pong with no material
       edit, and that scrubbing the frame value past the layer count holds on the last
       layer rather than sampling out of range.
-- [ ] 4.2 Rotate the quad against the camera with the M7 gizmo and confirm parallax —
+- [x] 4.2 Rotate the quad against the camera with the M7 gizmo and confirm parallax —
       near relief shifting further across the image than far relief. This is the exit
       criterion the whole design turns on (design D1); if it does not appear, stop.
-- [ ] 4.3 Confirm sprite-vs-mesh interpenetration, and sprite-vs-sprite interpenetration
+- [x] 4.3 Confirm sprite-vs-mesh interpenetration, and sprite-vs-sprite interpenetration
       between the two layers — the case the M8 spike explicitly did not test.
-- [ ] 4.4 Sweep subdivision counts (0, 31, 63, 255) and record where the relief stops
+- [x] 4.4 Sweep subdivision counts (0, 31, 63, 255) and record where the relief stops
       improving visibly, to justify the default.
-- [ ] 4.5 Confirm no frame-to-frame bleeding: no colour ghosting and no vertex twitching
+- [x] 4.5 Confirm no frame-to-frame bleeding: no colour ghosting and no vertex twitching
       toward the next frame's shape. D7 claims array layers make this structurally
       impossible — this check is what confirms the claim rather than assuming it.
-- [ ] 4.6 Check for 8-bit banding in the relief and in the interpenetration seam. Record
+- [x] 4.6 Check for 8-bit banding in the relief and in the interpenetration seam. Record
       the result; the KTX2 `Rgba16Float` upgrade path (design D8) is out of scope here
       but its trigger should be documented.
-- [ ] 4.7 Record the memory cost of the demo's two sequences and the resolution the depth
+- [x] 4.7 Record the memory cost of the demo's two sequences and the resolution the depth
       run was authored at, so the next author has a real number to size against.
-- [ ] 4.8 Write findings to `docs/superpowers/reports/`, including whether the skirt
+- [x] 4.8 Write findings to `docs/superpowers/reports/`, including whether the skirt
       artefact at depth discontinuities was visible in practice.
