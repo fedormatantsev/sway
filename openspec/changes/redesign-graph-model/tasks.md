@@ -4,29 +4,29 @@ correctly at the end of groups 5, 6 and 7.
 
 ## 1. sway-graph — the graph model
 
-- [ ] 1.1 Add `NodeId` as a generational index and `Graph` holding `Vec<Node>` plus a free list, so a deleted id never resolves to a later node (`graph`: A graph is nodes and edges).
-- [ ] 1.2 Add the `Node` container with `inlets` / `state` / `outlets` as three nested reflected parts, `()` for an empty part, plus node kind and editor position (`graph`: A node is inlets, state, and outlets).
-- [ ] 1.3 Add `Edge { src: (NodeId, path), dst: (NodeId, path), slot }` and the edge list on `Graph`.
-- [ ] 1.4 Add node-kind registration: a `#[reflect_trait]` for evaluation plus the reflected type of each part, resolvable from the type registry.
-- [ ] 1.5 Add per-node dirty tracking — a dirty set written by commands, propagation and evaluation, drained by a consumer (`graph`: Changes are tracked per node). Cover that an equal write reports nothing.
-- [ ] 1.6 `cargo test -p sway-graph` covers 1.1–1.5.
+- [x] 1.1 Add `NodeId` as a generational index and `Graph` holding `Vec<Node>` plus a free list, so a deleted id never resolves to a later node (`graph`: A graph is nodes and edges).
+- [x] 1.2 Add the `Node` container with `inlets` / `state` / `outlets` as three nested reflected parts, `()` for an empty part, plus node kind and editor position (`graph`: A node is inlets, state, and outlets).
+- [x] 1.3 Add `Edge { src: (NodeId, path), dst: (NodeId, path), slot }` and the edge list on `Graph`.
+- [x] 1.4 Add node-kind registration: a `#[reflect_trait]` for evaluation plus the reflected type of each part, resolvable from the type registry.
+- [x] 1.5 Add per-node dirty tracking — a dirty set written by commands, propagation and evaluation, drained by a consumer (`graph`: Changes are tracked per node). Cover that an equal write reports nothing.
+- [x] 1.6 `cargo test -p sway-graph` covers 1.1–1.5.
 
 ## 2. sway-graph — legality, commands and invariants
 
-- [ ] 2.1 Add path resolution over a node's parts via `bevy_reflect::GetPath`, with `inlets.` / `outlets.` prepended by the resolver so stored paths stay short (`graph`: An edge addresses fields by path).
-- [ ] 2.2 Add the legality rule — `D == S`, `D == Option<S>`, `D == Vec<S>` — decided at connect time from reflected type info.
-- [ ] 2.3 Add the graph command set (create, delete, set field, move, connect, disconnect, select) replacing `EditorCommand`.
-- [ ] 2.4 Enforce the invariants `Relationship` used to provide: reject self-connections, replace rather than duplicate on a single-connection inlet, and drop every edge naming a deleted node (`graph`: The graph rejects connections that would break its invariants).
-- [ ] 2.5 `cargo test -p sway-graph` covers 2.1–2.4, including that an illegal connection is refused without evaluating anything.
+- [x] 2.1 Add path resolution over a node's parts via `bevy_reflect::GetPath`, with `inlets.` / `outlets.` prepended by the resolver so stored paths stay short (`graph`: An edge addresses fields by path).
+- [x] 2.2 Add the legality rule — `D == S`, `D == Option<S>`, `D == Vec<S>` — decided at connect time from reflected type info.
+- [x] 2.3 Add the graph command set (create, delete, set field, move, connect, disconnect, select) replacing `EditorCommand`.
+- [x] 2.4 Enforce the invariants `Relationship` used to provide: reject self-connections, replace rather than duplicate on a single-connection inlet, and drop every edge naming a deleted node (`graph`: The graph rejects connections that would break its invariants).
+- [x] 2.5 `cargo test -p sway-graph` covers 2.1–2.4, including that an illegal connection is refused without evaluating anything.
 
 ## 3. sway-graph — rebuild and tick
 
-- [ ] 3.1 Port `order.rs` from `Entity` to `NodeId`, keeping deterministic tie-breaking and cycle-append. Delete the false-cycle caveat from its docs — node granularity resolves it (`graph`: Evaluation order).
-- [ ] 3.2 Build variadic inlets during rebuild: collect edges per `(node, inlet path)`, sort by slot with `NodeId` breaking ties, size the `Vec` to the edge count and fill in order (`graph`: Inlets may be optional or variadic).
-- [ ] 3.3 Emit no propagate step for a valueless edge, but keep it as a sort constraint (`graph`: An edge may carry no value).
-- [ ] 3.4 Implement the propagate step with `slice::get_disjoint_mut` over the node `Vec`, guarded by a reflect-equality check so equal values do not dirty.
-- [ ] 3.5 Implement the evaluate step and drive the tick through `World::resource_scope`, so a node holding `&World` cannot reach the graph (`graph`: Node evaluation reads inlets and writes state and outlets).
-- [ ] 3.6 Golden-trace tests at a fixed delta over a fixture graph; assert a two-hop chain resolves in one tick and a cycle still ticks. `cargo test -p sway-graph`.
+- [x] 3.1 Port `order.rs` from `Entity` to `NodeId`, keeping deterministic tie-breaking and cycle-append. Delete the false-cycle caveat from its docs — node granularity resolves it (`graph`: Evaluation order).
+- [x] 3.2 Build variadic inlets during rebuild: collect edges per `(node, inlet path)`, sort by slot with `NodeId` breaking ties, size the `Vec` to the edge count and fill in order (`graph`: Inlets may be optional or variadic).
+- [x] 3.3 Emit no propagate step for a valueless edge, but keep it as a sort constraint (`graph`: An edge may carry no value).
+- [x] 3.4 Implement the propagate step with `slice::get_disjoint_mut` over the node `Vec`, guarded by a reflect-equality check so equal values do not dirty.
+- [x] 3.5 Implement the evaluate step and drive the tick through `World::resource_scope`, so a node holding `&World` cannot reach the graph (`graph`: Node evaluation reads inlets and writes state and outlets).
+- [x] 3.6 Golden-trace tests at a fixed delta over a fixture graph; assert a two-hop chain resolves in one tick and a cycle still ticks. `cargo test -p sway-graph`.
 
 ## 4. sway-nodes — value nodes
 
