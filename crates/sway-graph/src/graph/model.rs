@@ -129,8 +129,28 @@ impl Graph {
         let node = self.slots[index].node.take();
         self.slots[index].generation = self.slots[index].generation.wrapping_add(1);
         self.free.push(id.index());
+
+        // Every node left on the other end of a dropped edge has changed, and
+        // has to be reported so. Propagation cannot report it for them: a
+        // marker edge carries no value and so never writes anything, which is
+        // exactly the case that matters — deleting a material node must stop
+        // the scene nodes it was attached to from rendering with it, and the
+        // only trace of that connection was the edge being dropped here.
+        // Collected in either direction, matching the edges being dropped.
+        let mut orphaned: Vec<NodeId> = Vec::new();
+        for edge in &self.edges {
+            if edge.src.node == id && edge.dst.node != id {
+                orphaned.push(edge.dst.node);
+            } else if edge.dst.node == id && edge.src.node != id {
+                orphaned.push(edge.src.node);
+            }
+        }
         self.edges
             .retain(|edge| edge.src.node != id && edge.dst.node != id);
+        for node in orphaned {
+            self.dirty.insert(node);
+        }
+
         self.dirty.remove(&id);
         self.removed.push(id);
         if self.selection == Some(id) {
@@ -626,6 +646,47 @@ mod tests {
         assert!(
             graph.edges().is_empty(),
             "both the inbound and the outbound edge are gone"
+        );
+    }
+
+    #[test]
+    fn deleting_a_node_reports_the_nodes_left_on_the_other_end() {
+        // A consumer whose producer was deleted has changed, and nothing else
+        // will ever say so: a marker edge carries no value, so propagation
+        // never writes the consumer and never dirties it. This is how deleting
+        // a material node stops the scene nodes it was attached to from
+        // rendering with it -- the dropped edge is the only trace of that
+        // connection, so dropping it is the moment to report both ends.
+        let mut graph = Graph::default();
+        let producer = graph.insert(Node::of(Vec2::ZERO, Source::default()));
+        let consumer = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
+        let downstream = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        graph
+            .connect(Port::new(producer, "out"), Port::new(consumer, "step"), 0)
+            .expect("legal");
+        graph
+            .connect(
+                Port::new(consumer, "total"),
+                Port::new(downstream, "value"),
+                0,
+            )
+            .expect("legal");
+        graph.drain_dirty();
+
+        graph.remove(consumer);
+
+        let dirty = graph.drain_dirty();
+        assert!(
+            dirty.contains(&producer),
+            "the producer it read from is reported: {dirty:?}"
+        );
+        assert!(
+            dirty.contains(&downstream),
+            "the consumer that read from it is reported: {dirty:?}"
+        );
+        assert!(
+            !dirty.contains(&consumer),
+            "the deleted node is reported as removed, not as changed: {dirty:?}"
         );
     }
 

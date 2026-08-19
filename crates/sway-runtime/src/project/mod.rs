@@ -44,8 +44,12 @@
 //! `sway-app` gates the whole set on assets being loaded (task 8.5) with
 //! `.run_if(..)` on [`ProjectionSet`]; the MIDI drain stays ungated.
 
+use bevy::asset::LoadedFolder;
 use bevy::prelude::*;
 use sway_graph::graph::{Graph, NodeId};
+
+#[cfg(test)]
+mod tests;
 
 pub mod entities;
 pub mod materials;
@@ -136,29 +140,37 @@ pub struct ProjectionPlugin;
 
 impl Plugin for ProjectionPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<NodeEntities>().add_systems(
-            Update,
-            (
-                prepare_projection,
-                despawn_removed_nodes,
-                // Producers first: a handle must exist before a consumer
-                // looks for it, in the same pass.
-                project_mesh_assets,
-                project_plane_meshes,
-                project_frame_sequences,
-                // Then the materials, which read the sequences above.
-                project_pbr_materials,
-                project_sprite_materials,
-                // Then the world.
-                spawn_scene_entities,
-                project_scene_entities,
-                attach_materials,
-                project_children,
-                clear_dirty,
-            )
-                .chain()
-                .in_set(ProjectionSet),
-        );
+        app.init_resource::<Graph>()
+            .init_resource::<NodeEntities>()
+            .add_systems(
+                Update,
+                (
+                    prepare_projection,
+                    despawn_removed_nodes,
+                    // Producers first: a handle must exist before a consumer
+                    // looks for it, in the same pass.
+                    project_mesh_assets.run_if(resource_exists::<AssetServer>),
+                    project_plane_meshes.run_if(resource_exists::<Assets<Mesh>>),
+                    project_frame_sequences.run_if(
+                        resource_exists::<AssetServer>
+                            .and_then(resource_exists::<Assets<Image>>)
+                            .and_then(resource_exists::<Assets<LoadedFolder>>),
+                    ),
+                    // Then the materials, which read the sequences above.
+                    project_pbr_materials.run_if(resource_exists::<Assets<StandardMaterial>>),
+                    project_sprite_materials.run_if(
+                        resource_exists::<Assets<crate::sprite_material::SpriteMaterialAsset>>,
+                    ),
+                    // Then the world.
+                    spawn_scene_entities,
+                    project_scene_entities,
+                    attach_materials,
+                    project_children,
+                    clear_dirty,
+                )
+                    .chain()
+                    .in_set(ProjectionSet),
+            );
 
         // The displacement-aware bounds for sprite materials. Owned by
         // `SpriteMaterialPlugin` while the wire model is still around; added

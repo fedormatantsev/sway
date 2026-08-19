@@ -37,14 +37,14 @@ correctly at the end of groups 5, 6 and 7.
 
 ## 5. sway-runtime — projection and protocols
 
-- [ ] 5.1 Add the projector layer: a `NodeId -> Entity` map, a spawn/update/despawn pass driven by the dirty set, and projector ordering by graph order (`architecture`: The graph is the authored model and the world is derived).
-- [ ] 5.2 Add the protocol markers and their reflected traits — `SceneMaterial`/`MaterialNode`, `ImageSequence`/`ImageSequenceNode`, `MeshSource`/`MeshNode`, `SceneChild`.
-- [ ] 5.3 Allocate handles structurally at node creation and update asset contents per tick for dirty producer nodes, so a connection is never waiting on a handle that does not exist yet.
-- [ ] 5.4 Port `MeshAsset`, `PlaneMesh` and `FrameSequence` as producer nodes that own their assets and expose them through their protocol traits (`nodes`: A node that owns an asset does not pass it along a connection).
-- [ ] 5.5 Port `PbrMaterial` and `SpriteMaterial` as material nodes that attach their own typed material to every connected scene node (`nodes`: A material node attaches itself to what it is connected to).
-- [ ] 5.6 Add the scene nodes `MeshNode`, `Group`, `Camera`, `DirectionalLight`, `PointLight`, with `Group` carrying transform and children only and refusing geometry (`nodes`: The scene node set is fixed).
-- [ ] 5.7 Project `children` edges into parenting so transform propagation stays Bevy's, inserting a parent only where a child connection exists.
-- [ ] 5.8 `cargo test -p sway-runtime` covers 5.1–5.7, including that deleting a node despawns its entity and releases its asset.
+- [x] 5.1 Add the projector layer: a `NodeId -> Entity` map, a spawn/update/despawn pass driven by the dirty set, and projector ordering by graph order (`architecture`: The graph is the authored model and the world is derived).
+- [x] 5.2 Add the protocol markers and their reflected traits — `SceneMaterial`/`MaterialNode`, `ImageSequence`/`ImageSequenceNode`, `MeshSource`/`MeshNode`, `SceneChild`.
+- [x] 5.3 Allocate handles structurally at node creation and update asset contents per tick for dirty producer nodes, so a connection is never waiting on a handle that does not exist yet.
+- [x] 5.4 Port `MeshAsset`, `PlaneMesh` and `FrameSequence` as producer nodes that own their assets and expose them through their protocol traits (`nodes`: A node that owns an asset does not pass it along a connection).
+- [x] 5.5 Port `PbrMaterial` and `SpriteMaterial` as material nodes that attach their own typed material to every connected scene node (`nodes`: A material node attaches itself to what it is connected to).
+- [x] 5.6 Add the scene nodes `MeshNode`, `Group`, `Camera`, `DirectionalLight`, `PointLight`, with `Group` carrying transform and children only and refusing geometry (`nodes`: The scene node set is fixed).
+- [x] 5.7 Project `children` edges into parenting so transform propagation stays Bevy's, inserting a parent only where a child connection exists.
+- [x] 5.8 `cargo test -p sway-runtime` covers 5.1–5.7, including that deleting a node despawns its entity and releases its asset.
 
 ## 6. sway-document — format version 3
 

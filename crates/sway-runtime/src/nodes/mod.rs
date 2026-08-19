@@ -41,62 +41,66 @@ pub use sprite_material::{SpriteMaterial, SpriteMaterialIn, SpriteMaterialState}
 /// Registers every render-coupled node kind, its part types, and the protocol
 /// markers a document or the inspector may address by path.
 ///
-/// It does **not** add `MaterialPlugin::<SpriteMaterialAsset>` or the sprite
-/// shader when [`SpriteMaterialPlugin`](crate::sprite_material::SpriteMaterialPlugin)
-/// already did: the two land beside each other until group 9, and adding one
-/// Bevy plugin twice panics.
+/// Separate from [`RuntimeNodesPlugin`] so a test — or anything that only
+/// needs the *schema* — can have the kinds without the render pipeline the
+/// sprite material brings with it.
+pub fn register_runtime_node_kinds(app: &mut App) {
+    app
+        // --- protocol markers and their shared outlet parts ------------
+        .register_type::<protocol::SceneMaterial>()
+        .register_type::<protocol::ImageSequence>()
+        .register_type::<protocol::MeshSource>()
+        .register_type::<protocol::SceneChild>()
+        .register_type::<protocol::MeshSourceOut>()
+        .register_type::<protocol::SceneMaterialOut>()
+        .register_type::<protocol::ImageSequenceOut>()
+        .register_type::<protocol::SceneNodeOut>()
+        // --- producers -------------------------------------------------
+        .register_node_kind::<MeshAsset>()
+        .register_type::<MeshAssetIn>()
+        .register_type::<MeshAssetState>()
+        .register_node_kind::<PlaneMesh>()
+        .register_type::<PlaneMeshIn>()
+        .register_type::<PlaneMeshState>()
+        .register_node_kind::<FrameSequence>()
+        .register_type::<FrameSequenceIn>()
+        .register_type::<FrameSequenceState>()
+        .register_type::<crate::frame_sequence::ColorSpace>()
+        // --- materials -------------------------------------------------
+        .register_node_kind::<PbrMaterial>()
+        .register_type::<PbrMaterialIn>()
+        .register_type::<PbrMaterialState>()
+        .register_node_kind::<SpriteMaterial>()
+        .register_type::<SpriteMaterialIn>()
+        .register_type::<SpriteMaterialState>()
+        // --- scene nodes -----------------------------------------------
+        .register_node_kind::<MeshNode>()
+        .register_type::<MeshNodeIn>()
+        .register_node_kind::<Group>()
+        .register_type::<GroupIn>()
+        .register_node_kind::<Camera>()
+        .register_type::<CameraIn>()
+        .register_node_kind::<DirectionalLight>()
+        .register_type::<DirectionalLightIn>()
+        .register_node_kind::<PointLight>()
+        .register_type::<PointLightIn>()
+        // Addressable by path from a document or the inspector.
+        .register_type::<Transform>();
+}
+
+/// Registers every render-coupled node kind *and* the sprite material's
+/// shader and render pipeline.
+///
+/// The pipeline half is skipped when
+/// [`SpriteMaterialPlugin`](crate::sprite_material::SpriteMaterialPlugin)
+/// already added it: the two node models land beside each other until group
+/// 9, and adding one Bevy plugin twice panics.
 pub struct RuntimeNodesPlugin;
 
 impl Plugin for RuntimeNodesPlugin {
     fn build(&self, app: &mut App) {
-        if !app.is_plugin_added::<MaterialPlugin<crate::sprite_material::SpriteMaterialAsset>>() {
-            bevy::asset::embedded_asset!(app, "../../assets/shaders/sprite_material.wgsl");
-            app.add_plugins(MaterialPlugin::<
-                crate::sprite_material::SpriteMaterialAsset,
-            >::default());
-        }
-
-        app
-            // --- protocol markers and their shared outlet parts ------------
-            .register_type::<protocol::SceneMaterial>()
-            .register_type::<protocol::ImageSequence>()
-            .register_type::<protocol::MeshSource>()
-            .register_type::<protocol::SceneChild>()
-            .register_type::<protocol::MeshSourceOut>()
-            .register_type::<protocol::SceneMaterialOut>()
-            .register_type::<protocol::ImageSequenceOut>()
-            .register_type::<protocol::SceneNodeOut>()
-            // --- producers -------------------------------------------------
-            .register_node_kind::<MeshAsset>()
-            .register_type::<MeshAssetIn>()
-            .register_type::<MeshAssetState>()
-            .register_node_kind::<PlaneMesh>()
-            .register_type::<PlaneMeshIn>()
-            .register_type::<PlaneMeshState>()
-            .register_node_kind::<FrameSequence>()
-            .register_type::<FrameSequenceIn>()
-            .register_type::<FrameSequenceState>()
-            .register_type::<crate::frame_sequence::ColorSpace>()
-            // --- materials -------------------------------------------------
-            .register_node_kind::<PbrMaterial>()
-            .register_type::<PbrMaterialIn>()
-            .register_type::<PbrMaterialState>()
-            .register_node_kind::<SpriteMaterial>()
-            .register_type::<SpriteMaterialIn>()
-            .register_type::<SpriteMaterialState>()
-            // --- scene nodes -----------------------------------------------
-            .register_node_kind::<MeshNode>()
-            .register_type::<MeshNodeIn>()
-            .register_node_kind::<Group>()
-            .register_type::<GroupIn>()
-            .register_node_kind::<Camera>()
-            .register_type::<CameraIn>()
-            .register_node_kind::<DirectionalLight>()
-            .register_type::<DirectionalLightIn>()
-            .register_node_kind::<PointLight>()
-            .register_type::<PointLightIn>()
-            // Addressable by path from a document or the inspector.
-            .register_type::<Transform>();
+        crate::sprite_material::ensure_sprite_material_pipeline(app);
+        register_runtime_node_kinds(app);
     }
 }
 
@@ -119,7 +123,7 @@ mod tests {
         app.init_asset::<Image>();
         app.init_asset::<StandardMaterial>();
         app.init_asset::<crate::sprite_material::SpriteMaterialAsset>();
-        app.add_plugins(RuntimeNodesPlugin);
+        register_runtime_node_kinds(&mut app);
 
         let registry = app.world().resource::<AppTypeRegistry>().clone();
         let registry = registry.read();

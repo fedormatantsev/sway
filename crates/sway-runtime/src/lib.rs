@@ -6,7 +6,9 @@
 
 pub mod frame_sequence;
 pub mod headless;
+pub mod nodes;
 pub mod point_cloud;
+pub mod project;
 pub mod scatter;
 pub mod shader_validation;
 pub mod sprite_depth_spike;
@@ -29,3 +31,8 @@ pub use sprite_material::{
     max_displacement, sync_sprite_material_bounds, sync_sprite_materials,
 };
 pub use viewport::EditorViewportPlugin;
+
+// The new graph model's surface (`redesign-graph-model` group 5). It lands
+// beside everything above; group 9 deletes the wire model, not this.
+pub use nodes::RuntimeNodesPlugin;
+pub use project::{NodeEntities, ProjectionPlugin, ProjectionSet};

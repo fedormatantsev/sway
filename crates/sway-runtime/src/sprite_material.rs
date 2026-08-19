@@ -668,10 +668,26 @@ pub fn sync_sprite_material_bounds(
 /// is registered from here too.
 pub struct SpriteMaterialPlugin;
 
+/// Registers the sprite material's embedded shader and its render pipeline,
+/// once.
+///
+/// Split out of [`SpriteMaterialPlugin`] so the new graph model's
+/// [`RuntimeNodesPlugin`](crate::nodes::RuntimeNodesPlugin) can ask for the
+/// same pipeline while the two node models sit side by side: adding one Bevy
+/// plugin twice panics, and `embedded_asset!` keys the shader by the *source
+/// file* it is invoked from, so the call has to stay in this module for
+/// [`sprite_material_shader`]'s `embedded_path!` to find it.
+pub fn ensure_sprite_material_pipeline(app: &mut App) {
+    if app.is_plugin_added::<MaterialPlugin<SpriteMaterialAsset>>() {
+        return;
+    }
+    embedded_asset!(app, "../assets/shaders/sprite_material.wgsl");
+    app.add_plugins(MaterialPlugin::<SpriteMaterialAsset>::default());
+}
+
 impl Plugin for SpriteMaterialPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "../assets/shaders/sprite_material.wgsl");
-        app.add_plugins(MaterialPlugin::<SpriteMaterialAsset>::default());
+        ensure_sprite_material_pipeline(app);
 
         // What a project document may name (M4). Short names, not type paths.
         sway_graph::register_authorable::<FrameSequence>(app, "FrameSequence");

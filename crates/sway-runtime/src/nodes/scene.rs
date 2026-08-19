@@ -22,9 +22,11 @@
 
 use bevy::ecs::world::World;
 use bevy::math::Vec3;
-use bevy::pbr::{DirectionalLight as BevyDirectionalLight, PointLight as BevyPointLight};
-use bevy::prelude::{Color, Srgba};
+use bevy::prelude::{
+    Color, DirectionalLight as BevyDirectionalLight, PointLight as BevyPointLight,
+};
 use bevy::reflect::Reflect;
+use bevy::reflect::std_traits::ReflectDefault;
 use bevy::transform::components::Transform;
 use sway_graph::graph::{NodeKind, ReflectNodeKind};
 
@@ -33,12 +35,6 @@ use crate::nodes::protocol::{MeshSource, SceneChild, SceneMaterial, SceneNodeOut
 /// A colour authored the way a human types one, as sRGB components.
 pub(crate) fn to_color(value: Vec3) -> Color {
     Color::srgb(value.x, value.y, value.z)
-}
-
-/// The inverse, used only to take Bevy's own defaults across.
-fn from_color(color: Color) -> Vec3 {
-    let srgba = Srgba::from(color);
-    Vec3::new(srgba.red, srgba.green, srgba.blue)
 }
 
 // ---------------------------------------------------------------------------
@@ -157,9 +153,12 @@ impl Default for DirectionalLightIn {
         let light = BevyDirectionalLight::default();
         Self {
             transform: Transform::default(),
-            color: from_color(light.color),
+            // White, stated exactly: round-tripping Bevy's own `Color::WHITE`
+            // through sRGB components lands on 0.99999994, which would show
+            // up in every hand-written document.
+            color: Vec3::ONE,
             illuminance: light.illuminance,
-            shadows: light.shadows_enabled,
+            shadows: light.shadow_maps_enabled,
             children: Vec::new(),
         }
     }
@@ -184,7 +183,7 @@ impl DirectionalLightIn {
         BevyDirectionalLight {
             color: to_color(self.color),
             illuminance: self.illuminance,
-            shadows_enabled: self.shadows,
+            shadow_maps_enabled: self.shadows,
             ..BevyDirectionalLight::default()
         }
     }
@@ -213,11 +212,12 @@ impl Default for PointLightIn {
         let light = BevyPointLight::default();
         Self {
             transform: Transform::default(),
-            color: from_color(light.color),
+            // See `DirectionalLightIn::default`.
+            color: Vec3::ONE,
             intensity: light.intensity,
             range: light.range,
             radius: light.radius,
-            shadows: light.shadows_enabled,
+            shadows: light.shadow_maps_enabled,
             children: Vec::new(),
         }
     }
@@ -244,7 +244,7 @@ impl PointLightIn {
             intensity: self.intensity,
             range: self.range,
             radius: self.radius,
-            shadows_enabled: self.shadows,
+            shadow_maps_enabled: self.shadows,
             ..BevyPointLight::default()
         }
     }
@@ -260,7 +260,7 @@ mod tests {
         // schema: `Graph::connect` resolves the destination path on the
         // *inlets* value, so a port that does not exist is a refusal. This
         // pins the absence, which is otherwise invisible.
-        use bevy::reflect::{Struct, Typed};
+        use bevy::reflect::{Typed, structs::Struct};
         let bevy::reflect::TypeInfo::Struct(info) = GroupIn::type_info() else {
             panic!("GroupIn is a struct");
         };
@@ -278,7 +278,7 @@ mod tests {
         // "Every scene node MUST accept children." A kind that quietly
         // dropped the port would still compile and would simply never be a
         // parent.
-        use bevy::reflect::Struct;
+        use bevy::reflect::structs::Struct;
         fn has_children(inlets: &dyn Struct) -> bool {
             inlets.field("children").is_some()
         }
