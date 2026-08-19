@@ -8,7 +8,6 @@ use bevy_app::{App, Plugin};
 use sway_graph::graph::RegisterNodeKind;
 
 pub mod envelope;
-pub mod lfo;
 pub mod math;
 pub mod osc;
 pub mod value;
@@ -17,9 +16,8 @@ pub mod value;
 pub(crate) mod harness;
 
 pub use envelope::{Envelope, EnvelopeIn, EnvelopeOut, EnvelopeState};
-pub use lfo::{Lfo, LfoIn, LfoOut, LfoState};
 pub use math::{Math, MathIn, MathOut, Remap, RemapIn, RemapOut};
-pub use osc::{Oscillator, OscillatorIn, OscillatorOut};
+pub use osc::{Oscillator, OscillatorIn, OscillatorOut, Waveform};
 pub use value::{Vec3, Vec3In, Vec3Out};
 
 /// Registers every new-model node kind declared in this module tree, plus
@@ -41,17 +39,13 @@ impl Plugin for GraphNodesPlugin {
             .register_node_kind::<Oscillator>()
             .register_type::<OscillatorIn>()
             .register_type::<OscillatorOut>()
-            .register_node_kind::<Lfo>()
-            .register_type::<LfoIn>()
-            .register_type::<LfoState>()
-            .register_type::<LfoOut>()
             .register_node_kind::<Envelope>()
             .register_type::<EnvelopeIn>()
             .register_type::<EnvelopeState>()
             .register_type::<EnvelopeOut>()
             // Shared enums a document or the inspector may address by path
             // (e.g. `inlets.shape`).
-            .register_type::<crate::lfo::Waveform>()
+            .register_type::<Waveform>()
             .register_type::<crate::math::MathOp>();
     }
 }
@@ -86,7 +80,7 @@ mod tests {
             "every new node kind's short name must be unique: {kinds:?}"
         );
 
-        for expected in ["Vec3", "Math", "Remap", "Oscillator", "Lfo", "Envelope"] {
+        for expected in ["Vec3", "Math", "Remap", "Oscillator", "Envelope"] {
             assert!(
                 short_names.contains(&expected),
                 "missing `{expected}` in {short_names:?}"

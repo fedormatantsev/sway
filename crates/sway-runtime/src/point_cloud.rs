@@ -19,12 +19,10 @@
 //! 3. Demo data is 50,000 points on a fibonacci sphere (golden-angle
 //!    spiral), not the example's 10x10 grid of 100 cubes — the whole point
 //!    of this milestone is finding out whether the approach holds at scale.
-//! 4. `NoFrustumCulling` (on the instanced mesh entity) and
-//!    `NoIndirectDrawing` (on the camera) are both kept: the custom
-//!    instancing here bypasses Bevy's per-mesh `GlobalTransform`-based
-//!    frustum culling (this draw has no such transform to cull against) and
-//!    the `DrawMeshInstanced` command below uses `draw`/`draw_indexed`
-//!    rather than the indirect variants.
+//! 4. The `DrawMeshInstanced` command below uses `draw`/`draw_indexed`
+//!    rather than indirect variants; callers must attach `NoFrustumCulling`
+//!    to point-cloud mesh entities (no `GlobalTransform` per point to cull
+//!    against) and `NoIndirectDrawing` to the camera.
 //! 5. `point_cloud.wgsl` uses Bevy's `#import` preprocessor (for
 //!    `mesh_functions`), so naga cannot parse it; it is listed in
 //!    `PREPROCESSOR_SHADERS` in `shader_validation.rs` as a deliberate,
@@ -47,7 +45,6 @@ use bevy::pbr::{
     ViewKeyCache,
 };
 use bevy::{
-    camera::visibility::NoFrustumCulling,
     core_pipeline::core_3d::Transparent3d,
     ecs::{
         query::QueryItem,
@@ -72,18 +69,10 @@ use bevy::{
         renderer::RenderDevice,
         sync_component::SyncComponent,
         sync_world::MainEntity,
-        view::{ExtractedView, NoIndirectDrawing},
+        view::ExtractedView,
     },
 };
 use bytemuck::{Pod, Zeroable};
-
-/// Number of points in the hardcoded demo pattern. M1 exit condition (see
-/// task-3-brief.md): 50,000 points visible at frame rate.
-const DEMO_POINT_COUNT: usize = 50_000;
-/// Radius of the fibonacci sphere the demo points are distributed over.
-const DEMO_SPHERE_RADIUS: f32 = 20.0;
-/// Per-point scale applied to the (unit) base mesh.
-const DEMO_POINT_SCALE: f32 = 0.06;
 
 /// Per-instance data for one point: world position, point scale, and RGBA
 /// colour. Matches the vertex-buffer layout declared in
@@ -144,75 +133,6 @@ impl Plugin for PointCloudPlugin {
                 ),
             );
     }
-}
-
-/// A fibonacci sphere: `count` points spread near-evenly over the surface of
-/// a sphere of the given `radius` using the golden-angle spiral. Hardcoded
-/// demo pattern per the M1 point-cloud brief — no parameters are exposed
-/// beyond what this module itself calls with.
-fn fibonacci_sphere_points(count: usize, radius: f32, scale: f32) -> Vec<PointInstance> {
-    if count == 0 {
-        return Vec::new();
-    }
-    let golden_angle = std::f32::consts::PI * (3.0 - 5f32.sqrt());
-    // Guards `count == 1`, where `count - 1` would otherwise divide by zero
-    // (NaN, not a panic — the panic risk is the `count == 0` case handled
-    // above via the usize subtraction underflowing). For `count >= 2` this
-    // is exactly `count - 1` as before, so output at the hardcoded
-    // `DEMO_POINT_COUNT = 50_000` is unchanged.
-    let y_denom = ((count - 1).max(1)) as f32;
-    (0..count)
-        .map(|i| {
-            let i_f = i as f32;
-            // y sweeps from +1 to -1 across all points.
-            let y = 1.0 - (i_f / y_denom) * 2.0;
-            let radius_at_y = (1.0 - y * y).max(0.0).sqrt();
-            let theta = golden_angle * i_f;
-            let position =
-                Vec3::new(theta.cos() * radius_at_y, y, theta.sin() * radius_at_y) * radius;
-            let hue = 360.0 * (i_f / count as f32);
-            let color = LinearRgba::from(Color::hsla(hue, 0.8, 0.5, 1.0)).to_f32_array();
-            PointInstance {
-                position,
-                scale,
-                color,
-            }
-        })
-        .collect()
-}
-
-/// Demo setup: spawns one 50,000-point fibonacci-sphere cloud and a camera
-/// positioned to see all of it. This is the equivalent of the reference
-/// example's `setup()`, which is app-level (not part of its plugin) — kept
-/// here, not in `PointCloudPlugin::build`, so callers opt in explicitly.
-/// Task 6 wires this up behind `sway-app`'s `--demo` flag.
-pub fn spawn_demo_point_cloud(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
-    let mesh = Sphere::new(1.0)
-        .mesh()
-        .ico(1)
-        .expect("subdivisions = 1 is far under the 65535-vertex icosphere cap");
-
-    commands.spawn((
-        Mesh3d(meshes.add(mesh)),
-        PointCloudData(fibonacci_sphere_points(
-            DEMO_POINT_COUNT,
-            DEMO_SPHERE_RADIUS,
-            DEMO_POINT_SCALE,
-        )),
-        // See delta 4 above: this custom instancing draw has no
-        // `GlobalTransform` per point for Bevy's built-in frustum culling to
-        // check against, so the whole cloud must opt out of it.
-        NoFrustumCulling,
-    ));
-
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(0.0, 0.0, 60.0).looking_at(Vec3::ZERO, Vec3::Y),
-        // See delta 4 above: `DrawMeshInstanced` below issues `draw`/
-        // `draw_indexed`, not the indirect variants, so indirect drawing
-        // must be disabled for this camera.
-        NoIndirectDrawing,
-    ));
 }
 
 // Bevy's own workspace lints blanket-allow this: systems take one parameter
@@ -436,25 +356,5 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
             }
         }
         RenderCommandResult::Success
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fibonacci_sphere_points_count_zero_returns_empty() {
-        // Would otherwise underflow `count - 1` on a usize (panics in debug).
-        assert!(fibonacci_sphere_points(0, 20.0, 0.06).is_empty());
-    }
-
-    #[test]
-    fn fibonacci_sphere_points_count_one_is_finite_not_nan() {
-        // Would otherwise divide by `(count - 1) as f32 == 0.0` (NaN, no panic).
-        let points = fibonacci_sphere_points(1, 20.0, 0.06);
-        assert_eq!(points.len(), 1);
-        assert!(points[0].position.is_finite());
-        assert!(points[0].scale.is_finite());
     }
 }

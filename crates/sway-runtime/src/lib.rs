@@ -1,8 +1,6 @@
-//! Provisional render spike code for M1. Point cloud, z-depth sprite layer,
-//! and a compute-cooked scatter operator, all with hardcoded parameters.
-//!
-//! Per spec §5 the goal here is knowledge, not architecture — expect most of
-//! this to be rewritten at M5.
+//! Bevy runtime for Sway: headless rendering to a wgpu texture, graph
+//! projection into ECS entities, and the render pipelines for point clouds,
+//! sprite layers, and scatter compute.
 
 pub mod frame_sequence;
 pub mod headless;
@@ -11,7 +9,6 @@ pub mod point_cloud;
 pub mod project;
 pub mod scatter;
 pub mod shader_validation;
-pub mod sprite_depth_spike;
 pub mod sprite_layer;
 pub mod sprite_material;
 pub mod viewport;
@@ -19,7 +16,6 @@ pub mod viewport;
 pub use frame_sequence::{ColorSpace, SequenceError, assemble_layers, sort_frames_by_name};
 pub use point_cloud::PointCloudPlugin;
 pub use scatter::ScatterPlugin;
-pub use sprite_depth_spike::SpriteDepthPlugin;
 pub use sprite_layer::SpriteLayerPlugin;
 pub use sprite_material::{
     SpriteMaterialAsset, SpriteMaterialPlugin, SpriteMaterialUniform, SpriteMeshBounds,

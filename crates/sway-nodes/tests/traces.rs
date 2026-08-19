@@ -5,8 +5,8 @@ use bevy_app::App;
 use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
 use serde::{Deserialize, Serialize};
 use sway_nodes::{
-    EnvelopeParams, EnvelopeState, MathOp, NoteMsg, Waveform, envelope_tick, lfo_value, math_value,
-    remap_value,
+    EnvelopeParams, EnvelopeState, MathOp, NoteMsg, Waveform, envelope_tick, math_value,
+    oscillator_value, remap_value,
 };
 
 #[derive(Debug, Deserialize)]
@@ -94,7 +94,6 @@ enum Runner {
         fan_in: bool,
         trace_notes: bool,
     },
-    Lfo,
     Cc {
         held: f32,
     },
@@ -120,7 +119,6 @@ impl Runner {
                 },
                 vec!["envelope.value".into(), "envelope.trigger".into()],
             ),
-            "lfo-one-cycle" => (Self::Lfo, vec!["lfo.value".into()]),
             "cc-hold" => (Self::Cc { held: 0.0 }, vec!["midicc.value".into()]),
             "chain-math-remap" => (
                 Self::Chain,
@@ -186,13 +184,6 @@ impl Runner {
                 }
                 snapshots
             }
-            Self::Lfo => vec![Snapshot::Continuous(lfo_value(
-                2.0,
-                Waveform::Sine,
-                0.0,
-                1.0,
-                tick_start,
-            ))],
             Self::Cc { held } => {
                 for &(_, message) in messages {
                     if let Some(value) = cc_value(message, 0, 74) {
@@ -202,7 +193,7 @@ impl Runner {
                 vec![Snapshot::Continuous(*held)]
             }
             Self::Chain => {
-                let lfo = lfo_value(1.0, Waveform::Sine, 0.0, 1.0, tick_start);
+                let lfo = oscillator_value(1.0, Waveform::Sine, 0.0, 1.0, tick_start);
                 let math = math_value(MathOp::Add, lfo, 1.0);
                 let remap = remap_value(math, 0.0, 2.0, -1.0, 1.0, true);
                 vec![
@@ -287,7 +278,6 @@ macro_rules! trace_test {
 }
 
 trace_test!(envelope_retrigger, "envelope-retrigger");
-trace_test!(lfo_one_cycle, "lfo-one-cycle");
 trace_test!(cc_hold, "cc-hold");
 trace_test!(chain_math_remap, "chain-math-remap");
 trace_test!(two_notes_one_tick, "two-notes-one-tick");

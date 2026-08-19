@@ -112,11 +112,9 @@ pub fn set_viewport_view(app: &mut App, viewport: &sway_gpu::ViewportTexture, si
 /// not by comparing whole `RenderTarget`s.
 ///
 /// Runs in `PostStartup` so it sees cameras spawned by any `Startup` system,
-/// and re-runs in `Update` for cameras added later. The M1 demo files (and
-/// the project document's own camera) each target the (now nonexistent)
-/// primary window; editing every source to say otherwise would destroy
-/// their value as an unmodified regression signal, so this retargets
-/// whatever cameras exist instead of touching them.
+/// and re-runs in `Update` for cameras added later. Any camera that targets
+/// the (now nonexistent) primary window is retargeted to the viewport texture
+/// here, keeping camera-spawning systems free of headless-specific plumbing.
 fn retarget_cameras(mut targets: Query<&mut RenderTarget, With<Camera>>) {
     for mut target in &mut targets {
         let already_set = matches!(*target, RenderTarget::TextureView(h) if h == VIEWPORT_HANDLE);

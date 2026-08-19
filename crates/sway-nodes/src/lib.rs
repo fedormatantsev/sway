@@ -5,15 +5,14 @@
 
 mod beat;
 mod envelope;
-mod lfo;
 mod math;
 pub mod nodes;
 
 pub use beat::*;
 pub use envelope::*;
-pub use lfo::*;
 pub use math::*;
 pub use nodes::GraphNodesPlugin;
+pub use nodes::osc::{Waveform, oscillator_value};
 
 #[cfg(test)]
 mod tests {

@@ -65,9 +65,10 @@ pub fn follow_selection(
     focused: Query<Entity, With<TransformGizmoFocus>>,
     transforms: Query<(), With<Transform>>,
 ) {
-    // Only an entity with a `Transform` can carry a gizmo: selecting an
-    // `Lfo` must leave the viewport alone. Identity is `Entity -> NodeId`
-    // via the projector map; the graph is the owner of selection.
+    // Only an entity with a `Transform` can carry a gizmo: selecting a
+    // non-scene node (e.g. a pure value node) must leave the viewport alone.
+    // Identity is `Entity -> NodeId` via the projector map; the graph is the
+    // owner of selection.
     let wanted = graph
         .selection()
         .and_then(|node| nodes.entity(node))
@@ -633,7 +634,7 @@ mod tests {
 
     #[test]
     fn an_entity_with_no_transform_gets_no_focus() {
-        // Selecting an `Lfo` must not put a gizmo anywhere.
+        // Selecting a non-scene node must not put a gizmo anywhere.
         let mut app = App::new();
         app.init_resource::<Graph>()
             .init_resource::<NodeEntities>()

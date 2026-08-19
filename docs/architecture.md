@@ -1,7 +1,7 @@
 # Sway — Architecture
 
-Current-state architecture and key design decisions. Ongoing roadmap and open
-work live in `docs/superpowers/specs/2026-07-25-sway-design.md`.
+Current-state architecture and key design decisions. Ongoing work lives in
+`openspec/changes/` (OpenSpec changes).
 
 ## 1. What this is
 
@@ -30,8 +30,7 @@ locked to the transport.
 layers writing **per-pixel** depth from the sheet, asset meshes with PBR
 materials whose transforms are wire-animated, and an HDR/cubemap driving their
 lighting. Point clouds, procedural geometry, curve nodes and physics are all
-past the MVP. See
-`docs/superpowers/specs/2026-08-09-mvp-roadmap-design.md`.
+past the MVP (see §10 for the full out-of-MVP list).
 
 ### Audience
 

@@ -324,7 +324,7 @@ impl NodeBox {
 /// isn't an option either: a `NodeBox` created *in that same call* isn't yet
 /// registered in masonry's arena (see `NodeBox::initial_transform`'s doc
 /// comment), so `get_mut` on a brand-new node's socket -- exactly the first
-/// snapshot that draws the parenting edge in the `--editor` demo -- panics
+/// snapshot that draws a parenting edge for a newly created node -- panics
 /// ("child not found"). `NodeSlot` mirroring the counts, same as it already
 /// does for `label`, sidesteps the whole registration-timing question.
 ///

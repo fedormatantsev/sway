@@ -3,20 +3,58 @@
 //!
 //! This is a faithful port, not a redesign: the old node's evaluation reads
 //! `time` (typically driven by `MidiTime`, directly or through a chain) and
-//! `period` rather than a self-accumulating clock, because the demo document
-//! locks several oscillators to the shared MIDI transport
-//! (`midiTime -> lfoA`, `midiTime -> lfoB`, `midiTime -> spriteOsc`,
-//! `midiTime -> spriteOsc2`) and needs them to stay in a fixed phase
-//! relationship to each other and to the transport, not drift independently.
+//! `period` rather than a self-accumulating clock. This lets several
+//! oscillators share a single transport-locked time source and stay in a fixed
+//! phase relationship to each other and to the transport rather than drifting
+//! independently.
 //! `TimeFrom` / `AmplitudeFrom` do not port — an edge now names `"time"` /
 //! `"amplitude"` directly on `inlets`. The node carries no state and reads
 //! no `&World`, exactly as the wire-model version did.
+
+use core::f32::consts::TAU;
 
 use bevy_ecs::world::World;
 use bevy_reflect::Reflect;
 use sway_graph::graph::{NodeKind, ReflectNodeKind};
 
-use crate::lfo::{Waveform, wave};
+#[derive(Reflect, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waveform {
+    #[default]
+    Sine,
+    Triangle,
+    Saw,
+    Square,
+}
+
+pub fn oscillator_value(
+    period: f32,
+    shape: Waveform,
+    phase: f32,
+    amplitude: f32,
+    time: f64,
+) -> f32 {
+    let p = if period > 0.0 {
+        (time / period as f64 + phase as f64).rem_euclid(1.0) as f32
+    } else {
+        phase.rem_euclid(1.0)
+    };
+    wave(shape, p) * amplitude
+}
+
+pub(crate) fn wave(shape: Waveform, phase: f32) -> f32 {
+    match shape {
+        Waveform::Sine => (phase * TAU).sin(),
+        Waveform::Triangle => 4.0 * (phase - 0.5).abs() - 1.0,
+        Waveform::Saw => 2.0 * phase - 1.0,
+        Waveform::Square => {
+            if phase < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+    }
+}
 
 /// [`Oscillator`]'s inlets.
 #[derive(Reflect, Debug, Clone, Copy, PartialEq)]
@@ -131,11 +169,11 @@ mod tests {
         assert_eq!(harness::read_f32(&graph, node, Part::Outlets, "out"), 1.0);
     }
 
-    /// Pins the demo document's `midiTime -> lfoA` / `midiTime -> spriteOsc`
-    /// shape: an upstream node's `out` reaching `Oscillator.time` and
-    /// resolving through to `Oscillator.out` in the SAME tick, which is what
-    /// lets an oscillator stay locked to the shared transport instead of
-    /// drifting on its own clock.
+    /// Verifies the `midiTime -> oscillator` wiring shape: an upstream node's
+    /// `out` reaching `Oscillator.time` and resolving through to
+    /// `Oscillator.out` in the SAME tick, which is what lets an oscillator
+    /// stay locked to the shared transport instead of drifting on its own
+    /// clock.
     #[test]
     fn a_driven_time_reaches_the_oscillator_output_in_one_tick() {
         let mut registry = TypeRegistry::new();
@@ -220,6 +258,26 @@ mod tests {
         harness::tick(&mut graph, &world);
 
         assert_eq!(harness::read_f32(&graph, node, Part::Outlets, "out"), 0.5);
+    }
+
+    #[test]
+    fn dropped_samples_do_not_change_absolute_time_output() {
+        let period = 1.0 / 2.25;
+        let direct = oscillator_value(period, Waveform::Triangle, 0.17, 0.8, 99.0 / 120.0);
+        let after_gap = oscillator_value(period, Waveform::Triangle, 0.17, 0.8, 99.0 / 120.0);
+        assert_eq!(direct, after_gap);
+    }
+
+    #[test]
+    fn waveforms_are_bipolar_and_amplitude_scaled() {
+        for (shape, expected) in [
+            (Waveform::Sine, 0.5),
+            (Waveform::Triangle, 0.0),
+            (Waveform::Saw, -0.25),
+            (Waveform::Square, 0.5),
+        ] {
+            assert!((oscillator_value(0.0, shape, 0.25, 0.5, 0.0) - expected).abs() < 1e-6);
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use bevy_reflect::Reflect;
 
-use crate::lfo::{Waveform, wave};
+use crate::nodes::osc::{Waveform, wave};
 
 #[derive(Reflect, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Division {

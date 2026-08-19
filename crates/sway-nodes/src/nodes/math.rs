@@ -186,24 +186,28 @@ mod tests {
     }
 
     #[test]
-    fn a_lfo_math_remap_chain_matches_the_shared_pure_functions() {
-        // Ports `chain-math-remap.in.ron` (tick_hz 120, 31 ticks) onto the new
-        // node shapes: Lfo(1.0 Hz) -> Math(Add, b=1.0) -> Remap(0..2 -> -1..1,
-        // clamped). Same math as the golden trace, driven through the real
-        // graph tick instead of called directly.
+    fn an_oscillator_math_remap_chain_matches_the_shared_pure_functions() {
+        // Oscillator(1.0 Hz, Sine) -> Math(Add, b=1.0) -> Remap(0..2 -> -1..1,
+        // clamped). The Oscillator's `time` inlet is driven each tick by
+        // `set_field` to simulate a clock source, matching the pure-function
+        // reference from `chain-math-remap.in.ron`.
+        use crate::nodes::osc::{Oscillator, OscillatorIn};
+        use crate::nodes::osc::{Waveform, oscillator_value};
+
         let mut registry = TypeRegistry::new();
-        register_node_kind::<crate::nodes::lfo::Lfo>(&mut registry);
+        register_node_kind::<Oscillator>(&mut registry);
         register_node_kind::<Math>(&mut registry);
         register_node_kind::<Remap>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
 
-        let lfo = graph.insert(Node::of(
+        let osc = graph.insert(Node::of(
             Vec2::ZERO,
-            crate::nodes::lfo::Lfo {
-                inlets: crate::nodes::lfo::LfoIn {
-                    frequency: 1.0,
-                    shape: crate::lfo::Waveform::Sine,
+            Oscillator {
+                inlets: OscillatorIn {
+                    time: 0.0,
+                    period: 1.0,
+                    shape: Waveform::Sine,
                     phase: 0.0,
                     amplitude: 1.0,
                 },
@@ -236,7 +240,7 @@ mod tests {
             },
         ));
         graph
-            .connect(Port::new(lfo, "out"), Port::new(math, "a"), 0)
+            .connect(Port::new(osc, "out"), Port::new(math, "a"), 0)
             .expect("legal");
         graph
             .connect(Port::new(math, "out"), Port::new(remap, "input"), 0)
@@ -245,20 +249,20 @@ mod tests {
         let dt = 1.0 / harness::TICK_HZ;
         let mut expected_time = 0.0_f64;
         for tick in 0..31 {
+            harness::set_field(&mut graph, osc, "time", &(expected_time as f32));
             harness::tick(&mut graph, &world);
 
-            let expected_lfo =
-                crate::lfo::lfo_value(1.0, crate::lfo::Waveform::Sine, 0.0, 1.0, expected_time);
-            let expected_math = math_value(MathOp::Add, expected_lfo, 1.0);
+            let expected_osc = oscillator_value(1.0, Waveform::Sine, 0.0, 1.0, expected_time);
+            let expected_math = math_value(MathOp::Add, expected_osc, 1.0);
             let expected_remap = remap_value(expected_math, 0.0, 2.0, -1.0, 1.0, true);
 
-            let actual_lfo = harness::read_f32(&graph, lfo, Part::Outlets, "out");
+            let actual_osc = harness::read_f32(&graph, osc, Part::Outlets, "out");
             let actual_math = harness::read_f32(&graph, math, Part::Outlets, "out");
             let actual_remap = harness::read_f32(&graph, remap, Part::Outlets, "out");
 
             assert!(
-                (actual_lfo - expected_lfo).abs() < 1e-5,
-                "tick {tick}: lfo actual={actual_lfo} expected={expected_lfo}"
+                (actual_osc - expected_osc).abs() < 1e-5,
+                "tick {tick}: osc actual={actual_osc} expected={expected_osc}"
             );
             assert!(
                 (actual_math - expected_math).abs() < 1e-5,

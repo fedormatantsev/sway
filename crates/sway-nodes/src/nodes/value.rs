@@ -23,8 +23,8 @@ pub struct Vec3Out {
     pub out: MathVec3,
 }
 
-/// A vector literal whose components are driveable. Short kind name
-/// `"Vec3"`, matching the demo document's existing `"Vec3"` key.
+/// A vector literal whose components are driveable. Registered under the
+/// short kind name `"Vec3"`.
 #[derive(Reflect, Default, Debug)]
 #[reflect(NodeKind)]
 pub struct Vec3 {

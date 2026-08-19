@@ -35,21 +35,10 @@
 //! side (`point_cloud.rs`/`point_cloud.wgsl`) would close the gap without a
 //! second GPU-side expansion pass.
 //!
-//! So this module takes the brief's explicitly sanctioned fallback instead:
-//! compute writes the buffer, and a `gpu_readback.rs`-style [`Readback`]
-//! reads it back to prove the values are right. That is level **(b)** from
-//! the brief's three levels, not level (a) — see `spawn_demo_scatter` below,
-//! and the task report for the full writeup.
-//!
-//! The *compute* half of that is genuinely dirty-set-gated: delta 1 below
-//! makes `dispatch_workgroups` run once per source, not once per frame — see
-//! the headline finding in that section. The *readback* half is not: on
-//! hardware, `ReadbackComplete` fires every frame (Bevy's `Readback`
-//! component re-triggers a copy each frame it exists, unlike the one-shot
-//! dispatch), so `spawn_demo_scatter`'s observer logs thousands of
-//! near-identical lines rather than firing once. That is redundant
-//! per-frame *polling* of an already-computed buffer, not redundant
-//! *computation* — the compute dispatch itself still only ever runs once.
+//! This module implements level **(b)** from the spike brief: compute writes
+//! the buffer on the GPU via the dirty-set-gated pipeline below. The
+//! `gpu_readback.rs`-style readback that was used to verify values during
+//! development has been removed with the rest of the demo scaffolding.
 //!
 //! ## Delta 1 — the dirty set (the actual point of this task)
 //!
@@ -68,11 +57,10 @@
 //! The reference example needs `MeshAllocatorSettings::extra_buffer_usages =
 //! BufferUsages::STORAGE` because it writes into the mesh allocator's own
 //! vertex/index slabs, which are not created with `STORAGE` usage by
-//! default. This module writes into a plain [`ShaderBuffer`] asset instead
-//! (see `spawn_demo_scatter`), and `ShaderBuffer`'s default
-//! `buffer_description.usage` is already `STORAGE | COPY_SRC | COPY_DST`
-//! (see `bevy_render::storage::ShaderBuffer::default`) — storage-bindable
-//! and readback-able out of the box. Nothing to opt into.
+//! default. This module writes into a plain [`ShaderBuffer`] asset instead,
+//! whose default `buffer_description.usage` is already
+//! `STORAGE | COPY_SRC | COPY_DST` — storage-bindable out of the box.
+//! Nothing to opt into.
 
 use bevy::asset::{embedded_asset, load_embedded_asset};
 use bevy::core_pipeline::schedule::camera_driver;
@@ -81,7 +69,6 @@ use bevy::prelude::*;
 use bevy::render::{
     Render, RenderApp, RenderStartup,
     extract_component::{ExtractComponent, ExtractComponentPlugin},
-    gpu_readback::{Readback, ReadbackComplete},
     render_asset::RenderAssets,
     render_resource::{
         binding_types::{storage_buffer, uniform_buffer},
@@ -90,13 +77,6 @@ use bevy::render::{
     renderer::{RenderContext, RenderGraph, RenderQueue},
     storage::{GpuShaderBuffer, ShaderBuffer},
 };
-
-/// Point count for the hardcoded demo scatter. Kept small (unlike the point
-/// cloud's 50,000) because the whole point of the reduced target is a
-/// human-readable logged readback, not a scale test.
-const DEMO_SCATTER_COUNT: u32 = 16;
-const DEMO_SCATTER_SEED: u32 = 1;
-const DEMO_SCATTER_EXTENT: f32 = 5.0;
 
 /// Registers the compute-cooked scatter pipeline and its dirty-set-driven
 /// dispatch. Structurally mirrors `compute_mesh.rs`'s
@@ -290,48 +270,6 @@ fn dispatch_scatter(
         pass.set_pipeline(compute_pipeline);
         pass.dispatch_workgroups(workgroup_count(params.count, 64), 1, 1);
     }
-}
-
-/// Demo hookup for Task 6's `--demo` flag, following Tasks 3/4's precedent:
-/// a `pub fn` exported from this module, not registered inside
-/// `ScatterPlugin::build`.
-///
-/// Spawns one `ScatterSource` (16 points, hardcoded params) and a `Readback`
-/// on the same output buffer. This is the module's delta-5 level-(b) bridge:
-/// the compute shader fills the buffer entirely on the GPU (the dirty set
-/// ensures exactly one dispatch, not one per frame), and the `Readback` —
-/// Bevy's own `gpu_readback.rs` pattern — logs the computed points to prove
-/// the values are correct. The readback itself is not one-shot: on
-/// hardware `ReadbackComplete` fires every frame this entity exists (see the
-/// module doc), so this observer runs repeatedly even though the compute
-/// work it is observing does not. It does *not* feed the point cloud's
-/// instanced draw; see the module doc for why that bridge was out of reach
-/// within this task's file scope, not because the data formats are
-/// fundamentally incompatible.
-pub fn spawn_demo_scatter(mut commands: Commands, mut buffers: ResMut<Assets<ShaderBuffer>>) {
-    // Zero-filled initial data: the compute shader overwrites every element
-    // up to `count`, so the initial contents never reach the readback impl —
-    // it's populated at all only so this valid `ShaderBuffer` is allocated at
-    // the exact size scatter.wgsl expects (`count` xyz triples).
-    let initial = vec![0f32; DEMO_SCATTER_COUNT as usize * 3];
-    let buffer = buffers.add(ShaderBuffer::from(initial));
-
-    commands.spawn(ScatterSource {
-        buffer: buffer.clone(),
-        params: ScatterParams {
-            count: DEMO_SCATTER_COUNT,
-            seed: DEMO_SCATTER_SEED,
-            extent: DEMO_SCATTER_EXTENT,
-            _pad: 0.0,
-        },
-    });
-
-    commands
-        .spawn(Readback::buffer(buffer))
-        .observe(|event: On<ReadbackComplete>| {
-            let data: Vec<f32> = event.to_shader_type();
-            info!("scatter demo: GPU-computed xyz positions = {data:?}");
-        });
 }
 
 #[cfg(test)]
