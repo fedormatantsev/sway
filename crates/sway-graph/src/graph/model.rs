@@ -416,8 +416,20 @@ impl Graph {
 /// Whether two reflected values compare equal. `None` from
 /// `reflect_partial_eq` — a type that cannot answer — is treated as *not*
 /// equal, so a write happens and the node dirties, which is the safe side.
+///
+/// Asked **both ways round**, which is load-bearing rather than defensive.
+/// glam's generated `reflect_partial_eq` answers by downcasting the operand to
+/// its own concrete type, so a concrete `Vec3` compared against a `Dynamic*`
+/// snapshot of itself answers `Some(false)`, while the same two values with the
+/// operands swapped answer `Some(true)` through the dynamic's structural
+/// comparison. `evaluate` compares a concrete part against a dynamic snapshot
+/// and `Target::Optional` compares a concrete `Option<T>` against a
+/// `DynamicEnum`, so asking one way only would report every node carrying a
+/// `Vec2`/`Vec3`/`Vec4`/`Quat` in state or outlets as changed on every tick —
+/// silently defeating per-node change tracking for most of the scene. A
+/// `Some(true)` from either direction is a genuine field-by-field match.
 pub(crate) fn reflect_equal(a: &dyn PartialReflect, b: &dyn PartialReflect) -> bool {
-    a.reflect_partial_eq(b) == Some(true)
+    a.reflect_partial_eq(b) == Some(true) || b.reflect_partial_eq(a) == Some(true)
 }
 
 #[cfg(test)]

@@ -400,6 +400,34 @@ mod tests {
     }
 
     #[test]
+    fn a_glam_typed_outlet_does_not_dirty_on_an_equal_write() {
+        // Regression. glam's `reflect_partial_eq` answers by downcasting the
+        // operand to its own concrete type, so a concrete `Vec3` compared
+        // against the `to_dynamic()` snapshot `evaluate` takes answers
+        // `Some(false)` even when the two are equal -- the reverse comparison
+        // answers `Some(true)`. Asking one way only reported every node
+        // carrying a `Vec3`/`Quat` in state or outlets as changed on every
+        // tick, which would hand the projectors a dirty set containing most of
+        // the scene every frame and make per-node change tracking pointless.
+        // A scalar fixture cannot catch this; `Placer` exists to.
+        let world = trace_world();
+        let mut graph = Graph::default();
+        let placer = graph.insert(Node::of(
+            Vec2::ZERO,
+            crate::graph::testing::Placer::default(),
+        ));
+
+        tick(&mut graph, &world);
+        graph.drain_dirty();
+        tick(&mut graph, &world);
+
+        assert!(
+            graph.drain_dirty().is_empty(),
+            "a second tick writing an equal `Vec3` must not dirty {placer}"
+        );
+    }
+
+    #[test]
     fn a_changed_value_dirties_only_the_nodes_it_reaches() {
         let world = trace_world();
         let mut graph = Graph::default();

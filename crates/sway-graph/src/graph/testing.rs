@@ -257,6 +257,45 @@ impl NodeKind for Clock {
     }
 }
 
+// --- Placer: a glam-typed outlet ---------------------------------------
+
+/// `Placer`'s inlets.
+#[derive(Reflect, Default, Debug)]
+pub struct PlacerIn {
+    /// The height to place at.
+    pub y: f32,
+}
+
+/// `Placer`'s outlets.
+#[derive(Reflect, Default, Debug)]
+pub struct PlacerOut {
+    /// A glam-typed outlet.
+    ///
+    /// Deliberately a `Vec3`: glam's `reflect_partial_eq` answers by
+    /// downcasting, so this is the shape that exposes the asymmetry
+    /// `reflect_equal` compensates for. A scalar fixture cannot catch it, and
+    /// almost every scene node the projectors consume carries one of these.
+    pub at: bevy_math::Vec3,
+}
+
+/// A node whose outlet is a glam type rather than a scalar.
+#[derive(Reflect, Default, Debug)]
+#[reflect(NodeKind)]
+pub struct Placer {
+    /// Inlets.
+    pub inlets: PlacerIn,
+    /// State — empty.
+    pub state: (),
+    /// Outlets.
+    pub outlets: PlacerOut,
+}
+
+impl NodeKind for Placer {
+    fn evaluate(&mut self, _world: &World) {
+        self.outlets.at = bevy_math::Vec3::new(0.0, self.inlets.y, 0.0);
+    }
+}
+
 /// A registry with every fixture kind registered.
 pub fn test_registry() -> TypeRegistry {
     let mut registry = TypeRegistry::new();
@@ -267,5 +306,6 @@ pub fn test_registry() -> TypeRegistry {
     register_node_kind::<Fan>(&mut registry);
     register_node_kind::<Nested>(&mut registry);
     register_node_kind::<Clock>(&mut registry);
+    register_node_kind::<Placer>(&mut registry);
     registry
 }

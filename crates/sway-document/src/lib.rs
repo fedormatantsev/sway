@@ -13,6 +13,7 @@ pub mod diagnostics;
 pub mod doc;
 pub mod emit;
 pub mod file;
+pub mod v3;
 
 pub use apply::apply;
 pub use asset::{ProjectAsset, ProjectHandle, ProjectLoader, ProjectPlugin};

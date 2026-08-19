@@ -1,8 +1,10 @@
 mod midi_time;
+pub mod nodes;
 mod plugin;
 mod transport;
 
 pub use midi_time::{MidiTime, write_midi_time};
+pub use nodes::MidiGraphNodesPlugin;
 pub use plugin::{MidiClock, MidiInbox, MidiPlugin, MidiRx, TickMidi};
 pub use sway_midi_core::{
     MidiInput, MidiMessage, PulseClock, TimedMidi, VIRTUAL_DESTINATION_NAME, host_time_now,

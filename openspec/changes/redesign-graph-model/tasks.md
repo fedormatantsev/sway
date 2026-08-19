@@ -30,10 +30,10 @@ correctly at the end of groups 5, 6 and 7.
 
 ## 4. sway-nodes — value nodes
 
-- [ ] 4.1 Port `Vec3`, `Math` and `Remap` to the nested three-part shape.
-- [ ] 4.2 Port `Oscillator`, `Lfo` and `Envelope`, moving phase and similar memory into the `state` part.
-- [ ] 4.3 Port `MidiTime` as an ordinary node that reads the transport resource through `&World` during evaluation — no injection phase and no MIDI type named by `sway-graph` (`graph`: an external time source is an ordinary node).
-- [ ] 4.4 Port the existing trace tests to the new node shapes. `cargo test -p sway-nodes`.
+- [x] 4.1 Port `Vec3`, `Math` and `Remap` to the nested three-part shape.
+- [x] 4.2 Port `Oscillator`, `Lfo` and `Envelope`, moving phase and similar memory into the `state` part.
+- [x] 4.3 Port `MidiTime` as an ordinary node that reads the transport resource through `&World` during evaluation — no injection phase and no MIDI type named by `sway-graph` (`graph`: an external time source is an ordinary node).
+- [x] 4.4 Port the existing trace tests to the new node shapes. `cargo test -p sway-nodes`.
 
 ## 5. sway-runtime — projection and protocols
 
@@ -48,13 +48,13 @@ correctly at the end of groups 5, 6 and 7.
 
 ## 6. sway-document — format version 3
 
-- [ ] 6.1 Define the version 3 shape: nodes keyed by stable id, an edge list naming two ids, two paths and a slot (`document`: A document is nodes and edges keyed by stable ids).
-- [ ] 6.2 Mint stable ids once at node creation and build the `id -> NodeId` map at load. No reconcile pass and no claim pass.
-- [ ] 6.3 Serialize inlets only, per node kind, via `TypedReflectSerializer` / `TypedReflectDeserializer` on the inlets type (`document`: A document stores inlets only).
-- [ ] 6.4 Report and skip an unknown node kind, an edge naming a missing id, and an edge naming a missing path — without preventing the rest of the document from loading.
-- [ ] 6.5 Reject a version other than 3, and a document declaring the same id twice, as whole parse errors.
+- [x] 6.1 Define the version 3 shape: nodes keyed by stable id, an edge list naming two ids, two paths and a slot (`document`: A document is nodes and edges keyed by stable ids).
+- [x] 6.2 Mint stable ids once at node creation and build the `id -> NodeId` map at load. No reconcile pass and no claim pass.
+- [x] 6.3 Serialize inlets only, per node kind, via `TypedReflectSerializer` / `TypedReflectDeserializer` on the inlets type (`document`: A document stores inlets only).
+- [x] 6.4 Report and skip an unknown node kind, an edge naming a missing id, and an edge naming a missing path — without preventing the rest of the document from loading.
+- [x] 6.5 Reject a version other than 3, and a document declaring the same id twice, as whole parse errors.
 - [ ] 6.6 Rewrite `demo.sway.ron` in the version 3 shape, splitting each geometry-plus-transform entity into a producer node and a scene node, and folding the three separate `cube.gltf` references into one shared mesh node (`nodes`: Geometry, material and placement are separate nodes).
-- [ ] 6.7 Round-trip tests: load, save, reload is identical; deleting a node leaves every other id untouched. `cargo test -p sway-document`.
+- [x] 6.7 Round-trip tests: load, save, reload is identical; deleting a node leaves every other id untouched. `cargo test -p sway-document`.
 
 ## 7. sway-editor — read path and commands
 
