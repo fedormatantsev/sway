@@ -6,91 +6,162 @@ Defines how value wires and in-tick behaviours are catalogued, ordered, and run:
 
 ## Requirements
 
-### Requirement: Wire is a relationship on the consumer
-A value wire MUST be a one-source relationship component on the consumer that names the producer. Fan-out MUST be the corresponding relationship-target collection on the producer. The engine MUST NOT introduce edge entities.
+### Requirement: A graph is nodes and edges
+A graph MUST consist of nodes and edges and nothing else. A node MUST have an identity that is stable for as long as that node exists, and that identity MUST NOT be reused for a different node.
 
-#### Scenario: Single source per inlet type
-- **WHEN** a consumer already has a wire of type T pointing at producer A
-- **AND** a wire of the same type T is inserted pointing at producer B
-- **THEN** the consumer's T names B and A is no longer that inlet's source
+An edge MUST connect one node's outlet to one node's inlet. Edges MUST NOT be nodes, and a connection MUST NOT require a node of its own.
 
-#### Scenario: Fan-out
-- **WHEN** two consumers each carry the same wire type naming one producer
-- **THEN** both connections remain and each consumer receives that producer's source value independently
+Adding a kind of connection MUST NOT require declaring a new type. Two nodes are connectable if and only if the types at the two named fields satisfy the legality rule.
 
-### Requirement: Reflection is the wire catalog
-A relationship type MUST be treated as a value wire if and only if it is registered for reflection as a wire.
+#### Scenario: A connection is data
+- **WHEN** a new pair of node kinds is connected for the first time
+- **THEN** no new connection type had to be declared for it to be legal
 
-#### Scenario: Unregistered relationship is not a value wire
-- **WHEN** an entity carries a relationship type that is not registered as a reflected wire
-- **THEN** the tick MUST NOT copy a value along that relationship
-- **AND** the document MUST NOT emit or apply it as a value wire
+#### Scenario: A stale identity does not resolve
+- **WHEN** a node is deleted and another node is created
+- **THEN** the deleted node's identity does not resolve to the new node
 
-### Requirement: Default wire evaluation is a reflected field copy
-Unless a wire type defines its own evaluation, a tick MUST copy the producer's outlet (source component) tuple field `0` into the named field of the consumer's inlet (target component). Evaluation MUST read only that outlet and write only that inlet. The relationship component MUST be read only for routing (the producer entity) and MUST NOT be mutated.
+### Requirement: A node is inlets, state, and outlets
+A node MUST be a single reflected value with exactly three parts: **inlets** (values it consumes), **state** (memory that persists between evaluations), and **outlets** (values other nodes may consume). Any part MAY be empty, and an empty part MUST be addressable in the same way as a populated one, so that nothing has to special-case its absence.
 
-#### Scenario: Source tuple field reaches the named target field
-- **WHEN** a registered value wire connects a producer whose source component tuple field `0` is `0.5` to a consumer that has the target component
-- **THEN** after the tick the named target field is `0.5`
+Inlets MUST be authorable and MUST be serialized. State and outlets MUST NOT be serialized.
 
-#### Scenario: Equal value does not dirty the target
-- **WHEN** a field-copy wire would write a value equal to the target field
-- **THEN** the target component MUST NOT be marked changed
+#### Scenario: A node with no state is shaped like one that has state
+- **WHEN** a node kind has no state
+- **THEN** it is addressed, serialized and evaluated by the same rules as a node kind that has state
 
-#### Scenario: Missing source or target is a no-op
-- **WHEN** the producer lacks the source component or the consumer lacks the target component
-- **THEN** evaluation MUST NOT panic
-- **AND** the other entity's components MUST be left unchanged
-- **AND** rebuild MUST record the miss in graph diagnostics
+#### Scenario: State does not survive a save
+- **WHEN** a node with populated state and outlets is saved and reloaded
+- **THEN** its inlets are restored
+- **AND** its state and outlets are at their defaults until it is next evaluated
 
-### Requirement: Behaviour is inlets, state, and outlets
-A node MAY have any combination of three optional parts: **inlets** (authored and/or driven by wires), **state** (internal memory), and **outlets** (values other wires may read). A behaviour MUST be registered for reflection as a behaviour, not as a wire. When inbound wires target this entity's inlets, those wires MUST be evaluated before the behaviour. Ordinary systems MUST still handle work that does not need that placement.
+### Requirement: Node evaluation reads inlets and writes state and outlets
+Evaluating a node MUST give it its inlets as they stand this tick, its state to read and write in place, its outlets to write in place, and read-only access to external state outside the graph.
 
-A behaviour MUST read inlets, read and write state in place, and write outlets in place. It MUST NOT read previous outlet values. It MUST NOT read or write any other world state. Inputs are the current inlets, mutable state if the node has a state part, a mutable outlet slot if the node has outlets, and this tick's context. The tick MUST insert a default state or outlet component when that part exists but the component is missing, then pass it in. A write MUST NOT mark a component changed when the value equals what was there.
+Evaluation MUST NOT reach the graph itself. A node MUST NOT be able to read another node's inlets, state or outlets, or observe the edges connected to it.
 
-#### Scenario: Behaviour sees this tick's inlets
-- **WHEN** an entity has inlets and a value wire into those inlets
-- **THEN** that tick MUST write the inlet before the behaviour publishes its outlets
+A node whose output depends only on external state MUST be an ordinary node that reads that state during evaluation. No separate mechanism may exist for such nodes.
 
-#### Scenario: Outlets are write-only
-- **WHEN** a behaviour runs
-- **THEN** evaluation must not depend on the previous outlet value
-- **AND** it writes outlets (and state, if any) in place, not inlets
+A write MUST NOT mark a value changed when it equals what was already there.
 
-#### Scenario: Missing state on first run
-- **WHEN** a behaviour has a state part and that component is absent
-- **THEN** the tick inserts a default state
-- **AND** evaluation receives that state as a mutable slot
+#### Scenario: An external time source is an ordinary node
+- **WHEN** a node's output depends only on a clock outside the graph
+- **THEN** it is evaluated like every other node
+- **AND** it reads that clock during its own evaluation
 
-#### Scenario: Changed-only work stays a system
-- **WHEN** work depends only on a changed component and not on a same-tick wired inlet
-- **THEN** that work MUST NOT run as a graph behaviour
+#### Scenario: A node cannot reach the graph
+- **WHEN** a node is evaluated
+- **THEN** the graph is not reachable from the external state it is given
 
-#### Scenario: Unregistered component is not a behaviour
-- **WHEN** an entity carries a component that is not registered as a reflected behaviour
-- **THEN** that component MUST NOT run as a graph behaviour this tick
+#### Scenario: Equal writes do not dirty
+- **WHEN** evaluation writes an outlet a value equal to its current one
+- **THEN** that outlet is not marked changed
+- **AND** nothing downstream of it is recomputed
+
+### Requirement: An edge addresses fields by path
+An edge MUST name a source node and a path within its outlets, and a destination node and a path within its inlets. That path MUST name a **declared field of the part** — a field of the inlets or outlets struct — not a nested field inside a compound value.
+
+A compound inlet (for example a whole transform) MUST be connected as a whole: its type is the legality of the edge. To drive one component of a compound, that component MUST be a declared inlet of its own, or a separate node MUST construct the compound from its parts.
+
+An edge MUST be legal if and only if the type at the source path is accepted by the type at the destination path. Legality MUST be decided when the connection is made, not when it is evaluated.
+
+Evaluating an edge MUST read only the named source field and write only the named destination field.
+
+#### Scenario: A compound inlet is wired as a whole
+- **WHEN** an inlet's type is a compound value
+- **THEN** an edge into that inlet names the inlet itself
+- **AND** connecting a component type of that compound to the inlet is refused
+
+#### Scenario: Driving a component is a declared inlet
+- **WHEN** a scene node needs its translation driven by a `Vec3`
+- **THEN** translation is a declared inlet of that node
+- **AND** the edge names `translation`, not a nested path through a transform
+
+#### Scenario: An illegal connection is refused when made
+- **WHEN** a connection is attempted between two paths whose types are not compatible
+- **THEN** the connection is not made
+- **AND** no evaluation is required to discover this
+
+### Requirement: Inlets may be optional or variadic
+An inlet MUST be able to declare that it is optional, meaning it has no value when nothing is connected, and the node decides what that means. An unconnected optional inlet MUST NOT be given a substitute value.
+
+An inlet MUST be able to declare that it accepts many connections. Every edge MUST carry an ordering key, and the values arriving at such an inlet MUST be presented in ascending order of that key, with node identity breaking ties so that the order is deterministic.
+
+The ordering key MUST be a sort key rather than a position, so that keys may be sparse and reordering a connection requires changing only that connection's key.
+
+An inlet that accepts one connection MUST reject a second; connecting again MUST replace the existing connection.
+
+#### Scenario: An unconnected optional inlet is absent, not defaulted
+- **WHEN** an optional inlet has no connection
+- **THEN** the node observes it as absent
+- **AND** no substitute value is supplied on its behalf
+
+#### Scenario: Many connections arrive in key order
+- **WHEN** three edges land on one variadic inlet with ordering keys 30, 10 and 20
+- **THEN** the node observes the values in the order of the keys 10, 20, 30
+
+#### Scenario: Reordering changes one connection
+- **WHEN** one edge on a variadic inlet is reordered
+- **THEN** only that edge's ordering key changes
+- **AND** the other edges' keys are untouched
+
+#### Scenario: A single-connection inlet is replaced, not doubled
+- **WHEN** an inlet that accepts one connection already has one and another is connected
+- **THEN** the inlet has exactly one connection, the new one
+
+### Requirement: An edge may carry no value
+An edge MUST be able to declare a connection that carries no value, existing only to establish that two nodes are related and to constrain their evaluation order. Evaluating such an edge MUST write nothing.
+
+A node MUST NOT be able to observe such a connection during evaluation. Only a consumer outside the graph may read which nodes a valueless connection relates.
+
+#### Scenario: A valueless connection writes nothing
+- **WHEN** a valueless edge is evaluated
+- **THEN** no field of the destination node is written
+
+#### Scenario: A valueless connection still orders
+- **WHEN** a valueless edge connects node A to node B
+- **THEN** A is evaluated before B
+
+### Requirement: The graph rejects connections that would break its invariants
+Making a connection MUST refuse a connection from a node to itself. Deleting a node MUST delete every edge that names it, in either direction.
+
+A graph MUST NOT be left holding an edge that names a node which does not exist.
+
+#### Scenario: A self connection is refused
+- **WHEN** a connection is attempted from a node's outlet to its own inlet
+- **THEN** no edge is created
+
+#### Scenario: Deleting a node deletes its edges
+- **WHEN** a node with inbound and outbound edges is deleted
+- **THEN** none of those edges remain
+
+### Requirement: Changes are tracked per node
+A graph MUST record which nodes changed since consumers outside the graph last read it, at the granularity of a single node. A consumer MUST be able to act on only the nodes that changed.
+
+A node MUST be recorded as changed when a command edits it, when an edge writes one of its inlets, or when evaluation writes its state or outlets — and MUST NOT be recorded as changed when a write left every value equal to what was there.
+
+#### Scenario: An unrelated node is not reported as changed
+- **WHEN** one node's inlet is edited
+- **THEN** only that node is reported as changed
+
+#### Scenario: An equal write reports nothing
+- **WHEN** a tick writes only values equal to those already present
+- **THEN** no node is reported as changed
 
 ### Requirement: Evaluation order
-Rebuild MUST order entities topologically. Per entity, every inbound value wire MUST be evaluated, then that entity's behaviours MUST run. Each wire and behaviour in that order MUST be identified by its reflected type (type id and type path). A cycle MUST NOT stop the tick; cycle members MUST be appended after the acyclic part and read the previous tick's values.
+Rebuild MUST order **nodes** topologically. Per node, every inbound edge MUST be evaluated, then that node MUST be evaluated. A cycle MUST NOT stop the tick; cycle members MUST be appended after the acyclic part and read the previous tick's values.
+
+The unit of ordering MUST be the node, because evaluation reads every inlet and writes every outlet — so every outlet of a node genuinely depends on every one of its inlets, and no finer vertex would report a cycle the node does not actually have.
 
 #### Scenario: Two-hop chain resolves in one tick
-- **WHEN** A wires into B and B wires into C with no cycle
+- **WHEN** A connects into B and B connects into C with no cycle
 - **THEN** one tick writes A's value through to C
 
 #### Scenario: Cycle is reported and still ticks
-- **WHEN** two entities wire each other
-- **THEN** diagnostics include both entities
-- **AND** the tick still evaluates those entities
+- **WHEN** two nodes connect into each other
+- **THEN** diagnostics include both nodes
+- **AND** the tick still evaluates those nodes
 
-### Requirement: Authoring watches include behaviours
-While authoring is enabled, inserting or removing a reflected wire **or** a reflected behaviour carrier MUST mark the topology dirty so the next rebuild sees the entity. While authoring is absent (show), those mutations MUST NOT trigger a rescan; the existing order MUST be used.
-
-#### Scenario: Adding a behaviour without a new wire still rebuilds
-- **WHEN** authoring is enabled
-- **AND** a behaviour carrier is added to an entity that had no wires change
-- **THEN** subsequent ticks run that behaviour
-
-#### Scenario: Show build ignores later wiring
-- **WHEN** authoring is absent
-- **AND** a wire is inserted after the initial rebuild
-- **THEN** later ticks MUST NOT evaluate that wire
+#### Scenario: Order is deterministic
+- **WHEN** a graph is rebuilt twice without changing
+- **THEN** the two orders are identical

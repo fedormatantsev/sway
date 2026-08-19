@@ -7,21 +7,21 @@ Defines render-side behaviour authored from the graph: how a sprite material bin
 ## Requirements
 
 ### Requirement: A sprite material is a node wired to a mesh
-A `SpriteMaterial` node MUST be authorable on its own entity and MUST reach a mesh through a material wire, in the same manner as any other material node. It MUST NOT carry geometry of its own.
+A `SpriteMaterial` node MUST be a node of its own and MUST reach a scene node through a material connection, in the same manner as any other material node. It MUST NOT carry geometry or a placement of its own.
 
-One sprite material MUST be connectable to more than one mesh, and every connected mesh MUST show the same frame, tint and opacity.
+One sprite material MUST be connectable to more than one scene node, and every connected scene node MUST show the same frame, tint and opacity.
 
 #### Scenario: A sprite material renders on a wired mesh
-- **WHEN** a sprite material node is connected to a mesh entity
-- **THEN** that mesh renders with the material's colour run
+- **WHEN** a sprite material node is connected to a scene node
+- **THEN** that scene node renders with the material's colour run
 
 #### Scenario: A sprite material applies to any mesh
-- **WHEN** a sprite material is connected to a mesh that is not a flat quad
+- **WHEN** a sprite material is connected to a scene node whose mesh is not a flat quad
 - **THEN** that mesh renders with the material's colour run mapped through the mesh's own texture coordinates
 
 #### Scenario: Sharing is visible in the graph
-- **WHEN** one sprite material node is connected to two mesh entities
-- **THEN** both meshes render the same frame of the sequence
+- **WHEN** one sprite material node is connected to two scene nodes
+- **THEN** both render the same frame of the sequence
 
 ### Requirement: A frame sequence node loads an ordered run of images as one texture
 A `FrameSequence` node MUST load every image in an authored folder and publish them as a single layered texture, one layer per image, preserving order. It MUST expose the resulting layer count.
@@ -65,20 +65,22 @@ Frames MUST be addressed by an integer layer index. Sampling one layer MUST NOT 
 - **AND** the sequence publishes one once the remaining frames arrive
 
 ### Requirement: A sprite material takes its colour and depth runs from wires
-A `SpriteMaterial` MUST receive a colour run and a depth run as separate inlets, each fed by a frame sequence. It MUST NOT name image paths of its own.
+A `SpriteMaterial` MUST receive a colour run and a depth run as two separate inlets, each connected to a frame sequence node. It MUST NOT name image paths of its own.
 
-The number of frames available MUST be the layer count of the wired sequences rather than an authored number. Where the two disagree in length, the system MUST report a diagnostic and use the shorter.
+Neither connection carries the sequence itself: the frame sequence node owns its texture, and the material reaches it through the connection. Both inlets MUST accept a frame sequence node regardless of the colour space that sequence was authored with, so that one node kind serves either role.
+
+The number of frames available MUST be the layer count of the connected sequences rather than an authored number. Where the two disagree in length, the system MUST report a diagnostic and use the shorter.
 
 The two runs MUST NOT be required to share a resolution: both are addressed by normalized texture coordinates, and the depth run's useful resolution is bounded by the tessellation of the mesh it displaces rather than by the colour run.
 
-A material whose runs are not both available MUST render nothing rather than render incorrectly.
+A material whose runs are not both connected MUST render nothing rather than render incorrectly.
 
 #### Scenario: Colour and depth arrive over separate wires
-- **WHEN** two frame sequences are connected to a sprite material's colour and depth inlets
+- **WHEN** two frame sequence nodes are connected to a sprite material's colour and depth inlets
 - **THEN** the material samples colour from the first and displacement from the second
 
 #### Scenario: The same sequence may serve either inlet
-- **WHEN** a frame sequence is connected to a colour inlet on one material and a depth inlet on another
+- **WHEN** a frame sequence node is connected to a colour inlet on one material and a depth inlet on another
 - **THEN** both connections are legal and both materials render
 
 #### Scenario: Disagreeing run lengths are reported
@@ -92,7 +94,8 @@ A material whose runs are not both available MUST render nothing rather than ren
 
 #### Scenario: An incomplete material renders nothing
 - **WHEN** a sprite material has no depth run connected
-- **THEN** nothing is drawn for the meshes it is wired to
+- **THEN** nothing is drawn for the scene nodes it is connected to
+
 
 ### Requirement: The frame number selects a layer and is clamped into range
 A `SpriteMaterial` MUST expose a `frame` number as a scalar inlet.
