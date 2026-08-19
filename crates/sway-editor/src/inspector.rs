@@ -18,15 +18,18 @@ use masonry::core::{
 use masonry::imaging::Painter;
 use masonry::layout::{LenReq, Length};
 use masonry::widgets::{
-    Checkbox, CheckboxToggled, Label, SelectionChanged, Selector, TextAction, TextInput,
+    Button, ButtonPress, Checkbox, CheckboxToggled, Label, SelectionChanged, Selector, TextAction,
+    TextInput,
 };
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
-use sway_graph::graph::{Graph, GraphCommand, NodeId as GraphNodeId, Part, path};
+use sway_graph::graph::{EdgeId, Graph, GraphCommand, NodeId as GraphNodeId, Part, path};
 use sway_graph::{EditorCommand, FieldValue};
 
+use crate::canvas::reorder_commands;
 use crate::reflect_ui::{
-    enum_variants, format_value, has_control, is_bool, parse_field, part_fields, short_type_name,
+    enum_variants, format_value, has_control, is_bool, is_variadic, parse_field, part_fields,
+    short_type_name,
 };
 use crate::snapshot::{FieldKind, WorldSnapshot};
 
@@ -41,6 +44,11 @@ use crate::snapshot::{FieldKind, WorldSnapshot};
 pub const ROW_HEIGHT: f64 = 32.0;
 const PADDING: f64 = 8.0;
 const NATURAL_WIDTH: f64 = 240.0;
+/// Width of one of an edge-order row's two move buttons.
+const MOVE_BUTTON_WIDTH: f64 = 30.0;
+/// What the two move buttons say.
+const MOVE_UP: &str = "\u{2191}";
+const MOVE_DOWN: &str = "\u{2193}";
 
 /// One rendered row. A header or a read-only value is a `Label`; an editable
 /// field is the widget its `FieldKind` calls for.
@@ -59,6 +67,13 @@ enum RowKind {
     Enum {
         label: WidgetPod<Label>,
         selector: WidgetPod<Selector>,
+    },
+    /// One edge landing on a variadic inlet, with the two buttons that move it
+    /// within that inlet's ordering (task 7.7).
+    EdgeOrder {
+        label: WidgetPod<Label>,
+        up: WidgetPod<Button>,
+        down: WidgetPod<Button>,
     },
 }
 
@@ -84,6 +99,23 @@ impl PartialEq for GraphFieldTarget {
     }
 }
 
+/// One edge landing on one variadic inlet, as the inspector presents it.
+///
+/// `index` is its position in that inlet's ordering-key order -- the position
+/// the graph fills the inlet's `Vec` from -- and is what the move buttons
+/// shift. `slot` is the key itself, carried so the reorder can emit only the
+/// `SetSlot`s that actually change something.
+#[derive(Clone, Debug, PartialEq)]
+struct EdgeOrderRow {
+    node: GraphNodeId,
+    /// The variadic inlet's own field path.
+    path: String,
+    edge: EdgeId,
+    slot: i32,
+    index: usize,
+    label: String,
+}
+
 struct Row {
     kind: RowKind,
     /// Which component and field this row edits. `None` for headers.
@@ -91,6 +123,9 @@ struct Row {
     /// Which graph inlet field this row edits, when the inspector is driven by
     /// the graph model. `None` for headers and for snapshot-driven rows.
     graph_target: Option<GraphFieldTarget>,
+    /// Which edge of a variadic inlet this row reorders. `None` for every
+    /// other row.
+    edge_order: Option<EdgeOrderRow>,
 }
 
 pub struct Inspector {
@@ -163,11 +198,18 @@ impl Inspector {
         self.generation
     }
 
-    /// Rows that accept input. The rest are headers and unclassified values.
+    /// Rows that accept a *field* edit. Headers, values with no control, and
+    /// the edge-order rows (which reorder connections rather than write a
+    /// field) are not counted.
     pub fn editable_row_count(&self) -> usize {
         self.rows
             .iter()
-            .filter(|row| !matches!(row.kind, RowKind::Header(_) | RowKind::ReadOnly(_)))
+            .filter(|row| {
+                !matches!(
+                    row.kind,
+                    RowKind::Header(_) | RowKind::ReadOnly(_) | RowKind::EdgeOrder { .. }
+                )
+            })
             .count()
     }
 
@@ -271,6 +313,62 @@ impl Inspector {
         this.widget.commit_graph(row_index, text);
     }
 
+    /// Moves the edge listed at `row_index` by `delta` places within its
+    /// variadic inlet's ordering, emitting one `SetSlot` per edge whose key
+    /// actually changes (task 7.7).
+    ///
+    /// Out of range in either direction is a no-op: the first row's "up" and
+    /// the last row's "down" do nothing rather than wrapping.
+    fn move_edge(&mut self, row_index: usize, delta: isize) {
+        let Some(target) = self
+            .rows
+            .get(row_index)
+            .and_then(|row| row.edge_order.clone())
+        else {
+            return;
+        };
+        let order: Vec<(EdgeId, i32)> = self
+            .rows
+            .iter()
+            .filter_map(|row| row.edge_order.as_ref())
+            .filter(|row| row.node == target.node && row.path == target.path)
+            .map(|row| (row.edge, row.slot))
+            .collect();
+        let Ok(to) = usize::try_from(target.index as isize + delta) else {
+            return;
+        };
+        if to >= order.len() {
+            return;
+        }
+        for command in reorder_commands(&order, target.index, to) {
+            if let Some(commands) = &self.graph_commands {
+                let _ = commands.send(command);
+            }
+        }
+    }
+
+    /// The edges the inspector currently lists for a variadic inlet, in the
+    /// order it lists them -- which is ordering-key order.
+    pub fn graph_edge_rows(&self) -> Vec<String> {
+        self.rows
+            .iter()
+            .filter_map(|row| row.edge_order.as_ref().map(|edge| edge.label.clone()))
+            .collect()
+    }
+
+    /// The move-up / move-down button ids of each listed edge, in the same
+    /// order as [`graph_edge_rows`](Self::graph_edge_rows), so a test can
+    /// click the real buttons.
+    pub fn graph_edge_row_buttons(&self) -> Vec<(WidgetId, WidgetId)> {
+        self.rows
+            .iter()
+            .filter_map(|row| match (&row.kind, &row.edge_order) {
+                (RowKind::EdgeOrder { up, down, .. }, Some(_)) => Some((up.id(), down.id())),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The inlets-relative field path each row edits, headers included as
     /// `None`. Lets a caller (and a test) address a row by field rather than
     /// by the order it happens to be laid out in.
@@ -312,35 +410,29 @@ impl Inspector {
         let selection = graph.selection();
         let node = selection.and_then(|id| graph.get(id));
         let header = node.map(|node| short_type_name(node.kind()));
-        let fields: Vec<(GraphFieldTarget, String)> = match (selection, node) {
-            (Some(id), Some(node)) => part_fields(registry, node.kind(), Part::Inlets)
-                .into_iter()
-                .map(|field| {
-                    let value = path::resolve(node, Part::Inlets, &field.path)
-                        .map(format_value)
-                        .unwrap_or_default();
-                    (
-                        GraphFieldTarget {
-                            node: id,
-                            path: field.path,
-                            info: field.info,
-                        },
-                        value,
-                    )
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
+        let mut pending: Vec<PendingRow> = Vec::new();
+        if let (Some(id), Some(node)) = (selection, node) {
+            for field in part_fields(registry, node.kind(), Part::Inlets) {
+                let value = path::resolve(node, Part::Inlets, &field.path)
+                    .map(format_value)
+                    .unwrap_or_default();
+                let variadic = field.info.is_some_and(is_variadic);
+                pending.push(PendingRow::Field(
+                    GraphFieldTarget {
+                        node: id,
+                        path: field.path.clone(),
+                        info: field.info,
+                    },
+                    value,
+                ));
+                if variadic {
+                    pending.extend(edge_order_rows(graph, registry, id, &field.path));
+                }
+            }
+        }
 
         let mut signature: Vec<String> = vec![header.clone().unwrap_or_default()];
-        signature.extend(fields.iter().map(|(target, value)| {
-            format!(
-                "{}={}#{:?}",
-                target.path,
-                value,
-                target.info.map(|info| info.type_path())
-            )
-        }));
+        signature.extend(pending.iter().map(PendingRow::signature));
         if signature == this.widget.graph_signature {
             return;
         }
@@ -375,15 +467,34 @@ impl Inspector {
                 kind: RowKind::Header(WidgetPod::new(Label::new(header.clone()))),
                 target: None,
                 graph_target: None,
+                edge_order: None,
             }),
             None => this.widget.rows.push(Row {
                 kind: RowKind::Header(WidgetPod::new(Label::new("nothing selected"))),
                 target: None,
                 graph_target: None,
+                edge_order: None,
             }),
         }
 
-        for (target, value) in fields {
+        for row in pending {
+            let (target, value) = match row {
+                PendingRow::Field(target, value) => (target, value),
+                PendingRow::Edge(edge) => {
+                    let label = WidgetPod::new(Label::new(edge.label.clone()));
+                    this.widget.rows.push(Row {
+                        kind: RowKind::EdgeOrder {
+                            label,
+                            up: WidgetPod::new(Button::with_text(MOVE_UP)),
+                            down: WidgetPod::new(Button::with_text(MOVE_DOWN)),
+                        },
+                        target: None,
+                        graph_target: None,
+                        edge_order: Some(edge),
+                    });
+                    continue;
+                }
+            };
             if preserved.as_ref().and_then(|row| row.graph_target.clone()) == Some(target.clone()) {
                 this.widget
                     .rows
@@ -429,6 +540,7 @@ impl Inspector {
                 kind,
                 target: None,
                 graph_target: Some(target),
+                edge_order: None,
             });
         }
 
@@ -527,6 +639,7 @@ impl Inspector {
                 kind: RowKind::Header(WidgetPod::new(Label::new("nothing selected"))),
                 target: None,
                 graph_target: None,
+                edge_order: None,
             });
         }
         for component in &snap.inspector.components {
@@ -534,6 +647,7 @@ impl Inspector {
                 kind: RowKind::Header(WidgetPod::new(Label::new(component.name))),
                 target: None,
                 graph_target: None,
+                edge_order: None,
             });
             for field in &component.fields {
                 let target = Some((component.name, field.name.clone(), field.kind.clone()));
@@ -580,6 +694,7 @@ impl Inspector {
                     kind,
                     target,
                     graph_target: None,
+                    edge_order: None,
                 });
             }
         }
@@ -588,6 +703,7 @@ impl Inspector {
                 kind: RowKind::Header(WidgetPod::new(Label::new("no authored components"))),
                 target: None,
                 graph_target: None,
+                edge_order: None,
             });
         }
         // The preserved row's field no longer exists in the new snapshot
@@ -642,6 +758,89 @@ impl Inspector {
     }
 }
 
+/// One row the next rebuild will produce, held only for the duration of
+/// [`Inspector::populate_from_graph`] so the `&Graph` borrow ends before the
+/// widget tree is touched.
+enum PendingRow {
+    Field(GraphFieldTarget, String),
+    Edge(EdgeOrderRow),
+}
+
+impl PendingRow {
+    /// What makes two reads the same set of rows. An edge row's key is its
+    /// position and its ordering key, so a reorder rebuilds and a tick that
+    /// changes nothing does not.
+    fn signature(&self) -> String {
+        match self {
+            Self::Field(target, value) => format!(
+                "{}={}#{:?}",
+                target.path,
+                value,
+                target.info.map(|info| info.type_path())
+            ),
+            Self::Edge(edge) => format!(
+                "edge {} {} @{} #{}",
+                edge.path, edge.edge, edge.slot, edge.index
+            ),
+        }
+    }
+}
+
+/// The edges landing on one variadic inlet, in ordering-key order, as rows.
+///
+/// Task 7.7's input path lives here rather than on the canvas: the inspector
+/// already walks the node's declared inlets and already knows which are
+/// list-shaped, so presenting their fan costs a row type rather than a new
+/// interaction model. Only shown when there are at least two edges -- with one
+/// there is no order to change.
+fn edge_order_rows(
+    graph: &Graph,
+    registry: &bevy_reflect::TypeRegistry,
+    node: GraphNodeId,
+    path: &str,
+) -> Vec<PendingRow> {
+    let mut edges: Vec<&sway_graph::graph::Edge> = graph
+        .edges_into(node)
+        .filter(|edge| edge.dst.path == path)
+        .collect();
+    if edges.len() < 2 {
+        return Vec::new();
+    }
+    edges.sort_by_key(|edge| edge.sort_key());
+    edges
+        .into_iter()
+        .enumerate()
+        .map(|(index, edge)| {
+            PendingRow::Edge(EdgeOrderRow {
+                node,
+                path: path.to_string(),
+                edge: edge.id,
+                slot: edge.slot,
+                index,
+                label: edge_label(graph, registry, edge),
+            })
+        })
+        .collect()
+}
+
+/// How one edge of a variadic inlet is named: the source node's kind and id,
+/// plus the outlet path when that kind has more than one outlet to tell apart.
+fn edge_label(
+    graph: &Graph,
+    registry: &bevy_reflect::TypeRegistry,
+    edge: &sway_graph::graph::Edge,
+) -> String {
+    let Some(source) = graph.get(edge.src.node) else {
+        return format!("{} {}", edge.src.node, edge.src.path);
+    };
+    let kind = short_type_name(source.kind());
+    if part_fields(registry, source.kind(), Part::Outlets).len() > 1 {
+        format!("{kind} {} \u{00b7} {}", edge.src.node, edge.src.path)
+    } else {
+        format!("{kind} {}", edge.src.node)
+    }
+}
+
 /// What `resolve_action` found: an action that commits (`SetField` sent
 /// right away) or one that only records a pending, not-yet-committed edit
 /// (Important #2: text rows also commit on blur).
@@ -659,7 +858,10 @@ fn focus_id_of_row(kind: &RowKind) -> Option<WidgetId> {
         RowKind::Text { input_area, .. } => Some(*input_area),
         RowKind::Bool { toggle, .. } => Some(toggle.id()),
         RowKind::Enum { selector, .. } => Some(selector.id()),
-        RowKind::Header(_) | RowKind::ReadOnly(_) => None,
+        // The move buttons are reachable by Tab like any button, but a row
+        // that holds no typed text has nothing to preserve across a rebuild --
+        // which is all `focus_id_of_row` is consulted for.
+        RowKind::Header(_) | RowKind::ReadOnly(_) | RowKind::EdgeOrder { .. } => None,
     }
 }
 
@@ -680,6 +882,11 @@ fn remove_row(ctx: &mut masonry::core::MutateCtx<'_>, row: Row) {
         RowKind::Enum { label, selector } => {
             ctx.remove_child(label);
             ctx.remove_child(selector);
+        }
+        RowKind::EdgeOrder { label, up, down } => {
+            ctx.remove_child(label);
+            ctx.remove_child(up);
+            ctx.remove_child(down);
         }
     }
 }
@@ -737,6 +944,11 @@ impl Widget for Inspector {
                     ctx.register_child(label);
                     ctx.register_child(selector);
                 }
+                RowKind::EdgeOrder { label, up, down } => {
+                    ctx.register_child(label);
+                    ctx.register_child(up);
+                    ctx.register_child(down);
+                }
             }
         }
     }
@@ -748,6 +960,24 @@ impl Widget for Inspector {
         action: &ErasedAction,
         source: WidgetId,
     ) {
+        if action.downcast_ref::<ButtonPress>().is_some()
+            && let Some((index, delta)) =
+                self.rows
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, row)| match &row.kind {
+                        RowKind::EdgeOrder { up, down, .. } if up.id() == source => {
+                            Some((index, -1))
+                        }
+                        RowKind::EdgeOrder { down, .. } if down.id() == source => Some((index, 1)),
+                        _ => None,
+                    })
+        {
+            self.move_edge(index, delta);
+            ctx.set_handled();
+            return;
+        }
+
         let on_graph = self.graph_commands.is_some();
         match self.resolve_action(action, source) {
             Some(RowEvent::Commit(index, text)) => {
@@ -834,6 +1064,19 @@ impl Widget for Inspector {
                 RowKind::Enum { label, selector } => {
                     place_field(ctx, label, selector, size, y, LABEL_WIDTH);
                 }
+                // Indented under the inlet whose ordering it belongs to, with
+                // the two move buttons pinned to the right.
+                RowKind::EdgeOrder { label, up, down } => {
+                    let x = PADDING * 4.0;
+                    let buttons = MOVE_BUTTON_WIDTH * 2.0;
+                    let label_width = (size.width - x - PADDING - buttons).max(0.0);
+                    ctx.run_layout(label, Size::new(label_width, ROW_HEIGHT));
+                    ctx.place_child(label, Point::new(x, y));
+                    ctx.run_layout(up, Size::new(MOVE_BUTTON_WIDTH, ROW_HEIGHT));
+                    ctx.place_child(up, Point::new(x + label_width, y));
+                    ctx.run_layout(down, Size::new(MOVE_BUTTON_WIDTH, ROW_HEIGHT));
+                    ctx.place_child(down, Point::new(x + label_width + MOVE_BUTTON_WIDTH, y));
+                }
             }
         }
         ctx.set_clip_path(size.to_rect());
@@ -872,6 +1115,9 @@ impl Widget for Inspector {
                 RowKind::Text { label, input, .. } => ids.extend([label.id(), input.id()]),
                 RowKind::Bool { label, toggle } => ids.extend([label.id(), toggle.id()]),
                 RowKind::Enum { label, selector } => ids.extend([label.id(), selector.id()]),
+                RowKind::EdgeOrder { label, up, down } => {
+                    ids.extend([label.id(), up.id(), down.id()])
+                }
             }
         }
         ids.into_iter().collect()
@@ -1143,5 +1389,467 @@ mod tests {
             Some(gain_input_id),
             "focus itself must not be dropped by the rebuild",
         );
+    }
+}
+
+/// The graph model (design D11): the inspector reads the selected node's
+/// `inlets` part through reflection and commits `GraphCommand::SetField`.
+#[cfg(test)]
+mod graph_model_tests {
+    use super::Inspector;
+    use crate::test_kinds::{
+        Gate, Memory, Mixer, Source, chained_sources, registry, source_and_gate, variadic_graph,
+    };
+    use crossbeam_channel::Receiver;
+    use masonry::core::{DefaultProperties, PointerButton, Widget};
+    use masonry_testing::TestHarness;
+    use sway_graph::graph::{FieldValue, Graph, GraphCommand, Node, NodeId as GraphNodeId, Port};
+
+    fn harness(graph: &Graph) -> (TestHarness<Inspector>, Receiver<GraphCommand>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (legacy_tx, _legacy_rx) = crossbeam_channel::unbounded();
+        let mut harness = TestHarness::create(
+            DefaultProperties::default(),
+            Inspector::new(legacy_tx).prepare(),
+        );
+        harness.edit_root_widget(|mut inspector| {
+            Inspector::set_graph_commands(&mut inspector, tx);
+            Inspector::populate_from_graph(&mut inspector, graph, &registry());
+        });
+        (harness, rx)
+    }
+
+    fn selected(graph: &mut Graph, node: GraphNodeId) {
+        graph.set_selection(Some(node));
+    }
+
+    fn paths(harness: &TestHarness<Inspector>) -> Vec<String> {
+        harness
+            .root_widget()
+            .graph_row_paths()
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    fn row_of(harness: &TestHarness<Inspector>, path: &str) -> usize {
+        harness
+            .root_widget()
+            .graph_row_paths()
+            .iter()
+            .position(|row| row.as_deref() == Some(path))
+            .unwrap_or_else(|| panic!("no row for {path}"))
+    }
+
+    #[test]
+    fn the_inspector_lists_the_selected_nodes_inlet_fields() {
+        let (mut graph, source, _gate) = source_and_gate();
+        selected(&mut graph, source);
+        let (harness, _rx) = harness(&graph);
+
+        assert_eq!(paths(&harness), vec!["level", "label", "enabled", "shape"]);
+    }
+
+    #[test]
+    fn an_outlet_is_a_socket_not_an_editable_field() {
+        let (mut graph, source, _gate) = source_and_gate();
+        selected(&mut graph, source);
+        let (harness, _rx) = harness(&graph);
+
+        assert!(
+            !harness.root_widget().graph_lists("out"),
+            "`out` is a canvas socket, not an inspector row",
+        );
+        assert!(!harness.root_widget().graph_lists("pair"));
+    }
+
+    #[test]
+    fn state_is_hidden() {
+        let mut graph = Graph::default();
+        let node = graph.insert(Node::of(bevy_math::Vec2::ZERO, Memory::default()));
+        selected(&mut graph, node);
+        let (harness, _rx) = harness(&graph);
+
+        assert_eq!(paths(&harness), vec!["rate"], "`phase` is state");
+    }
+
+    #[test]
+    fn a_field_with_no_control_is_shown_read_only_rather_than_omitted() {
+        let (mut graph, _sources, mixer) = variadic_graph();
+        selected(&mut graph, mixer);
+        let (harness, _rx) = harness(&graph);
+
+        assert!(
+            harness.root_widget().graph_lists("terms"),
+            "a `Vec<f32>` inlet is still listed",
+        );
+        assert!(
+            !harness.root_widget().graph_row_is_editable("terms"),
+            "and it is not editable",
+        );
+    }
+
+    #[test]
+    fn each_control_comes_from_its_fields_reflected_type() {
+        let (mut graph, source, _gate) = source_and_gate();
+        selected(&mut graph, source);
+        let (harness, _rx) = harness(&graph);
+
+        for path in ["level", "label", "enabled", "shape"] {
+            assert!(
+                harness.root_widget().graph_row_is_editable(path),
+                "{path} has a control",
+            );
+        }
+        // Four editable rows and the kind header, nothing else.
+        assert_eq!(harness.root_widget().row_count(), 5);
+        assert_eq!(harness.root_widget().editable_row_count(), 4);
+    }
+
+    #[test]
+    fn committing_an_edit_sends_one_set_field_naming_the_inlet_path() {
+        let (mut graph, source, _gate) = source_and_gate();
+        selected(&mut graph, source);
+        let (mut harness, rx) = harness(&graph);
+        let row = row_of(&harness, "level");
+
+        harness.edit_root_widget(|mut inspector| {
+            Inspector::commit_graph_for_test(&mut inspector, row, "0.75");
+        });
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![GraphCommand::SetField {
+                node: source,
+                path: "level".to_string(),
+                value: FieldValue::Float(0.75),
+            }],
+        );
+    }
+
+    #[test]
+    fn an_edit_that_does_not_parse_sends_nothing() {
+        let (mut graph, source, _gate) = source_and_gate();
+        selected(&mut graph, source);
+        let (mut harness, rx) = harness(&graph);
+        let row = row_of(&harness, "level");
+
+        harness.edit_root_widget(|mut inspector| {
+            Inspector::commit_graph_for_test(&mut inspector, row, "not a number");
+        });
+
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn committing_on_the_header_row_sends_nothing() {
+        let (mut graph, source, _gate) = source_and_gate();
+        selected(&mut graph, source);
+        let (mut harness, rx) = harness(&graph);
+
+        harness.edit_root_widget(|mut inspector| {
+            Inspector::commit_graph_for_test(&mut inspector, 0, "0.75");
+        });
+
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn a_connected_field_is_still_editable() {
+        // Task 7.8: an inlet with an edge into it accepts an edit; the edit
+        // holds until the next tick propagates over it.
+        let (mut graph, _driver, driven) = chained_sources();
+        selected(&mut graph, driven);
+        let (mut harness, rx) = harness(&graph);
+
+        assert!(
+            graph
+                .edges_into(driven)
+                .any(|edge| edge.dst.path == "level"),
+            "sanity: `level` really is connected",
+        );
+        assert!(harness.root_widget().graph_row_is_editable("level"));
+
+        let row = row_of(&harness, "level");
+        harness.edit_root_widget(|mut inspector| {
+            Inspector::commit_graph_for_test(&mut inspector, row, "0.25");
+        });
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![GraphCommand::SetField {
+                node: driven,
+                path: "level".to_string(),
+                value: FieldValue::Float(0.25),
+            }],
+        );
+    }
+
+    #[test]
+    fn nothing_selected_lists_nothing() {
+        let (graph, _source, _gate) = source_and_gate();
+        let (harness, _rx) = harness(&graph);
+
+        assert!(paths(&harness).is_empty());
+        assert_eq!(harness.root_widget().row_count(), 1, "one header row");
+    }
+
+    #[test]
+    fn an_unchanged_selection_does_not_rebuild_the_rows() {
+        let (mut graph, source, _gate) = source_and_gate();
+        selected(&mut graph, source);
+        let (mut harness, _rx) = harness(&graph);
+        let first = harness.root_widget().generation();
+
+        harness.edit_root_widget(|mut inspector| {
+            Inspector::populate_from_graph(&mut inspector, &graph, &registry());
+        });
+
+        assert_eq!(harness.root_widget().generation(), first);
+    }
+
+    #[test]
+    fn a_focused_row_survives_an_unrelated_value_change() {
+        let (mut graph, source, _gate) = source_and_gate();
+        selected(&mut graph, source);
+        let (mut harness, _rx) = harness(&graph);
+        let row = row_of(&harness, "level");
+        let input_id = harness
+            .root_widget()
+            .row_focus_id(row)
+            .expect("`level` is a text row");
+        harness.focus_on(Some(input_id));
+
+        // A different inlet changes underneath.
+        if let Some(node) = graph.get_mut(source) {
+            let value = sway_graph::graph::path::resolve_mut(
+                node,
+                sway_graph::graph::Part::Inlets,
+                "label",
+            )
+            .expect("`label` resolves");
+            value.try_apply(&"changed".to_string()).expect("same type");
+        }
+        harness.edit_root_widget(|mut inspector| {
+            Inspector::populate_from_graph(&mut inspector, &graph, &registry());
+        });
+
+        assert_eq!(
+            harness
+                .root_widget()
+                .row_focus_id(row_of(&harness, "level")),
+            Some(input_id),
+            "the focused row's widget must survive an unrelated change",
+        );
+        assert_eq!(harness.focused_widget_id(), Some(input_id));
+    }
+
+    // --- MARK: reordering a variadic inlet (task 7.7)
+
+    #[test]
+    fn a_variadic_inlets_edges_are_listed_in_ordering_key_order() {
+        let (mut graph, sources, mixer) = variadic_graph();
+        selected(&mut graph, mixer);
+        let (harness, _rx) = harness(&graph);
+
+        // `variadic_graph` connects sources 0, 1, 2 at slots 30, 10, 20, so
+        // ordering-key order is 1, 2, 0 -- not the order they were connected
+        // in, and not `NodeId` order.
+        assert_eq!(
+            harness.root_widget().graph_edge_rows(),
+            vec![
+                format!("Source {} \u{00b7} out", sources[1]),
+                format!("Source {} \u{00b7} out", sources[2]),
+                format!("Source {} \u{00b7} out", sources[0]),
+            ],
+        );
+        assert!(
+            harness.root_widget().graph_lists("terms"),
+            "the inlet itself is still listed above its edges",
+        );
+    }
+
+    #[test]
+    fn an_edge_label_names_the_outlet_when_the_source_has_more_than_one() {
+        // `Source` declares two outlets (`out` and `pair`), so naming the node
+        // alone would not say which of them this edge leaves from.
+        let (mut graph, sources, mixer) = variadic_graph();
+        selected(&mut graph, mixer);
+        let (harness, _rx) = harness(&graph);
+
+        assert!(
+            harness.root_widget().graph_edge_rows()[0].ends_with("\u{00b7} out"),
+            "got {:?}",
+            harness.root_widget().graph_edge_rows(),
+        );
+        assert!(harness.root_widget().graph_edge_rows()[0].contains(&sources[1].to_string()),);
+    }
+
+    #[test]
+    fn an_edge_label_is_just_the_source_when_its_kind_has_one_outlet() {
+        // `Gate` declares a single outlet, so naming the node says everything.
+        let mut graph = Graph::default();
+        let mixer = graph.insert(Node::of(bevy_math::Vec2::new(400.0, 0.0), Mixer::default()));
+        let first = graph.insert(Node::of(bevy_math::Vec2::ZERO, Gate::default()));
+        let second = graph.insert(Node::of(bevy_math::Vec2::new(0.0, 100.0), Gate::default()));
+        for (node, slot) in [(first, 10), (second, 20)] {
+            graph
+                .connect(Port::new(node, "out"), Port::new(mixer, "terms"), slot)
+                .expect("f32 -> Vec<f32>");
+        }
+        selected(&mut graph, mixer);
+        let (harness, _rx) = harness(&graph);
+
+        assert_eq!(
+            harness.root_widget().graph_edge_rows(),
+            vec![format!("Gate {first}"), format!("Gate {second}")],
+        );
+    }
+
+    #[test]
+    fn an_inlet_with_one_edge_lists_no_ordering_rows() {
+        // There is no order to change, so the fan is not drawn.
+        let mut graph = Graph::default();
+        let mixer = graph.insert(Node::of(bevy_math::Vec2::new(400.0, 0.0), Mixer::default()));
+        let source = graph.insert(Node::of(bevy_math::Vec2::ZERO, Source::default()));
+        graph
+            .connect(Port::new(source, "out"), Port::new(mixer, "terms"), 0)
+            .expect("f32 -> Vec<f32>");
+        selected(&mut graph, mixer);
+        let (harness, _rx) = harness(&graph);
+
+        assert!(harness.root_widget().graph_edge_rows().is_empty());
+        assert!(harness.root_widget().graph_lists("terms"));
+    }
+
+    #[test]
+    fn a_non_variadic_inlet_lists_no_ordering_rows() {
+        let (mut graph, _driver, driven) = chained_sources();
+        selected(&mut graph, driven);
+        let (harness, _rx) = harness(&graph);
+
+        assert!(harness.root_widget().graph_edge_rows().is_empty());
+    }
+
+    #[test]
+    fn moving_an_edge_down_changes_only_the_keys_that_move() {
+        let (mut graph, sources, mixer) = variadic_graph();
+        selected(&mut graph, mixer);
+        let (mut harness, rx) = harness(&graph);
+        // Ordering-key order is [s1@10, s2@20, s0@30]; ids in that order.
+        let ids: Vec<_> = {
+            let mut edges: Vec<_> = graph.edges().to_vec();
+            edges.sort_by_key(|edge| edge.sort_key());
+            edges.into_iter().map(|edge| edge.id).collect()
+        };
+        let (_, down) = harness.root_widget().graph_edge_row_buttons()[0];
+
+        harness.mouse_click_on(down, Some(PointerButton::Primary));
+
+        // The wanted order is [second, first, third] renumbered at 0, 10, 20.
+        // The first edge moves from key 10 to key 10 -- it lands where it
+        // already was, so no `SetSlot` is sent for it.
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![
+                GraphCommand::SetSlot {
+                    edge: ids[1],
+                    slot: 0
+                },
+                GraphCommand::SetSlot {
+                    edge: ids[2],
+                    slot: 20
+                },
+            ],
+        );
+        assert_eq!(sources.len(), 3);
+    }
+
+    #[test]
+    fn moving_an_edge_up_moves_it_the_other_way() {
+        let (mut graph, _sources, mixer) = variadic_graph();
+        selected(&mut graph, mixer);
+        let (mut harness, rx) = harness(&graph);
+        let ids: Vec<_> = {
+            let mut edges: Vec<_> = graph.edges().to_vec();
+            edges.sort_by_key(|edge| edge.sort_key());
+            edges.into_iter().map(|edge| edge.id).collect()
+        };
+        let (up, _) = harness.root_widget().graph_edge_row_buttons()[2];
+
+        harness.mouse_click_on(up, Some(PointerButton::Primary));
+
+        // [first, second, third] -> [first, third, second] at 0, 10, 20; the
+        // second edge keeps key 20 and so is not written.
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![
+                GraphCommand::SetSlot {
+                    edge: ids[0],
+                    slot: 0
+                },
+                GraphCommand::SetSlot {
+                    edge: ids[2],
+                    slot: 10
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn moving_an_edge_past_either_end_sends_nothing() {
+        let (mut graph, _sources, mixer) = variadic_graph();
+        selected(&mut graph, mixer);
+        let (mut harness, rx) = harness(&graph);
+        let buttons = harness.root_widget().graph_edge_row_buttons();
+
+        // The first row's "up" and the last row's "down" have nowhere to go.
+        harness.mouse_click_on(buttons[0].0, Some(PointerButton::Primary));
+        harness.mouse_click_on(buttons[2].1, Some(PointerButton::Primary));
+
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn a_reorder_that_actually_happened_is_read_back_in_the_new_order() {
+        // The graph is the truth: the inspector shows the new order only once
+        // the graph has been told, exactly as the canvas does for selection.
+        let (mut graph, sources, mixer) = variadic_graph();
+        selected(&mut graph, mixer);
+        let (mut harness, rx) = harness(&graph);
+        let (_, down) = harness.root_widget().graph_edge_row_buttons()[0];
+
+        harness.mouse_click_on(down, Some(PointerButton::Primary));
+        for command in rx.try_iter() {
+            let GraphCommand::SetSlot { edge, slot } = command else {
+                panic!("expected SetSlot");
+            };
+            assert!(graph.set_slot(edge, slot), "the key really changed");
+        }
+        harness.edit_root_widget(|mut inspector| {
+            Inspector::populate_from_graph(&mut inspector, &graph, &registry());
+        });
+
+        assert_eq!(
+            harness.root_widget().graph_edge_rows(),
+            vec![
+                format!("Source {} \u{00b7} out", sources[2]),
+                format!("Source {} \u{00b7} out", sources[1]),
+                format!("Source {} \u{00b7} out", sources[0]),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_kind_the_editor_has_never_heard_of_is_inspectable() {
+        // Design D11's claim: no editor-side description is written for a node
+        // kind. `Source` is declared in the test fixtures and nothing in the
+        // widget layer names it.
+        let mut graph = Graph::default();
+        let node = graph.insert(Node::of(bevy_math::Vec2::ZERO, Source::default()));
+        selected(&mut graph, node);
+        let (harness, _rx) = harness(&graph);
+
+        assert_eq!(paths(&harness), vec!["level", "label", "enabled", "shape"]);
     }
 }

@@ -222,7 +222,7 @@ impl Widget for TransportBar {
                 self.view_requests.push(ViewRequest::ToggleCamera);
                 ctx.set_handled();
             }
-            _ => return,
+            _ => {}
         }
     }
 

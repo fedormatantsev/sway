@@ -416,6 +416,43 @@ mod tests {
         );
     }
 
+    /// Task 7.5: the graph model's palette lists node kinds by reflected type
+    /// path, because that is what `GraphCommand::Create` names -- but a user
+    /// picks "Oscillator", not `my_crate::nodes::Oscillator`. The label is
+    /// short; the pick, and the filter, are the full path.
+    #[test]
+    fn short_labels_display_the_last_segment_and_still_pick_the_full_path() {
+        let kinds = vec!["my_crate::nodes::Oscillator", "my_crate::nodes::Remap"];
+        let mut harness = TestHarness::create(
+            DefaultProperties::default(),
+            Palette::new(kinds.clone()).with_short_labels().prepare(),
+        );
+        let row_id = harness
+            .root_widget()
+            .row_id(0)
+            .expect("two rows are listed");
+
+        harness.mouse_click_on(row_id, Some(PointerButton::Primary));
+
+        assert_eq!(
+            harness
+                .pop_action::<PaletteAction>()
+                .map(|(action, _)| action),
+            Some(PaletteAction::Picked("my_crate::nodes::Oscillator")),
+            "the pick carries the type path, not the label",
+        );
+    }
+
+    #[test]
+    fn a_short_labelled_palette_still_filters_on_the_full_path() {
+        let mut palette =
+            Palette::new(vec!["my_crate::nodes::Oscillator", "other::Remap"]).with_short_labels();
+        palette.set_filter("my_crate");
+        assert_eq!(palette.visible(), vec!["my_crate::nodes::Oscillator"]);
+        palette.set_filter("remap");
+        assert_eq!(palette.visible(), vec!["other::Remap"]);
+    }
+
     #[test]
     fn picking_addresses_the_filtered_row_not_the_underlying_one() {
         // The defect this guards against: indexing the pick into `names`

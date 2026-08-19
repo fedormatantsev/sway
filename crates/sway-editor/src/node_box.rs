@@ -231,6 +231,18 @@ impl NodeBox {
         self
     }
 
+    /// Seeds the selected flag on a box that is being created already
+    /// selected. Needed for the same reason `with_initial_transform` is: a
+    /// pod created during a mutate pass is not in masonry's arena yet, so its
+    /// parent cannot reach it through `get_mut` until the following update
+    /// pass -- and a graph whose selection points at a node the canvas has
+    /// never seen (a fresh document, or a node created by the palette) is
+    /// exactly that case.
+    pub(crate) fn with_selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
     /// The field-path sockets this box draws, if it was laid out from the
     /// graph model.
     pub fn graph_sockets(&self) -> Option<&GraphSocketPaths> {

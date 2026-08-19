@@ -69,6 +69,15 @@ pub fn fields_of(info: &'static TypeInfo) -> Vec<PartField> {
     }
 }
 
+/// Whether this inlet accepts several connections at once.
+///
+/// `sway-graph` decides that by matching the destination type as
+/// `TypeInfo::List` (`D == Vec<S>`), so this asks the same question of the same
+/// type information rather than keeping a second list of variadic field names.
+pub fn is_variadic(info: &TypeInfo) -> bool {
+    matches!(info, TypeInfo::List(_))
+}
+
 /// Whether this field wants a checkbox.
 pub fn is_bool(info: &TypeInfo) -> bool {
     info.type_id() == TypeId::of::<bool>()

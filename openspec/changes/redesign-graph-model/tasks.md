@@ -59,14 +59,14 @@ correctly at the end of groups 5, 6 and 7.
 ## 7. sway-editor — read path and commands
 
 - [ ] 7.1 Delete `snapshot.rs`. Populate widgets from a reflected read of `&Graph` during the presenter's step 0, with no `Arc`, mutex or copy (design D11).
-- [ ] 7.2 Derive inspector controls from each field's reflected type; show a field with no control read-only rather than omitting it (`editor`: The editor reads the graph without a parallel model).
-- [ ] 7.3 Re-address sockets to `(NodeId, field path)`, discovered from the node kind's declared inlets and outlets so an unconnected inlet still has a socket.
-- [ ] 7.4 Re-address the canvas: edges carry two paths and a slot, and attach to the sockets whose keys are those paths.
-- [ ] 7.5 Build the palette from registered node kinds, replacing `ComponentDocRegistry` and retiring roadmap D4.
-- [ ] 7.6 Point drag-to-connect at the graph command set, surfacing refusal for illegal types, self-connections and replacement on a single-connection inlet.
-- [ ] 7.7 Allow reordering the edges on a variadic inlet by changing one edge's slot (`editor`: Edges carry two field paths and an ordering key).
-- [ ] 7.8 Make the inspector accept edits to connected fields (`editor`: Inspector shows inlets only — a connected field is still editable).
-- [ ] 7.9 `cargo test -p sway-editor`.
+- [x] 7.2 Derive inspector controls from each field's reflected type; show a field with no control read-only rather than omitting it (`editor`: The editor reads the graph without a parallel model).
+- [x] 7.3 Re-address sockets to `(NodeId, field path)`, discovered from the node kind's declared inlets and outlets so an unconnected inlet still has a socket.
+- [x] 7.4 Re-address the canvas: edges carry two paths and a slot, and attach to the sockets whose keys are those paths.
+- [x] 7.5 Build the palette from registered node kinds, replacing `ComponentDocRegistry` and retiring roadmap D4.
+- [x] 7.6 Point drag-to-connect at the graph command set, surfacing refusal for illegal types, self-connections and replacement on a single-connection inlet.
+- [x] 7.7 Allow reordering the edges on a variadic inlet by changing one edge's slot (`editor`: Edges carry two field paths and an ordering key).
+- [x] 7.8 Make the inspector accept edits to connected fields (`editor`: Inspector shows inlets only — a connected field is still editable).
+- [x] 7.9 `cargo test -p sway-editor`.
 
 ## 8. sway-app — project lifecycle
 

@@ -780,6 +780,83 @@ mod tests {
         );
     }
 
+    /// The whole graph-model read path, exactly as `sway-app`'s presenter
+    /// drives it at step 0: `set_graph_commands` once, then `apply_graph` per
+    /// frame with a borrowed `&Graph` and the `TypeRegistry`. No snapshot, no
+    /// `Arc`, no copy.
+    #[test]
+    fn apply_graph_populates_every_pane_from_a_borrowed_graph() {
+        use crate::inspector::Inspector;
+        use crate::scene_tree::SceneTree;
+        use crate::test_kinds::{registry, source_and_gate};
+
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
+        let (graph_tx, graph_rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(1200, 800), 1.0, tx, viewport_tx);
+        ui.set_graph_commands(graph_tx);
+
+        let (mut graph, source, gate) = source_and_gate();
+        graph.set_selection(Some(gate));
+        let registry = registry();
+
+        ui.apply_graph(&graph, &registry);
+        ui.redraw();
+
+        let sockets = ui
+            .root
+            .edit_widget_with_tag(crate::GRAPH_CANVAS_TAG, |canvas| {
+                canvas.widget.graph_sockets_of(gate)
+            });
+        assert_eq!(
+            sockets.len(),
+            3,
+            "two declared inlets and one outlet: {sockets:?}",
+        );
+        let rows = ui
+            .root
+            .edit_widget_with_tag(crate::INSPECTOR_TAG, |inspector| {
+                Inspector::graph_row_paths(inspector.widget)
+            });
+        assert_eq!(
+            rows.into_iter().flatten().collect::<Vec<_>>(),
+            vec!["gate".to_string(), "amount".to_string()],
+            "the inspector lists the selected node's inlets only",
+        );
+        let tree_rows = ui.root.edit_widget_with_tag(crate::SCENE_TREE_TAG, |tree| {
+            SceneTree::graph_rows(tree.widget)
+        });
+        assert_eq!(tree_rows, vec![None, Some(source), Some(gate)]);
+
+        // Reading it twice with an unchanged graph is cheap and idempotent.
+        ui.apply_graph(&graph, &registry);
+        ui.redraw();
+        assert!(
+            graph_rx.try_iter().next().is_none(),
+            "a read writes nothing"
+        );
+    }
+
+    #[test]
+    fn apply_transport_updates_the_bar_without_a_snapshot() {
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
+        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx, viewport_tx);
+
+        ui.apply_transport(&sway_midi::Transport {
+            playing: true,
+            bpm: 128.0,
+            ppq: 17.5,
+            locked: true,
+            beats_per_bar: 4,
+        });
+
+        let fields = ui
+            .root
+            .edit_widget_with_tag(crate::TRANSPORT_BAR_TAG, |bar| bar.widget.fields());
+        assert_eq!(fields, vec!["PLAY", "128.0 BPM", "005.2.3"]);
+    }
+
     #[test]
     fn a_set_cursor_signal_is_handed_to_the_shell_once() {
         // Drag-to-connect (Task 15) wants cursor feedback, and the shell owns

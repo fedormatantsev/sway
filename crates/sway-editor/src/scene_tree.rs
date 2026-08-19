@@ -644,3 +644,103 @@ mod tests {
         assert_eq!(harness.root_widget().selected(), Some(entity(1)));
     }
 }
+
+/// The graph model (design D11): the pane lists the graph's nodes and asks the
+/// graph to move its selection.
+#[cfg(test)]
+mod graph_model_tests {
+    use super::SceneTree;
+    use crate::test_kinds::source_and_gate;
+    use masonry::core::{DefaultProperties, PointerButton, Widget};
+    use masonry_testing::TestHarness;
+    use sway_graph::graph::{Graph, GraphCommand};
+
+    fn harness(
+        graph: &Graph,
+    ) -> (
+        TestHarness<SceneTree>,
+        crossbeam_channel::Receiver<GraphCommand>,
+    ) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (legacy_tx, _legacy_rx) = crossbeam_channel::unbounded();
+        let mut harness = TestHarness::create(
+            DefaultProperties::default(),
+            SceneTree::new(legacy_tx).prepare(),
+        );
+        harness.edit_root_widget(|mut tree| {
+            SceneTree::set_graph_commands(&mut tree, tx);
+            SceneTree::populate_from_graph(&mut tree, graph);
+        });
+        (harness, rx)
+    }
+
+    #[test]
+    fn every_graph_node_gets_a_row_under_one_header() {
+        let (graph, source, gate) = source_and_gate();
+        let (harness, _rx) = harness(&graph);
+
+        assert_eq!(
+            harness.root_widget().graph_rows(),
+            vec![None, Some(source), Some(gate)],
+        );
+    }
+
+    #[test]
+    fn pressing_a_row_asks_the_graph_to_select_it() {
+        let (graph, source, _gate) = source_and_gate();
+        let (mut harness, rx) = harness(&graph);
+
+        // Row 1 is the first node; row 0 is the header.
+        harness.mouse_move(masonry_core::kurbo::Point::new(
+            20.0,
+            super::ROW_HEIGHT * 1.5,
+        ));
+        harness.mouse_button_press(Some(PointerButton::Primary));
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![GraphCommand::Select { node: Some(source) }],
+        );
+        assert_eq!(
+            harness.root_widget().graph_selected(),
+            None,
+            "the pane only asks -- the graph's answer is what highlights",
+        );
+    }
+
+    #[test]
+    fn the_graphs_answer_is_what_highlights_a_row() {
+        let (mut graph, _source, gate) = source_and_gate();
+        graph.set_selection(Some(gate));
+        let (harness, _rx) = harness(&graph);
+
+        assert_eq!(harness.root_widget().graph_selected(), Some(gate));
+    }
+
+    #[test]
+    fn an_unchanged_graph_rebuilds_nothing() {
+        let (graph, _source, _gate) = source_and_gate();
+        let (mut harness, _rx) = harness(&graph);
+        let first = harness.root_widget().generation();
+
+        harness.edit_root_widget(|mut tree| {
+            SceneTree::populate_from_graph(&mut tree, &graph);
+        });
+
+        assert_eq!(harness.root_widget().generation(), first);
+    }
+
+    #[test]
+    fn a_header_press_selects_nothing() {
+        let (graph, _source, _gate) = source_and_gate();
+        let (mut harness, rx) = harness(&graph);
+
+        harness.mouse_move(masonry_core::kurbo::Point::new(
+            20.0,
+            super::ROW_HEIGHT * 0.5,
+        ));
+        harness.mouse_button_press(Some(PointerButton::Primary));
+
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+}

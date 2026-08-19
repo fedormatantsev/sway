@@ -175,9 +175,7 @@ impl Widget for Viewport {
                 gesture: PointerGesture::Pinch(delta),
                 ..
             }) => {
-                self.send(ViewportInput::Pinch {
-                    delta: *delta as f32,
-                });
+                self.send(ViewportInput::Pinch { delta: *delta });
                 ctx.set_handled();
             }
             _ => {}

@@ -87,6 +87,41 @@ struct IncomingNode {
     outlets: Vec<GraphSocket>,
 }
 
+/// The `SetSlot` commands that move one edge of a variadic inlet from position
+/// `from` to position `to` within that inlet's ordering.
+///
+/// `order` is the inlet's edges in ordering-key order -- `(slot, source node,
+/// edge id)`, which is exactly the order the graph fills the inlet's `Vec` in.
+///
+/// Slots are renumbered at a fixed spacing rather than squeezed between two
+/// neighbours: an inlet whose keys are already adjacent has no gap to squeeze
+/// into, and a reorder that silently did nothing would be worse than one that
+/// rewrites three keys. Only the edges whose key actually changes are emitted,
+/// so an equal write still reports nothing.
+///
+/// One owner for the rule, two callers: the canvas exposes it as
+/// [`GraphCanvas::reorder_graph_inlet`], and the inspector's edge-order rows
+/// (task 7.7's input path) call it directly.
+pub fn reorder_commands(order: &[(EdgeId, i32)], from: usize, to: usize) -> Vec<GraphCommand> {
+    if from >= order.len() || to >= order.len() || from == to {
+        return Vec::new();
+    }
+    let mut wanted: Vec<(EdgeId, i32)> = order.to_vec();
+    let moved = wanted.remove(from);
+    wanted.insert(to, moved);
+    wanted
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, (edge, slot))| {
+            let wanted_slot = (index as i32) * SLOT_SPACING;
+            (wanted_slot != slot).then_some(GraphCommand::SetSlot {
+                edge,
+                slot: wanted_slot,
+            })
+        })
+        .collect()
+}
+
 /// The sockets one node offers on one side, taken from the node kind's
 /// declared schema rather than from the edge list.
 fn sockets_of(
@@ -1193,6 +1228,7 @@ impl GraphCanvas {
         registry: &bevy_reflect::TypeRegistry,
     ) {
         this.widget.graph_palette = registered_node_kinds(registry);
+        let selection = graph.selection();
 
         let incoming: Vec<IncomingNode> = graph
             .iter()
@@ -1219,6 +1255,7 @@ impl GraphCanvas {
             }
         }
 
+        let mut created: HashSet<GraphNodeId> = HashSet::new();
         for node in incoming {
             let paths = GraphSocketPaths {
                 inlets: node.inlets.iter().map(|s| s.path.clone()).collect(),
@@ -1249,11 +1286,17 @@ impl GraphCanvas {
                     let transform = Affine::translate(this.widget.pan)
                         * Affine::scale(this.widget.zoom)
                         * Affine::translate(node.pos.to_vec2());
+                    // A box created in this very call is not in masonry's
+                    // arena yet, so everything it needs must be baked in
+                    // rather than pushed through `get_mut` afterwards -- see
+                    // `NodeBox::initial_transform`'s doc comment.
                     let pod = NodeBox::new(node.label.clone())
                         .with_initial_transform(transform)
                         .with_graph_sockets(paths)
+                        .with_selected(selection == Some(node.id))
                         .prepare()
                         .to_pod();
+                    created.insert(node.id);
                     this.widget.graph_slots.insert(
                         node.id,
                         GraphNodeSlot {
@@ -1288,7 +1331,9 @@ impl GraphCanvas {
             })
             .collect();
 
-        Self::set_graph_selected(this, graph.selection());
+        // A box created above already carries the right flag; reaching into
+        // it here would panic on a pod masonry has not registered yet.
+        Self::move_graph_selection(this, selection, &created);
         Self::sync_status(this);
         this.ctx.request_render();
     }
@@ -1296,18 +1341,30 @@ impl GraphCanvas {
     /// Sets which graph node is highlighted. Selection is the graph's, not
     /// this canvas's: a press only asks.
     pub fn set_graph_selected(this: &mut WidgetMut<'_, Self>, selected: Option<GraphNodeId>) {
+        Self::move_graph_selection(this, selected, &HashSet::new());
+    }
+
+    /// Moves the highlight, skipping any box created during this same call --
+    /// those already carry the flag, and are not yet reachable by `get_mut`.
+    fn move_graph_selection(
+        this: &mut WidgetMut<'_, Self>,
+        selected: Option<GraphNodeId>,
+        created: &HashSet<GraphNodeId>,
+    ) {
         let previous = this.widget.graph_selected;
         if previous == selected {
             return;
         }
         this.widget.graph_selected = selected;
         if let Some(id) = previous
+            && !created.contains(&id)
             && let Some(slot) = this.widget.graph_slots.get_mut(&id)
         {
             let mut child = this.ctx.get_mut(&mut slot.pod);
             NodeBox::set_selected(&mut child, false);
         }
         if let Some(id) = selected
+            && !created.contains(&id)
             && let Some(slot) = this.widget.graph_slots.get_mut(&id)
         {
             let mut child = this.ctx.get_mut(&mut slot.pod);
@@ -1404,20 +1461,14 @@ impl GraphCanvas {
         from: usize,
         to: usize,
     ) {
-        let mut order = this.widget.graph_inlet_edges(node, path);
-        if from >= order.len() || to >= order.len() || from == to {
-            return;
-        }
-        let edge = order.remove(from);
-        order.insert(to, edge);
-        for (index, edge) in order.iter().enumerate() {
-            let slot = (index as i32) * SLOT_SPACING;
-            if slot != edge.slot {
-                this.widget.send(GraphCommand::SetSlot {
-                    edge: edge.id,
-                    slot,
-                });
-            }
+        let order: Vec<(EdgeId, i32)> = this
+            .widget
+            .graph_inlet_edges(node, path)
+            .into_iter()
+            .map(|edge| (edge.id, edge.slot))
+            .collect();
+        for command in reorder_commands(&order, from, to) {
+            this.widget.send(command);
         }
     }
 
@@ -1462,6 +1513,24 @@ impl GraphCanvas {
             }
         }
         None
+    }
+
+    /// Canvas-space position of one socket, found by its key.
+    ///
+    /// Where a dot is drawn is a position in a list; *which* dot it is, is the
+    /// field path. This looks up the second and returns the first, which is
+    /// what every caller actually wants.
+    pub fn graph_socket_position(
+        &self,
+        node: GraphNodeId,
+        kind: &GraphSocketKind,
+    ) -> Option<Point> {
+        let slot = self.graph_slots.get(&node)?;
+        let local = match kind {
+            GraphSocketKind::Inlet(path) => slot.inlet_local(path)?,
+            GraphSocketKind::Outlet(path) => slot.outlet_local(path)?,
+        };
+        Some(slot.pos + local.to_vec2())
     }
 
     /// Canvas-space endpoints of one painted edge, resolved exactly the way
@@ -3237,6 +3306,636 @@ mod tests {
                 src,
                 dst
             }],
+        );
+    }
+}
+
+/// The graph model (design D11): the canvas reads `&Graph` directly, sockets
+/// are `(NodeId, field path)` taken from each node kind's declared schema, and
+/// every gesture sends a `GraphCommand`.
+#[cfg(test)]
+mod graph_model_tests {
+    use super::{ConnectFeedback, GraphCanvas, GraphSocketKind, GraphSocketRef};
+    use crate::test_kinds::{
+        Gate, Memory, Mixer, Placer, Source, registry, source_and_gate, variadic_graph,
+    };
+    use bevy_math::Vec2 as WorldVec2;
+    use crossbeam_channel::Receiver;
+    use masonry::core::{DefaultProperties, PointerButton, Widget};
+    use masonry_core::kurbo::Point;
+    use masonry_testing::TestHarness;
+    use sway_graph::graph::{ConnectError, Graph, GraphCommand, Node, NodeId as GraphNodeId, Port};
+
+    fn harness(graph: &Graph) -> (TestHarness<GraphCanvas>, Receiver<GraphCommand>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        // The entity/wire sender the old path still requires. Nothing in these
+        // tests sends through it; a graph-driven canvas never touches it.
+        let (legacy_tx, _legacy_rx) = crossbeam_channel::unbounded();
+        let mut harness = TestHarness::create(
+            DefaultProperties::default(),
+            GraphCanvas::new(legacy_tx).prepare(),
+        );
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::set_graph_commands(&mut canvas, tx);
+            GraphCanvas::populate_from_graph(&mut canvas, graph, &registry());
+        });
+        (harness, rx)
+    }
+
+    fn repopulate(harness: &mut TestHarness<GraphCanvas>, graph: &Graph) {
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::populate_from_graph(&mut canvas, graph, &registry());
+        });
+    }
+
+    fn inlet(path: &str) -> GraphSocketKind {
+        GraphSocketKind::Inlet(path.to_string())
+    }
+
+    fn outlet(path: &str) -> GraphSocketKind {
+        GraphSocketKind::Outlet(path.to_string())
+    }
+
+    /// Drives a whole drag through the canvas's own press/release handling.
+    fn drag(
+        harness: &mut TestHarness<GraphCanvas>,
+        from: GraphNodeId,
+        from_path: &str,
+        onto: Point,
+    ) {
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::graph_socket_pressed_for_test(
+                &mut canvas,
+                GraphSocketRef {
+                    node: from,
+                    kind: GraphSocketKind::Outlet(from_path.to_string()),
+                },
+            );
+            GraphCanvas::graph_connect_released_for_test(&mut canvas, onto);
+        });
+    }
+
+    fn socket_point(
+        harness: &TestHarness<GraphCanvas>,
+        node: GraphNodeId,
+        kind: GraphSocketKind,
+    ) -> Point {
+        harness
+            .root_widget()
+            .graph_socket_position(node, &kind)
+            .unwrap_or_else(|| panic!("no socket keyed {kind:?} on {node}"))
+    }
+
+    // --- MARK: inlet identity is a field path
+
+    #[test]
+    fn two_inlets_are_two_sockets_keyed_by_their_field_paths() {
+        let (graph, source, gate) = source_and_gate();
+        let (harness, _rx) = harness(&graph);
+
+        assert_eq!(
+            harness.root_widget().graph_sockets_of(gate),
+            vec![inlet("gate"), inlet("amount"), outlet("out")],
+            "sockets come from the kind's declared inlets and outlets",
+        );
+
+        let edge = harness.root_widget().graph_edges()[0].clone();
+        assert_eq!(edge.src, source);
+        assert_eq!(edge.src_path, "out");
+        assert_eq!(edge.dst, gate);
+        assert_eq!(edge.dst_path, "gate", "the edge names the inlet's path");
+    }
+
+    #[test]
+    fn an_unwired_inlet_still_has_a_socket() {
+        let (graph, _source, gate) = source_and_gate();
+        let (harness, _rx) = harness(&graph);
+
+        assert!(
+            harness
+                .root_widget()
+                .graph_sockets_of(gate)
+                .contains(&inlet("amount")),
+            "an inlet with nothing connected to it is still a socket",
+        );
+        assert!(!harness.root_widget().graph_inlet_connected(gate, "amount"));
+        assert!(harness.root_widget().graph_inlet_connected(gate, "gate"));
+    }
+
+    #[test]
+    fn re_sorting_a_nodes_sockets_does_not_move_its_edge() {
+        // Layout order is a position in a list; identity is the field path.
+        let (graph, _source, gate) = source_and_gate();
+        let (mut harness, _rx) = harness(&graph);
+        let edge_id = harness.root_widget().graph_edges()[0].id;
+
+        let before = harness.root_widget().graph_edge_endpoints(edge_id).unwrap();
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::reverse_graph_inlets_for_test(&mut canvas, gate);
+        });
+        let after = harness.root_widget().graph_edge_endpoints(edge_id).unwrap();
+
+        assert_ne!(before.1, after.1, "the dot itself moved");
+        assert_eq!(
+            after.1,
+            socket_point(&harness, gate, inlet("gate")),
+            "the edge still lands on the socket whose key is its path",
+        );
+        assert_eq!(before.0, after.0, "the source end did not move");
+    }
+
+    // --- MARK: edges carry two paths and an ordering key
+
+    #[test]
+    fn an_edge_lands_on_its_own_socket_not_the_first_one() {
+        let (graph, _source, gate) = source_and_gate();
+        let (harness, _rx) = harness(&graph);
+        let edge_id = harness.root_widget().graph_edges()[0].id;
+
+        let (_, to) = harness.root_widget().graph_edge_endpoints(edge_id).unwrap();
+        assert_eq!(to, socket_point(&harness, gate, inlet("gate")));
+        assert_ne!(
+            to,
+            socket_point(&harness, gate, inlet("amount")),
+            "the two inlets are at different heights, and only one is wired",
+        );
+    }
+
+    #[test]
+    fn edges_on_a_variadic_inlet_are_presented_in_ordering_key_order() {
+        let (graph, sources, mixer) = variadic_graph();
+        let (harness, _rx) = harness(&graph);
+
+        let order = harness.root_widget().graph_inlet_edges(mixer, "terms");
+        assert_eq!(
+            order.iter().map(|edge| edge.src).collect::<Vec<_>>(),
+            vec![sources[1], sources[2], sources[0]],
+            "slots 10, 20, 30 -- not the order they were connected in",
+        );
+        assert_eq!(
+            order.iter().map(|edge| edge.slot).collect::<Vec<_>>(),
+            vec![10, 20, 30],
+        );
+    }
+
+    #[test]
+    fn reordering_a_variadic_inlet_changes_the_edges_slots() {
+        let (graph, sources, mixer) = variadic_graph();
+        let (mut harness, rx) = harness(&graph);
+        let before = harness.root_widget().graph_inlet_edges(mixer, "terms");
+
+        // Move the first edge to the back.
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::reorder_graph_inlet(&mut canvas, mixer, "terms", 0, 2);
+        });
+
+        let commands: Vec<_> = rx.try_iter().collect();
+        let slots: Vec<(u64, i32)> = commands
+            .iter()
+            .map(|command| match command {
+                GraphCommand::SetSlot { edge, slot } => (edge.get(), *slot),
+                other => panic!("expected SetSlot, got {other:?}"),
+            })
+            .collect();
+        // The wanted order is [second, third, first] at 0, 10, 20.
+        assert_eq!(
+            slots,
+            vec![
+                (before[1].id.get(), 0),
+                (before[2].id.get(), 10),
+                (before[0].id.get(), 20),
+            ],
+        );
+        assert_eq!(
+            slots.iter().map(|(edge, _)| *edge).collect::<Vec<_>>(),
+            vec![before[1].id.get(), before[2].id.get(), before[0].id.get()],
+            "the moved edge ends up last",
+        );
+        assert_eq!(before[0].src, sources[1], "sanity: slot 10 was first");
+    }
+
+    #[test]
+    fn reordering_to_where_it_already_is_sends_nothing() {
+        let (graph, _sources, mixer) = variadic_graph();
+        let (mut harness, rx) = harness(&graph);
+
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::reorder_graph_inlet(&mut canvas, mixer, "terms", 1, 1);
+        });
+
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    // --- MARK: connect and disconnect name a field path
+
+    #[test]
+    fn a_legal_drop_sends_connect_naming_both_nodes_and_both_paths() {
+        let (graph, source, gate) = source_and_gate();
+        let (mut harness, rx) = harness(&graph);
+        let onto = socket_point(&harness, gate, inlet("amount"));
+
+        drag(&mut harness, source, "out", onto);
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![GraphCommand::Connect {
+                src: Port::new(source, "out"),
+                dst: Port::new(gate, "amount"),
+                slot: 0,
+            }],
+        );
+        assert_eq!(
+            harness.root_widget().connect_feedback(),
+            Some(&ConnectFeedback::Connected),
+        );
+    }
+
+    #[test]
+    fn an_illegal_drop_creates_no_edge_and_says_why() {
+        let mut graph = Graph::default();
+        let source = graph.insert(Node::of(WorldVec2::ZERO, Source::default()));
+        let placer = graph.insert(Node::of(WorldVec2::new(400.0, 0.0), Placer::default()));
+        let (mut harness, rx) = harness(&graph);
+        let onto = socket_point(&harness, placer, inlet("position"));
+
+        // `out` is an f32; `position` is a Vec3.
+        drag(&mut harness, source, "out", onto);
+
+        assert_eq!(rx.try_iter().count(), 0, "nothing is sent for a refusal");
+        match harness.root_widget().connect_feedback() {
+            Some(ConnectFeedback::Refused(ConnectError::IncompatibleTypes { src, dst })) => {
+                assert!(src.ends_with("f32"), "got {src}");
+                assert!(dst.ends_with("Vec3"), "got {dst}");
+            }
+            other => panic!("expected an incompatible-types refusal, got {other:?}"),
+        }
+        assert!(
+            harness
+                .root_widget()
+                .connect_feedback()
+                .unwrap()
+                .message()
+                .starts_with("refused:"),
+            "the refusal reaches the user as text",
+        );
+    }
+
+    #[test]
+    fn a_self_connection_is_refused() {
+        let mut graph = Graph::default();
+        let source = graph.insert(Node::of(WorldVec2::ZERO, Source::default()));
+        let (mut harness, rx) = harness(&graph);
+        // `out` and `level` are both f32, so only the self-connection rule
+        // stands between this drag and an edge.
+        let onto = socket_point(&harness, source, inlet("level"));
+
+        drag(&mut harness, source, "out", onto);
+
+        assert_eq!(rx.try_iter().count(), 0);
+        assert_eq!(
+            harness.root_widget().connect_feedback(),
+            Some(&ConnectFeedback::Refused(ConnectError::SelfConnection)),
+        );
+    }
+
+    #[test]
+    fn dropping_onto_an_occupied_single_connection_inlet_replaces_rather_than_refusing() {
+        let (mut graph, _source, gate) = source_and_gate();
+        let second = graph.insert(Node::of(WorldVec2::new(0.0, 200.0), Source::default()));
+        let (mut harness, rx) = harness(&graph);
+        let onto = socket_point(&harness, gate, inlet("gate"));
+
+        drag(&mut harness, second, "out", onto);
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![GraphCommand::Connect {
+                src: Port::new(second, "out"),
+                dst: Port::new(gate, "gate"),
+                slot: 0,
+            }],
+            "replacement is the graph's job -- the command is still sent",
+        );
+        assert_eq!(
+            harness.root_widget().connect_feedback(),
+            Some(&ConnectFeedback::Replaced),
+            "and it is presented as a replacement, not as a refusal",
+        );
+    }
+
+    #[test]
+    fn a_new_edge_on_a_variadic_inlet_lands_after_the_ones_already_there() {
+        let (mut graph, _sources, mixer) = variadic_graph();
+        let extra = graph.insert(Node::of(WorldVec2::new(0.0, 400.0), Source::default()));
+        let (mut harness, rx) = harness(&graph);
+        let onto = socket_point(&harness, mixer, inlet("terms"));
+
+        drag(&mut harness, extra, "out", onto);
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![GraphCommand::Connect {
+                src: Port::new(extra, "out"),
+                dst: Port::new(mixer, "terms"),
+                slot: 40,
+            }],
+            "the highest existing key is 30, so the new edge takes 40",
+        );
+        assert_eq!(
+            harness.root_widget().connect_feedback(),
+            Some(&ConnectFeedback::Connected),
+            "a variadic inlet keeps every edge -- nothing was replaced",
+        );
+    }
+
+    #[test]
+    fn a_drop_over_empty_canvas_sends_nothing() {
+        let (graph, source, _gate) = source_and_gate();
+        let (mut harness, rx) = harness(&graph);
+
+        drag(&mut harness, source, "out", Point::new(-900.0, -900.0));
+
+        assert_eq!(rx.try_iter().count(), 0);
+        assert!(harness.root_widget().graph_drag_origin().is_none());
+    }
+
+    #[test]
+    fn pressing_a_connected_inlet_disconnects_that_edge() {
+        let (graph, _source, gate) = source_and_gate();
+        let (mut harness, rx) = harness(&graph);
+        let edge = harness.root_widget().graph_edges()[0].id;
+
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::graph_socket_pressed_for_test(
+                &mut canvas,
+                GraphSocketRef {
+                    node: gate,
+                    kind: inlet("gate"),
+                },
+            );
+        });
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![GraphCommand::Disconnect { edge }],
+        );
+    }
+
+    #[test]
+    fn pressing_an_unconnected_inlet_sends_nothing() {
+        let (graph, _source, gate) = source_and_gate();
+        let (mut harness, rx) = harness(&graph);
+
+        harness.edit_root_widget(|mut canvas| {
+            GraphCanvas::graph_socket_pressed_for_test(
+                &mut canvas,
+                GraphSocketRef {
+                    node: gate,
+                    kind: inlet("amount"),
+                },
+            );
+        });
+
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    /// The whole gesture through real pointer dispatch: a press on the
+    /// source's outlet dot, a move, and a release on the target's inlet dot,
+    /// with no `_for_test` seam anywhere in the path.
+    #[test]
+    fn a_real_press_drag_release_connects_with_no_bypass() {
+        let (graph, source, gate) = source_and_gate();
+        let (mut harness, rx) = harness(&graph);
+        // The outlet dot sits exactly on the box's right edge, which is the
+        // hit-test rect's exclusive boundary -- one pixel inside is where a
+        // real click near the dot actually lands.
+        let from = socket_point(&harness, source, outlet("out"))
+            - masonry_core::kurbo::Vec2::new(1.0, 0.0);
+        let onto = socket_point(&harness, gate, inlet("amount"));
+
+        harness.mouse_move(from);
+        harness.mouse_button_press(Some(PointerButton::Primary));
+        harness.mouse_move(onto);
+        harness.mouse_button_release(Some(PointerButton::Primary));
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![GraphCommand::Connect {
+                src: Port::new(source, "out"),
+                dst: Port::new(gate, "amount"),
+                slot: 0,
+            }],
+        );
+    }
+
+    // --- MARK: the rest of the command set
+
+    #[test]
+    fn the_palette_lists_every_registered_node_kind() {
+        let (graph, _source, _gate) = source_and_gate();
+        let (mut harness, rx) = harness(&graph);
+
+        harness.mouse_move(Point::new(200.0, 150.0));
+        harness.mouse_button_press(Some(PointerButton::Secondary));
+        let layer_id = harness
+            .root_widget()
+            .palette_layer_id()
+            .expect("a secondary press opens the palette");
+        let listed = harness.edit_widget_with_id(layer_id, |mut widget| {
+            widget
+                .downcast::<crate::palette::Palette>()
+                .widget
+                .visible()
+        });
+
+        assert_eq!(
+            listed,
+            vec![
+                Gate::path(),
+                Memory::path(),
+                Mixer::path(),
+                Placer::path(),
+                Source::path()
+            ],
+            "every registered node kind, sorted -- no ComponentDocRegistry",
+        );
+
+        // And picking one creates it, by type path, where the click landed.
+        let row_id = harness
+            .edit_widget_with_id(layer_id, |mut widget| {
+                widget
+                    .downcast::<crate::palette::Palette>()
+                    .widget
+                    .row_id(0)
+            })
+            .expect("the palette has rows");
+        let centre = {
+            let row = harness.get_widget_with_id(row_id);
+            row.ctx().window_transform() * row.ctx().border_box().center()
+        };
+        harness.mouse_move(centre);
+        harness.mouse_button_press(Some(PointerButton::Primary));
+        harness.mouse_button_release(Some(PointerButton::Primary));
+
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![GraphCommand::Create {
+                kind: Gate::path().to_string(),
+                pos: WorldVec2::new(200.0, 150.0),
+            }],
+        );
+    }
+
+    #[test]
+    fn a_click_asks_the_graph_to_select_and_delete_removes_the_selection() {
+        let (mut graph, source, _gate) = source_and_gate();
+        let (mut harness, rx) = harness(&graph);
+
+        // A press on the node body, away from every socket.
+        harness.mouse_move(Point::new(80.0, 36.0));
+        harness.mouse_button_press(Some(PointerButton::Primary));
+        harness.mouse_button_release(Some(PointerButton::Primary));
+        let commands: Vec<_> = rx.try_iter().collect();
+        assert!(
+            commands.contains(&GraphCommand::Select { node: Some(source) }),
+            "the click must ask the graph to select; got {commands:?}",
+        );
+
+        // The graph is the only owner of selection: the highlight moves when
+        // the next read says so, not when the click happens.
+        graph.set_selection(Some(source));
+        repopulate(&mut harness, &graph);
+        assert_eq!(harness.root_widget().graph_selected(), Some(source));
+
+        harness.process_text_event(masonry::core::TextEvent::Keyboard(
+            masonry::core::keyboard::KeyboardEvent::key_down(
+                masonry::core::keyboard::Key::Named(masonry::core::keyboard::NamedKey::Delete),
+                masonry::core::keyboard::Code::Delete,
+            ),
+        ));
+
+        assert!(
+            rx.try_iter()
+                .any(|command| command == GraphCommand::Delete { node: source }),
+            "Delete must ask the graph to remove the selected node",
+        );
+    }
+
+    #[test]
+    fn ending_a_drag_reports_the_nodes_new_position() {
+        let (graph, source, _gate) = source_and_gate();
+        let (mut harness, rx) = harness(&graph);
+
+        harness.mouse_move(Point::new(80.0, 36.0));
+        harness.mouse_button_press(Some(PointerButton::Primary));
+        harness.mouse_move(Point::new(140.0, 96.0));
+        harness.mouse_button_release(Some(PointerButton::Primary));
+
+        let moved = harness.root_widget().graph_position_of(source).unwrap();
+        assert_eq!(moved, Point::new(60.0, 60.0));
+        assert!(
+            rx.try_iter().any(|command| command
+                == GraphCommand::Move {
+                    node: source,
+                    pos: WorldVec2::new(60.0, 60.0),
+                }),
+            "the released position is what is sent",
+        );
+    }
+
+    // --- MARK: reconciliation
+
+    #[test]
+    fn a_node_surviving_a_read_keeps_its_widget_id() {
+        let (mut graph, source, _gate) = source_and_gate();
+        let (mut harness, _rx) = harness(&graph);
+        let before = harness.root_widget().graph_widget_id_of(source).unwrap();
+
+        let extra = graph.insert(Node::of(WorldVec2::new(0.0, 300.0), Source::default()));
+        repopulate(&mut harness, &graph);
+
+        assert_eq!(
+            harness.root_widget().graph_widget_id_of(source),
+            Some(before)
+        );
+        assert!(harness.root_widget().graph_widget_id_of(extra).is_some());
+    }
+
+    #[test]
+    fn a_node_removed_from_the_graph_loses_its_box_and_its_edges() {
+        let (mut graph, source, _gate) = source_and_gate();
+        let (mut harness, _rx) = harness(&graph);
+        assert_eq!(harness.root_widget().graph_edges().len(), 1);
+
+        graph.remove(source);
+        repopulate(&mut harness, &graph);
+
+        assert_eq!(harness.root_widget().graph_widget_id_of(source), None);
+        assert!(harness.root_widget().graph_edges().is_empty());
+    }
+
+    #[test]
+    fn a_dragged_node_is_not_snapped_back_by_the_next_read() {
+        let (graph, source, _gate) = source_and_gate();
+        let (mut harness, _rx) = harness(&graph);
+
+        harness.mouse_move(Point::new(80.0, 36.0));
+        harness.mouse_button_press(Some(PointerButton::Primary));
+        harness.mouse_move(Point::new(140.0, 96.0));
+        harness.mouse_button_release(Some(PointerButton::Primary));
+        let dragged = harness.root_widget().graph_position_of(source).unwrap();
+
+        // The graph has not been told yet -- it still holds the old position.
+        repopulate(&mut harness, &graph);
+
+        assert_eq!(
+            harness.root_widget().graph_position_of(source),
+            Some(dragged),
+        );
+    }
+
+    #[test]
+    fn a_position_that_actually_changed_in_the_graph_is_adopted() {
+        let (mut graph, source, _gate) = source_and_gate();
+        let (mut harness, _rx) = harness(&graph);
+
+        graph
+            .get_mut(source)
+            .unwrap()
+            .set_pos(WorldVec2::new(500.0, 250.0));
+        repopulate(&mut harness, &graph);
+
+        assert_eq!(
+            harness.root_widget().graph_position_of(source),
+            Some(Point::new(500.0, 250.0)),
+        );
+    }
+
+    /// A box created during a mutate pass is not in masonry's arena until the
+    /// following update pass, so the very first read of a graph whose
+    /// selection already points at a node -- a freshly opened document -- must
+    /// bake the highlight into the box rather than reach for it.
+    #[test]
+    fn a_first_read_whose_selection_names_a_brand_new_node_highlights_it() {
+        let (mut graph, source, _gate) = source_and_gate();
+        graph.set_selection(Some(source));
+
+        let (harness, _rx) = harness(&graph);
+
+        assert_eq!(harness.root_widget().graph_selected(), Some(source));
+    }
+
+    #[test]
+    fn a_kind_the_editor_has_never_heard_of_still_gets_sockets() {
+        // The claim design D11 makes, reduced to an assertion: nothing in
+        // `sway-editor` names `Mixer`, and it still draws with the right
+        // sockets.
+        let (graph, _sources, mixer) = variadic_graph();
+        let (harness, _rx) = harness(&graph);
+
+        assert_eq!(
+            harness.root_widget().graph_sockets_of(mixer),
+            vec![inlet("terms"), outlet("total")],
         );
     }
 }

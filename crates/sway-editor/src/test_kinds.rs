@@ -99,6 +99,38 @@ impl NodeKind for Mixer {
 }
 
 #[derive(Reflect, Default, Debug)]
+pub struct MemoryIn {
+    pub rate: f32,
+}
+
+#[derive(Reflect, Default, Debug)]
+pub struct MemoryState {
+    pub phase: f32,
+}
+
+#[derive(Reflect, Default, Debug)]
+pub struct MemoryOut {
+    pub out: f32,
+}
+
+/// A kind with a populated `state` part, so a test can prove state is never
+/// listed in the inspector.
+#[derive(Reflect, Default, Debug)]
+#[reflect(NodeKind)]
+pub struct Memory {
+    pub inlets: MemoryIn,
+    pub state: MemoryState,
+    pub outlets: MemoryOut,
+}
+
+impl NodeKind for Memory {
+    fn evaluate(&mut self, _world: &World) {
+        self.state.phase += self.inlets.rate;
+        self.outlets.out = self.state.phase;
+    }
+}
+
+#[derive(Reflect, Default, Debug)]
 pub struct PlacerIn {
     pub position: Vec3,
 }
@@ -139,6 +171,12 @@ impl Placer {
     }
 }
 
+impl Memory {
+    pub fn path() -> &'static str {
+        <Self as TypePath>::type_path()
+    }
+}
+
 /// A registry holding exactly the fixture kinds.
 pub fn registry() -> TypeRegistry {
     let mut registry = TypeRegistry::new();
@@ -146,6 +184,7 @@ pub fn registry() -> TypeRegistry {
     register_node_kind::<Gate>(&mut registry);
     register_node_kind::<Mixer>(&mut registry);
     register_node_kind::<Placer>(&mut registry);
+    register_node_kind::<Memory>(&mut registry);
     registry
 }
 
@@ -159,6 +198,19 @@ pub fn source_and_gate() -> (Graph, NodeId, NodeId) {
         .connect(Port::new(source, "out"), Port::new(gate, "gate"), 0)
         .expect("f32 -> Option<f32> is a legal optional connection");
     (graph, source, gate)
+}
+
+/// Two `Source`s, the first driving the second's `level` inlet -- a plain
+/// `f32 -> f32` connection into a field that still has an editing control, so
+/// a test can prove a *connected* inlet stays editable.
+pub fn chained_sources() -> (Graph, NodeId, NodeId) {
+    let mut graph = Graph::default();
+    let driver = graph.insert(Node::of(Vec2::new(0.0, 0.0), Source::default()));
+    let driven = graph.insert(Node::of(Vec2::new(400.0, 0.0), Source::default()));
+    graph
+        .connect(Port::new(driver, "out"), Port::new(driven, "level"), 0)
+        .expect("f32 -> f32 is a direct connection");
+    (graph, driver, driven)
 }
 
 /// Three `Source`s feeding one `Mixer`'s variadic `terms` inlet at sparse
