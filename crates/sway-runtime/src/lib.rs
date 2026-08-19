@@ -35,4 +35,4 @@ pub use viewport::EditorViewportPlugin;
 // The new graph model's surface (`redesign-graph-model` group 5). It lands
 // beside everything above; group 9 deletes the wire model, not this.
 pub use nodes::RuntimeNodesPlugin;
-pub use project::{NodeEntities, ProjectionPlugin, ProjectionSet};
+pub use project::{NodeEntities, ProducerSet, ProjectionPlugin, ProjectionSet};

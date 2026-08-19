@@ -51,6 +51,7 @@ pub fn load(doc: &GraphDoc, registry: &TypeRegistry) -> (Graph, StableIds, LoadD
         }
     }
 
+    graph.rebuild_order();
     (graph, ids, diagnostics)
 }
 

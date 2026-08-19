@@ -23,7 +23,6 @@ use masonry::widgets::{Button, ButtonPress, Label};
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
 
-use crate::snapshot::WorldSnapshot;
 use crate::{FileRequest, ViewRequest};
 
 /// Height of the strip, in logical pixels.
@@ -42,9 +41,9 @@ pub struct TransportBar {
     fields: Vec<String>,
     generation: u64,
     playing: bool,
-    /// Open / Save / Save As / Camera, in that order. Built once; never rebuilt by a
-    /// snapshot.
-    buttons: [WidgetPod<Button>; 4],
+    /// Open / Save / Camera, in that order. Built once; never rebuilt by a
+    /// readout.
+    buttons: [WidgetPod<Button>; 3],
     /// What the toolbar has asked for since the shell last drained it.
     requests: Vec<FileRequest>,
     /// What the toolbar has asked for since the shell last drained it.
@@ -67,7 +66,6 @@ impl TransportBar {
             buttons: [
                 WidgetPod::new(Button::with_text("Open")),
                 WidgetPod::new(Button::with_text("Save")),
-                WidgetPod::new(Button::with_text("Save As")),
                 WidgetPod::new(Button::with_text("Camera")),
             ],
             requests: Vec::new(),
@@ -93,58 +91,13 @@ impl TransportBar {
         self.buttons[1].id()
     }
 
-    pub fn save_as_button_id(&self) -> WidgetId {
+    pub fn camera_button_id(&self) -> WidgetId {
         self.buttons[2].id()
     }
-
-    pub fn camera_button_id(&self) -> WidgetId {
-        self.buttons[3].id()
-    }
-}
-
-/// The three strings a snapshot displays as.
-///
-/// A freewheeling transport says so in the tempo field rather than in a
-/// fourth one: a performer needs to know the clock is gone *before* they
-/// wonder why the visuals are sliding, and a `~` prefix reads at a glance.
-fn fields_of(snap: &WorldSnapshot) -> Vec<String> {
-    let transport = &snap.transport;
-    vec![
-        if transport.playing { "PLAY" } else { "STOP" }.to_string(),
-        if transport.locked {
-            format!("{:.1} BPM", transport.bpm)
-        } else {
-            format!("~{:.1} BPM", transport.bpm)
-        },
-        transport.position.clone(),
-    ]
 }
 
 // --- MARK: WIDGETMUT
 impl TransportBar {
-    pub fn apply_snapshot(this: &mut WidgetMut<'_, Self>, snap: &WorldSnapshot) {
-        let fields = fields_of(snap);
-        this.widget.playing = snap.transport.playing;
-        if fields == this.widget.fields {
-            return;
-        }
-
-        for label in this.widget.labels.drain(..) {
-            this.ctx.remove_child(label);
-        }
-        for field in &fields {
-            this.widget
-                .labels
-                .push(Label::new(field.clone()).prepare().to_pod());
-        }
-
-        this.widget.fields = fields;
-        this.widget.generation += 1;
-        this.ctx.children_changed();
-        this.ctx.request_layout();
-    }
-
-    /// Pushes the transport readout in without a `WorldSnapshot`.
     ///
     /// The graph model has no snapshot to carry the transport along with, and
     /// the transport was never graph state in the first place: it is a
@@ -215,10 +168,6 @@ impl Widget for TransportBar {
                 ctx.set_handled();
             }
             Some(2) => {
-                self.requests.push(FileRequest::SaveAs);
-                ctx.set_handled();
-            }
-            Some(3) => {
                 self.view_requests.push(ViewRequest::ToggleCamera);
                 ctx.set_handled();
             }
@@ -321,57 +270,51 @@ impl Widget for TransportBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::{TransportView, WorldSnapshot};
     use masonry::core::DefaultProperties;
     use masonry_testing::TestHarness;
 
-    fn snapshot(playing: bool, bpm: f32, position: &str, locked: bool) -> WorldSnapshot {
-        WorldSnapshot {
-            transport: TransportView {
-                playing,
-                bpm,
-                position: position.to_string(),
-                locked,
-            },
-            ..Default::default()
+    fn transport(playing: bool, bpm: f64, ppq: f64, locked: bool) -> sway_midi::Transport {
+        sway_midi::Transport {
+            playing,
+            bpm,
+            ppq,
+            locked,
+            beats_per_bar: 4,
         }
     }
 
-    fn harness_with(snap: WorldSnapshot) -> TestHarness<TransportBar> {
+    fn harness_with(t: &sway_midi::Transport) -> TestHarness<TransportBar> {
         // Wider than `TestHarnessParams::DEFAULT_SIZE` (400px): three
-        // `FIELD_WIDTH` columns plus four `BUTTON_WIDTH` buttons plus
-        // `PADDING` need ~660px (12 + 360 + 288), and a strip clipped narrower than
-        // its own content is also unclickable in the harness -- `find_widget_under_pointer`
-        // rejects a point outside the root's own clip path before it ever
-        // looks at a child. The real editor window is always wider than
-        // this; only the click tests below need the room.
+        // `FIELD_WIDTH` columns plus three `BUTTON_WIDTH` buttons plus
+        // `PADDING`. A strip clipped narrower than its own content is also
+        // unclickable in the harness.
         let mut harness = TestHarness::create_with_size(
             DefaultProperties::default(),
             TransportBar::new().prepare(),
             (772, 100),
         );
         harness.edit_root_widget(|mut bar| {
-            TransportBar::apply_snapshot(&mut bar, &snap);
+            TransportBar::apply_transport(&mut bar, t);
         });
         harness
     }
 
     #[test]
     fn a_playing_transport_reads_out_state_tempo_and_position() {
-        let harness = harness_with(snapshot(true, 128.02, "005.3.2", true));
+        let harness = harness_with(&transport(true, 128.0, 17.5, true));
         assert_eq!(
             harness.root_widget().fields(),
             vec![
                 "PLAY".to_string(),
                 "128.0 BPM".to_string(),
-                "005.3.2".to_string()
+                "005.2.3".to_string()
             ]
         );
     }
 
     #[test]
     fn a_stopped_transport_says_so() {
-        let harness = harness_with(snapshot(false, 120.0, "001.1.1", false));
+        let harness = harness_with(&transport(false, 120.0, 0.0, false));
         assert_eq!(harness.root_widget().fields()[0], "STOP");
     }
 
@@ -379,8 +322,8 @@ mod tests {
     fn freewheeling_is_distinguishable_from_locked() {
         // A performer needs to know the clock is gone before they wonder why
         // the visuals are sliding.
-        let locked = harness_with(snapshot(true, 120.0, "001.1.1", true));
-        let free = harness_with(snapshot(true, 120.0, "001.1.1", false));
+        let locked = harness_with(&transport(true, 120.0, 0.0, true));
+        let free = harness_with(&transport(true, 120.0, 0.0, false));
         assert_ne!(
             locked.root_widget().fields()[1],
             free.root_widget().fields()[1]
@@ -388,12 +331,12 @@ mod tests {
     }
 
     #[test]
-    fn an_unchanged_snapshot_rebuilds_nothing() {
-        let snap = snapshot(true, 120.0, "001.1.1", true);
-        let mut harness = harness_with(snap.clone());
+    fn an_unchanged_readout_rebuilds_nothing() {
+        let t = transport(true, 120.0, 0.0, true);
+        let mut harness = harness_with(&t);
         let before = harness.root_widget().generation();
         harness.edit_root_widget(|mut bar| {
-            TransportBar::apply_snapshot(&mut bar, &snap);
+            TransportBar::apply_transport(&mut bar, &t);
         });
         assert_eq!(harness.root_widget().generation(), before);
     }
@@ -401,7 +344,7 @@ mod tests {
     #[test]
     fn the_save_button_emits_a_save_request() {
         use crate::FileRequest;
-        let mut harness = harness_with(snapshot(false, 120.0, "001.1.1", true));
+        let mut harness = harness_with(&transport(false, 120.0, 0.0, true));
         let save_id = harness.root_widget().save_button_id();
 
         harness.mouse_click_on(save_id, Some(masonry::core::PointerButton::Primary));
@@ -417,7 +360,7 @@ mod tests {
     #[test]
     fn taking_the_requests_drains_them() {
         use crate::FileRequest;
-        let mut harness = harness_with(snapshot(false, 120.0, "001.1.1", true));
+        let mut harness = harness_with(&transport(false, 120.0, 0.0, true));
         let open_id = harness.root_widget().open_button_id();
 
         harness.mouse_click_on(open_id, Some(masonry::core::PointerButton::Primary));
@@ -437,7 +380,7 @@ mod tests {
     #[test]
     fn the_camera_button_asks_the_shell_to_toggle() {
         use crate::ViewRequest;
-        let mut harness = harness_with(snapshot(false, 120.0, "001.1.1", true));
+        let mut harness = harness_with(&transport(false, 120.0, 0.0, true));
         let camera_id = harness.root_widget().camera_button_id();
 
         harness.mouse_click_on(camera_id, Some(masonry::core::PointerButton::Primary));

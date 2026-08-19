@@ -12,7 +12,8 @@ fn the_cube_asset_loads_as_a_mesh() {
     let gpu = sway_gpu::GpuContext::new(None);
     let size = UVec2::new(16, 16);
     let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);
-    let mut app = sway_runtime::headless::build_app(&gpu, &viewport, size);
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+    let mut app = sway_runtime::headless::build_app(&gpu, &viewport, size, assets);
     app.finish();
     app.cleanup();
 

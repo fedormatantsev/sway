@@ -55,7 +55,8 @@ impl Plugin for MidiPlugin {
                 FixedUpdate,
                 (feed_inbox, drain_and_clock, write_midi_time)
                     .chain()
-                    .before(sway_graph::graph_tick),
+                    .before(sway_graph::graph_tick)
+                    .before(sway_graph::GraphTickSet),
             );
     }
 }

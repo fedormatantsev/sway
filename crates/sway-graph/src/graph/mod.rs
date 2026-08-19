@@ -44,4 +44,4 @@ pub use registry::{
     NodeKind, NodeParts, PartType, ReflectNodeKind, RegisterNodeKind, node_kind_type_id,
     register_node_kind, registered_node_kinds,
 };
-pub use tick::{GraphPlugin, run, tick_graph};
+pub use tick::{GraphPlugin, GraphTickSet, run, tick_graph};

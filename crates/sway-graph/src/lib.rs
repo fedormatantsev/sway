@@ -52,7 +52,8 @@ pub use wire::{ReflectWire, Wire, propagate_field_copy, propagate_reflected};
 // `FieldValue` is still `EditorCommand`'s, until group 9 removes it.
 pub use graph::{
     CommandOutcome, Compat, ConnectError, Edge, EdgeId, EvalOrder, Graph, GraphCommand,
-    GraphPlugin, GraphRx, GraphStep, Node, NodeId, NodeKind, NodeParts, Part, PartType, Port,
+    GraphPlugin, GraphRx, GraphStep, GraphTickSet, Node, NodeId, NodeKind, NodeParts, Part,
+    PartType, Port,
     PropagateStep, ReflectNodeKind, RegisterNodeKind, Target, apply_graph_command,
     apply_graph_commands, node_kind_type_id, register_node_kind, registered_node_kinds, tick_graph,
 };

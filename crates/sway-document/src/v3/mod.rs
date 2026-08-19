@@ -17,6 +17,7 @@ pub mod asset;
 pub mod diagnostics;
 pub mod doc;
 pub mod ids;
+pub mod live;
 pub mod load;
 pub mod save;
 
@@ -24,6 +25,10 @@ pub use asset::{GraphAsset, GraphAssetLoader, GraphAssetPlugin};
 pub use diagnostics::{LoadDiagnostics, LoadItemError};
 pub use doc::{EdgeDoc, FORMAT_VERSION, GraphDoc, NodeDoc, ParseError, parse};
 pub use ids::StableIds;
+pub use live::{
+    GraphFile, GraphHandle, GraphInitialized, LiveGraphPlugin, ProjectDirectory, SessionIds,
+    save_open_graph,
+};
 pub use load::load;
 pub use save::{SaveError, to_document, to_ron};
 

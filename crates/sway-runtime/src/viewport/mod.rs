@@ -47,9 +47,10 @@ pub struct EditorViewportPlugin;
 
 impl Plugin for EditorViewportPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ViewportEvents>()
+        app            .init_resource::<ViewportEvents>()
             .init_resource::<camera::ViewportCamera>()
-            .init_resource::<sway_graph::Selection>()
+            .init_resource::<sway_graph::graph::Graph>()
+            .init_resource::<crate::project::NodeEntities>()
             // Switches `TransformGizmoRenderPlugin`'s systems on; both must
             // exist before `Startup`, when `spawn_gizmo_meshes` runs.
             .init_resource::<TransformGizmoState>()

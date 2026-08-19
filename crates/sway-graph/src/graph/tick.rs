@@ -12,6 +12,7 @@ use bevy_ecs::change_detection::Mut;
 use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::schedule::common_conditions::resource_exists;
+use bevy_ecs::schedule::SystemSet;
 use bevy_ecs::world::World;
 use bevy_reflect::enums::{DynamicEnum, DynamicVariant};
 use bevy_reflect::tuple::DynamicTuple;
@@ -202,6 +203,11 @@ pub fn tick_graph(world: &mut World) {
     });
 }
 
+/// The exclusive tick. `sway-app` hangs the load gate off this set
+/// (architecture: evaluation waits for assets; input capture does not).
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GraphTickSet;
+
 /// Inserts the graph resource and schedules the command drain and the tick.
 ///
 /// Deliberately does **not** register any node kinds: `sway-nodes` and
@@ -214,7 +220,7 @@ impl Plugin for GraphPlugin {
         app.init_resource::<Graph>()
             .register_type::<NodeId>()
             .register_type::<crate::graph::id::EdgeId>()
-            .add_systems(FixedUpdate, tick_graph)
+            .add_systems(FixedUpdate, tick_graph.in_set(GraphTickSet))
             .add_systems(
                 PreUpdate,
                 apply_graph_commands.run_if(resource_exists::<GraphRx>),

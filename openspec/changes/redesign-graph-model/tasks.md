@@ -53,12 +53,12 @@ correctly at the end of groups 5, 6 and 7.
 - [x] 6.3 Serialize inlets only, per node kind, via `TypedReflectSerializer` / `TypedReflectDeserializer` on the inlets type (`document`: A document stores inlets only).
 - [x] 6.4 Report and skip an unknown node kind, an edge naming a missing id, and an edge naming a missing path — without preventing the rest of the document from loading.
 - [x] 6.5 Reject a version other than 3, and a document declaring the same id twice, as whole parse errors.
-- [ ] 6.6 Rewrite `demo.sway.ron` in the version 3 shape, splitting each geometry-plus-transform entity into a producer node and a scene node, and folding the three separate `cube.gltf` references into one shared mesh node (`nodes`: Geometry, material and placement are separate nodes).
+- [x] 6.6 Rewrite `demo.sway.ron` in the version 3 shape, splitting each geometry-plus-transform entity into a producer node and a scene node, and folding the three separate `cube.gltf` references into one shared mesh node (`nodes`: Geometry, material and placement are separate nodes).
 - [x] 6.7 Round-trip tests: load, save, reload is identical; deleting a node leaves every other id untouched. `cargo test -p sway-document`.
 
 ## 7. sway-editor — read path and commands
 
-- [ ] 7.1 Delete `snapshot.rs`. Populate widgets from a reflected read of `&Graph` during the presenter's step 0, with no `Arc`, mutex or copy (design D11).
+- [x] 7.1 Delete `snapshot.rs`. Populate widgets from a reflected read of `&Graph` during the presenter's step 0, with no `Arc`, mutex or copy (design D11).
 - [x] 7.2 Derive inspector controls from each field's reflected type; show a field with no control read-only rather than omitting it (`editor`: The editor reads the graph without a parallel model).
 - [x] 7.3 Re-address sockets to `(NodeId, field path)`, discovered from the node kind's declared inlets and outlets so an unconnected inlet still has a socket.
 - [x] 7.4 Re-address the canvas: edges carry two paths and a slot, and attach to the sockets whose keys are those paths.
@@ -70,13 +70,13 @@ correctly at the end of groups 5, 6 and 7.
 
 ## 8. sway-app — project lifecycle
 
-- [ ] 8.1 Make `build_app` take a project directory and set it as the asset root, so every path a graph names resolves relative to it (`architecture`: A project is a directory).
-- [ ] 8.2 Rebuild the `App` on project open, keeping the window and the wgpu device, and re-establish the viewport texture through `set_viewport_view`.
-- [ ] 8.3 Remove Save As to another directory; Save writes back to the file the project was opened from.
-- [ ] 8.4 Ignore `AssetEvent::Modified` for the graph asset, and delete `LastApplied` / `should_skip`. Leave `watch_for_changes_override` on so content still hot-reloads (`architecture`: Reloading a project is an explicit action).
-- [ ] 8.5 Gate the tick and the projectors on every asset reporting loaded; leave the MIDI drain ungated so the pulse clock stays continuous (`architecture`: Evaluation waits for assets; input capture does not).
-- [ ] 8.6 Point the gizmo at the graph command set instead of writing `Transform` directly, and resolve picking `Entity -> NodeId` for selection only (`architecture`: Authoring writes reach the world only through the graph).
-- [ ] 8.7 Update `crates/sway-app/tests/demo_document.rs` for the version 3 demo. `cargo test -p sway-app`.
+- [x] 8.1 Make `build_app` take a project directory and set it as the asset root, so every path a graph names resolves relative to it (`architecture`: A project is a directory).
+- [x] 8.2 Rebuild the `App` on project open, keeping the window and the wgpu device, and re-establish the viewport texture through `set_viewport_view`.
+- [x] 8.3 Remove Save As to another directory; Save writes back to the file the project was opened from.
+- [x] 8.4 Ignore `AssetEvent::Modified` for the graph asset, and delete `LastApplied` / `should_skip`. Leave `watch_for_changes_override` on so content still hot-reloads (`architecture`: Reloading a project is an explicit action).
+- [x] 8.5 Gate the tick and the projectors on every asset reporting loaded; leave the MIDI drain ungated so the pulse clock stays continuous (`architecture`: Evaluation waits for assets; input capture does not).
+- [x] 8.6 Point the gizmo at the graph command set instead of writing `Transform` directly, and resolve picking `Entity -> NodeId` for selection only (`architecture`: Authoring writes reach the world only through the graph).
+- [x] 8.7 Update `crates/sway-app/tests/demo_document.rs` for the version 3 demo. `cargo test -p sway-app`.
 
 ## 9. Removal
 

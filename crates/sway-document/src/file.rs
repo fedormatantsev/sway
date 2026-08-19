@@ -10,26 +10,13 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 
 use crate::apply::apply;
-use crate::doc::{ProjectDoc, parse};
+use crate::doc::parse;
 use crate::emit::{to_document, to_ron};
 
 /// The file the editor is currently editing. `None` until the first Save As.
 #[derive(Resource, Default)]
 pub struct CurrentDocument {
     pub path: Option<PathBuf>,
-}
-
-/// The most recently applied document, for suppressing the reload a Save of a
-/// watched file triggers.
-#[derive(Resource, Default)]
-pub struct LastApplied(pub Option<ProjectDoc>);
-
-/// Whether an incoming document is the one already in the world.
-pub fn should_skip(world: &World, incoming: &ProjectDoc) -> bool {
-    world
-        .get_resource::<LastApplied>()
-        .and_then(|last| last.0.as_ref())
-        .is_some_and(|last| last == incoming)
 }
 
 pub fn save_to_path(world: &mut World, path: &Path) -> Result<(), String> {
@@ -39,7 +26,6 @@ pub fn save_to_path(world: &mut World, path: &Path) -> Result<(), String> {
     world.insert_resource(CurrentDocument {
         path: Some(path.to_path_buf()),
     });
-    world.insert_resource(LastApplied(Some(doc)));
     Ok(())
 }
 
@@ -51,7 +37,6 @@ pub fn open_from_path(world: &mut World, path: &Path) -> Result<(), String> {
     world.insert_resource(CurrentDocument {
         path: Some(path.to_path_buf()),
     });
-    world.insert_resource(LastApplied(Some(doc)));
     // The watcher on any previously-loaded asset path stops mattering.
     if let Some(mut handle) = world.get_resource_mut::<crate::asset::ProjectHandle>() {
         handle.0 = None;
@@ -110,33 +95,5 @@ mod tests {
             app.world().resource::<CurrentDocument>().path.as_deref(),
             Some(path.as_path())
         );
-    }
-
-    #[test]
-    fn a_document_equal_to_the_last_applied_one_is_skipped() {
-        // Suppresses the reload a Save of a watched file triggers.
-        let mut app = file_app();
-        app.world_mut().spawn(EditorPos(Vec2::ZERO));
-        app.update();
-        let doc = crate::to_document(app.world_mut());
-        app.world_mut()
-            .insert_resource(LastApplied(Some(doc.clone())));
-
-        assert!(should_skip(app.world(), &doc));
-    }
-
-    #[test]
-    fn a_changed_document_is_not_skipped() {
-        let mut app = file_app();
-        app.world_mut().spawn(EditorPos(Vec2::ZERO));
-        app.update();
-        let doc = crate::to_document(app.world_mut());
-        app.world_mut().insert_resource(LastApplied(Some(doc)));
-
-        app.world_mut().spawn(EditorPos(Vec2::ONE));
-        app.update();
-        let changed = crate::to_document(app.world_mut());
-
-        assert!(!should_skip(app.world(), &changed));
     }
 }

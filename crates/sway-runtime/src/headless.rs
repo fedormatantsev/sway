@@ -5,6 +5,7 @@
 //! a runner, which is what lets the host interleave a masonry redraw and a
 //! compositor pass around it.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use bevy::asset::AssetPlugin;
@@ -28,12 +29,16 @@ pub const VIEWPORT_HANDLE: ManualTextureViewHandle = ManualTextureViewHandle(0);
 /// see the module docs on `sway-app`'s `main.rs` for why two event loops in
 /// one process panics.
 ///
+/// `project_dir` is the asset root: every path a graph names resolves relative
+/// to it (`architecture`: A project is a directory).
+///
 /// Also wires up [`retarget_cameras`] (see its docs) and points
 /// `VIEWPORT_HANDLE` at `viewport` via [`set_viewport_view`].
 pub fn build_app(
     gpu: &sway_gpu::GpuContext,
     viewport: &sway_gpu::ViewportTexture,
     size: UVec2,
+    project_dir: impl AsRef<Path>,
 ) -> App {
     let mut app = App::new();
 
@@ -55,8 +60,10 @@ pub fn build_app(
                 ..default()
             })
             .set(AssetPlugin {
-                // M4: editing the project document with the app running is the
-                // whole point of the milestone.
+                file_path: project_dir.as_ref().to_string_lossy().into_owned(),
+                // Content assets (textures, meshes) still hot-reload. The
+                // graph's own `AssetEvent::Modified` is ignored by the live
+                // graph plugin, so a Save cannot bounce the project.
                 watch_for_changes_override: Some(true),
                 ..default()
             })
@@ -180,7 +187,7 @@ mod tests {
         let gpu = sway_gpu::GpuContext::new(None);
         let size = UVec2::new(4, 4);
         let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);
-        let mut app = build_app(&gpu, &viewport, size);
+        let mut app = build_app(&gpu, &viewport, size, std::env::temp_dir());
 
         // No mesh needed: Bevy clears its render target to `clear_color`
         // before drawing anything, regardless of what (if anything) else is

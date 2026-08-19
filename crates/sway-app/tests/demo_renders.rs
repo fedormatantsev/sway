@@ -98,32 +98,32 @@ fn the_demo_document_renders_its_cubes() {
     let gpu = sway_gpu::GpuContext::new(None);
     let size = UVec2::new(VIEWPORT, VIEWPORT);
     let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);
-    let mut app = sway_runtime::headless::build_app(&gpu, &viewport, size);
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+    let mut app = sway_runtime::headless::build_app(&gpu, &viewport, size, &assets);
     let (_tx, rx) = crossbeam_channel::unbounded();
-    app.add_plugins((
-        sway_graph::WiresPlugin,
-        sway_nodes::WireNodesPlugin,
-        sway_midi::MidiPlugin { rx },
-        // Registered here too (mirroring main.rs), because the document now
-        // names sprite-material components and wires and `apply()` below
-        // needs them registered to stay clean.
-        sway_runtime::SpriteMaterialPlugin,
-    ));
+    app.insert_resource(sway_document::v3::ProjectDirectory(assets.clone()))
+        .add_plugins((
+            sway_graph::GraphPlugin,
+            sway_document::v3::LiveGraphPlugin {
+                graph_file: "demo.sway.ron".into(),
+            },
+            sway_nodes::GraphNodesPlugin,
+            sway_midi::MidiGraphNodesPlugin,
+            sway_midi::MidiPlugin { rx },
+            sway_runtime::RuntimeNodesPlugin,
+            sway_runtime::ProjectionPlugin,
+        ))
+        .insert_resource(Time::<Fixed>::from_hz(120.0));
     app.finish();
     app.cleanup();
 
-    // The document is applied directly rather than through ProjectPlugin's
-    // asset load: this test is about the scene it describes, not about the
-    // .ron's own loading path, which demo_document.rs already covers.
-    let document = sway_document::parse(DEMO_DOCUMENT).expect("parses");
-    let diagnostics = sway_document::apply(app.world_mut(), &document);
-    assert!(diagnostics.is_clean(), "{:?}", diagnostics.items);
+    let _ = DEMO_DOCUMENT;
 
-    // A bounded poll, not a fixed count. Two independent asynchronous things
-    // have to finish: bevy_core_pipeline's upscaling pipeline compiles (until
-    // it does, the viewport is cleared to the wrong colour with no validation
-    // error), and the glTF loads off disk. Cold caches in this codebase have
-    // needed as many as 60 updates for the first alone.
+    // A bounded poll, not a fixed count. Several asynchronous things have to
+    // finish: the graph asset loads, the glTF resolves, projectors spawn the
+    // scene, and bevy_core_pipeline's upscaling pipeline compiles. Cold
+    // caches in this codebase have needed as many as 60 updates for the
+    // last of those alone.
     const MAX_UPDATES: u32 = 400;
     let total = (VIEWPORT * VIEWPORT) as usize;
     let mut cube_pixels = 0;
@@ -147,7 +147,7 @@ fn the_demo_document_renders_its_cubes() {
         panic!(
             "no lit cube pixels after {MAX_UPDATES} updates ({cube_pixels} of {total} matched). \
              Either cube.gltf never loaded (check the path and its #Mesh0/Primitive0 label), \
-             the material never reached the mesh (check the MaterialFrom wire), the light or \
+             the material never reached the mesh (check the material edge), the light or \
              camera did not spawn, or nothing rendered at all."
         )
     });

@@ -15,12 +15,10 @@ pub mod node_box;
 pub mod palette;
 pub mod reflect_ui;
 pub mod scene_tree;
-pub mod snapshot;
 pub mod transport_bar;
 pub mod viewport;
+mod views;
 
-#[cfg(test)]
-mod test_graph;
 #[cfg(test)]
 mod test_kinds;
 
@@ -52,7 +50,6 @@ use crate::canvas::{ConnectFeedback, GraphCanvas};
 use crate::inspector::Inspector;
 use crate::palette::Palette;
 use crate::scene_tree::SceneTree;
-use crate::snapshot::WorldSnapshot;
 use crate::transport_bar::{TRANSPORT_BAR_HEIGHT, TransportBar};
 use crate::viewport::Viewport;
 
@@ -83,7 +80,6 @@ pub const TRANSPORT_BAR_TAG: WidgetTag<TransportBar> = WidgetTag::named("sway-tr
 pub enum FileRequest {
     Open,
     Save,
-    SaveAs,
 }
 
 /// A view change the shell performs, asked for by the toolbar. Separate from
@@ -363,30 +359,6 @@ impl EditorUi {
             .handle_window_event(MasonryWindowEvent::Rescale(scale_factor));
     }
 
-    /// Pushes one frame's world snapshot into both content panes.
-    ///
-    /// Called by the host immediately before [`redraw`](Self::redraw). Each
-    /// pane decides for itself whether the snapshot actually changed anything
-    /// -- `SceneTree` compares its row signature, `GraphCanvas` reconciles by
-    /// `NodeId` -- so calling this every frame is cheap in the steady state.
-    pub fn apply_snapshot(&mut self, snap: &WorldSnapshot) {
-        self.root.edit_widget_with_tag(SCENE_TREE_TAG, |mut tree| {
-            SceneTree::apply_snapshot(&mut tree, snap);
-        });
-        self.root
-            .edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
-                GraphCanvas::apply_snapshot(&mut canvas, snap);
-            });
-        self.root
-            .edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
-                TransportBar::apply_snapshot(&mut bar, snap);
-            });
-        self.root
-            .edit_widget_with_tag(INSPECTOR_TAG, |mut inspector| {
-                Inspector::apply_snapshot(&mut inspector, snap);
-            });
-    }
-
     /// Points every write-capable pane at the graph command set.
     ///
     /// Call this once, right after [`EditorUi::new`]. It is what switches the
@@ -543,8 +515,6 @@ impl EditorUi {
 #[cfg(test)]
 mod tests {
     use super::EditorUi;
-    use crate::snapshot::{TreeGroup, TreeRow, WorldSnapshot};
-    use bevy_ecs::entity::Entity;
     use imaging::Painter;
     use kurbo::{Affine, Point as KurboPoint, Rect};
     use masonry::widgets::Label;
@@ -589,41 +559,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_tree_only_selection_survives_repeated_snapshots() {
-        // M6's open bug: selecting a row whose entity has no canvas node
-        // (an `Lfo` with no wires) reverted after one frame, because
-        // `sync_selection` reconciled the tree back to the canvas's empty
-        // answer every frame. With the world owning selection there is nothing
-        // left to reconcile.
-        let (tx, _rx) = crossbeam_channel::unbounded();
-        let (vtx, _vrx) = crossbeam_channel::unbounded();
-        let mut ui = EditorUi::new(PhysicalSize::new(800, 600), 1.0, tx, vtx);
-
-        let entity = Entity::from_raw_u32(3).expect("valid entity id");
-        let mut snap = WorldSnapshot {
-            tree: vec![TreeRow {
-                entity,
-                group: TreeGroup::Graph,
-                depth: 0,
-                label: "LFO #1".to_string(),
-                node_id: None,
-            }],
-            ..Default::default()
-        };
-        snap.selection = Some(entity);
-
-        ui.apply_snapshot(&snap);
-        ui.redraw();
-        ui.apply_snapshot(&snap);
-        ui.redraw();
-
-        let selected = ui
-            .root
-            .edit_widget_with_tag(crate::SCENE_TREE_TAG, |tree| tree.widget.selected());
-        assert_eq!(selected, Some(entity), "the selection must not revert");
-    }
-
     /// Regression test for the bug fixed alongside Task 8: `viewport_rect`
     /// must read the viewport placeholder's own accumulated position, not
     /// `VisualLayerKind::External`'s reported transform (which masonry seeds
@@ -658,26 +593,6 @@ mod tests {
             rect.y0 >= crate::transport_bar::TRANSPORT_BAR_HEIGHT,
             "viewport rect {rect:?} must sit below the transport strip"
         );
-    }
-
-    #[test]
-    fn an_unchanged_selection_does_not_rebuild_the_inspector() {
-        // Same discipline as SceneTree: a steady-state world costs one
-        // comparison per frame.
-        let (tx, _rx) = crossbeam_channel::unbounded();
-        let (viewport_tx, _viewport_rx) = crossbeam_channel::unbounded();
-        let mut ui = EditorUi::new(PhysicalSize::new(1200, 800), 1.0, tx, viewport_tx);
-        let snap = WorldSnapshot::default();
-        ui.apply_snapshot(&snap);
-        let first = ui
-            .root
-            .edit_widget_with_tag(crate::INSPECTOR_TAG, |i| i.widget.generation());
-        ui.apply_snapshot(&snap);
-        let second = ui
-            .root
-            .edit_widget_with_tag(crate::INSPECTOR_TAG, |i| i.widget.generation());
-
-        assert_eq!(first, second);
     }
 
     #[test]

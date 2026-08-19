@@ -21,4 +21,4 @@ pub use claim::claim_editor_entities;
 pub use diagnostics::{DocId, ItemError, ProjectDiagnostics};
 pub use doc::{EntityDoc, FORMAT_VERSION, ParseError, ProjectDoc, parse};
 pub use emit::{to_document, to_ron};
-pub use file::{CurrentDocument, LastApplied, open_from_path, save_to_path};
+pub use file::{CurrentDocument, open_from_path, save_to_path};

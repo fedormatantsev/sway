@@ -1,331 +1,335 @@
 //! The demo document's only non-visual coverage.
 //!
-//! Parses and applies the real `assets/demo.sway.ron`, then asserts the world
-//! against the document's own comment-drawn diagram. A renamed short name, a
-//! malformed payload, or a dropped `register_authorable`/`register_wire_type` call
-//! would otherwise leave the suite green and only surface when a human ran the
-//! app.
+//! Parses and loads the real `assets/demo.sway.ron` (format version 3), then
+//! asserts the graph against the document's own comment-drawn diagram. A
+//! renamed node kind, a malformed inlets payload, or a dropped
+//! `register_node_kind` call would otherwise leave the suite green and only
+//! surface when a human ran the app.
 //!
 //!   midiTime ──time──▶ lfoA, lfoB
 //!   lfoA ──amplitude──▶ lfoB
-//!   lfoA ──vec3.y────▶ vec3A ──translation──▶ cubeA ─┐
-//!   lfoB ──vec3.y────▶ vec3B ──translation──▶ cubeB ─┤─parent─▶ group
-//!   mat  ──material──▶ cubeA, cubeB, cubeC
-//!                                   cubeC ───────────┘─parent─▶ group
+//!   lfoA ──y──▶ vec3A ──transform.translation──▶ cubeA ─┐
+//!   lfoB ──y──▶ vec3B ──transform.translation──▶ cubeB ─┤─children─▶ group
+//!   mat  ──material──▶ cubeA, cubeB, cubeC              │
+//!   cube ──mesh──────▶ cubeA, cubeB, cubeC ─────────────┘
 //!
-//! `cubeC` carries an authored `Transform` and no `translation` wire — the
-//! one mesh in the demo whose translate-drag holds (M7 Task 15's exit
-//! criterion needs this; cubeA/cubeB spring back on the next tick by design).
+//! `cubeC` carries an authored transform and no translation edge — the one
+//! mesh in the demo whose translate-drag holds (M7 Task 15's exit criterion
+//! needs this; cubeA/cubeB spring back on the next tick by design).
+//!
+//! The three cubes share **one** `MeshAsset` node: geometry, material and
+//! placement are separate nodes, so one mesh serves several placements and
+//! the sharing is an edge fan-out rather than three copies of a path.
 
 use bevy::asset::AssetPlugin;
-use bevy::ecs::hierarchy::ChildOf;
 use bevy::prelude::*;
-use sway_document::{DocId, to_document};
-use sway_nodes::{
-    AmplitudeFrom, MaterialFrom, MaterialOut, Oscillator, RemapInputFrom, TimeFrom,
-    TranslationFrom, Vec3YFrom,
-};
-use sway_runtime::{ColorRunFrom, DepthRunFrom, FrameFrom, SpriteMaterialFrom};
+use bevy::reflect::TypeRegistry;
+use sway_graph::graph::{Graph, NodeId, Part, path};
+use sway_document::v3;
 
 const DEMO_DOCUMENT: &str = include_str!("../assets/demo.sway.ron");
 
-fn demo_app() -> App {
+/// A registry with every node kind the demo names, and nothing that needs a
+/// render device: `register_runtime_node_kinds` is the schema-only half of
+/// `RuntimeNodesPlugin` (the other half adds the sprite material's render
+/// pipeline, which needs plugins this test has no use for).
+fn demo_registry_app() -> App {
     let mut app = App::new();
-    let (_tx, rx) = crossbeam_channel::unbounded();
-    // `TaskPoolPlugin` + `AssetPlugin`, not the full `SpriteMaterialPlugin`'s
-    // render dependencies: this app never calls `update()`, only `apply()`,
-    // and `SpriteMaterialPlugin::build` opens with `embedded_asset!`, which
-    // panics without `AssetPlugin`'s `EmbeddedAssetRegistry`. Follows the
-    // same minimal-app shape `sprite_material.rs`'s and `frame_sequence.rs`'s
-    // own unit tests use.
+    let (_tx, _rx) = crossbeam_channel::unbounded::<()>();
     app.add_plugins((
         bevy::app::TaskPoolPlugin::default(),
         AssetPlugin::default(),
-        sway_graph::WiresPlugin,
-        sway_nodes::WireNodesPlugin,
-        sway_midi::MidiPlugin { rx },
-        sway_runtime::SpriteMaterialPlugin,
+        sway_nodes::GraphNodesPlugin,
+        sway_midi::MidiGraphNodesPlugin,
     ));
+    // `MidiPlugin` only for the `Transport` resource the `MidiTime` node
+    // reads; nothing here ticks the graph.
+    let _ = _rx;
+    sway_runtime::nodes::register_runtime_node_kinds(&mut app);
     app
 }
 
-fn entity_named(world: &mut World, id: &str) -> Entity {
-    world
-        .query::<(Entity, &DocId)>()
-        .iter(world)
-        .find(|(_, doc_id)| doc_id.0 == id)
-        .map(|(entity, _)| entity)
-        .unwrap_or_else(|| panic!("demo document has no entity \"{id}\""))
-}
-
-#[test]
-fn demo_document_parses() {
-    sway_document::parse(DEMO_DOCUMENT).expect("assets/demo.sway.ron parses");
-}
-
-#[test]
-fn demo_document_loads_and_reconciles_cleanly() {
-    let document = sway_document::parse(DEMO_DOCUMENT).expect("parses");
-    let mut app = demo_app();
-
-    let diagnostics = sway_document::apply(app.world_mut(), &document);
-
+fn loaded() -> (Graph, v3::StableIds, App) {
+    let app = demo_registry_app();
+    let doc = v3::parse(DEMO_DOCUMENT).expect("assets/demo.sway.ron parses");
+    let type_registry = app.world().resource::<AppTypeRegistry>().clone();
+    let (graph, ids, diagnostics) = {
+        let registry = type_registry.read();
+        v3::load(&doc, &registry)
+    };
     assert!(
         diagnostics.is_clean(),
-        "the demo document should be clean against the current registry, got: {:?}",
+        "the demo document should load clean against the current registry, got: {:?}",
         diagnostics.items
     );
+    (graph, ids, app)
+}
 
-    let world = app.world_mut();
-    let mut ids: Vec<String> = world
-        .query::<&DocId>()
-        .iter(world)
-        .map(|id| id.0.clone())
+fn node_of(ids: &v3::StableIds, id: &str) -> NodeId {
+    ids.node_of(id)
+        .unwrap_or_else(|| panic!("demo document has no node \"{id}\""))
+}
+
+/// Every edge `(from_id.from_path -> to_id.to_path, slot)`, as document ids,
+/// so the assertions below read like the header diagram.
+fn edges(graph: &Graph, ids: &v3::StableIds) -> Vec<(String, String, String, String, i32)> {
+    graph
+        .edges()
+        .iter()
+        .map(|edge| {
+            (
+                ids.id_of(edge.src.node).unwrap_or("?").to_string(),
+                edge.src.path.clone(),
+                ids.id_of(edge.dst.node).unwrap_or("?").to_string(),
+                edge.dst.path.clone(),
+                edge.slot,
+            )
+        })
+        .collect()
+}
+
+fn has_edge(graph: &Graph, ids: &v3::StableIds, from: &str, src: &str, to: &str, dst: &str) -> bool {
+    edges(graph, ids)
+        .iter()
+        .any(|(a, b, c, d, _)| a == from && b == src && c == to && d == dst)
+}
+
+fn kind_of(graph: &Graph, node: NodeId) -> &'static str {
+    graph.get(node).expect("a live node").kind()
+}
+
+fn float_inlet(graph: &Graph, node: NodeId, field: &str) -> f32 {
+    path::resolve(graph.get(node).expect("a live node"), Part::Inlets, field)
+        .and_then(|value| value.try_downcast_ref::<f32>().copied())
+        .unwrap_or_else(|| panic!("no f32 inlet \"{field}\""))
+}
+
+fn transform_of(graph: &Graph, node: NodeId) -> Transform {
+    path::resolve(
+        graph.get(node).expect("a live node"),
+        Part::Inlets,
+        "transform",
+    )
+    .and_then(|value| value.try_downcast_ref::<Transform>().copied())
+    .expect("a scene node's transform")
+}
+
+#[test]
+fn the_demo_document_parses_as_version_3() {
+    let doc = v3::parse(DEMO_DOCUMENT).expect("assets/demo.sway.ron parses");
+    assert_eq!(doc.version, v3::FORMAT_VERSION);
+}
+
+#[test]
+fn the_demo_document_loads_clean_and_holds_every_node() {
+    let (graph, ids, _app) = loaded();
+
+    let mut named: Vec<String> = graph
+        .node_ids()
+        .into_iter()
+        .map(|node| ids.id_of(node).expect("every node has a stable id").to_string())
         .collect();
-    ids.sort();
+    named.sort();
     assert_eq!(
-        ids,
+        named,
         vec![
-            "camera".to_string(),
-            "colorSeq".to_string(),
-            "cubeA".to_string(),
-            "cubeB".to_string(),
-            "cubeC".to_string(),
-            "depthSeq".to_string(),
-            "group".to_string(),
-            "lfoA".to_string(),
-            "lfoB".to_string(),
-            "mat".to_string(),
-            "midiTime".to_string(),
-            "spriteMat".to_string(),
-            "spriteMat2".to_string(),
-            "spriteOsc".to_string(),
-            "spriteOsc2".to_string(),
-            "spritePlane".to_string(),
-            "spritePlane2".to_string(),
-            "spriteRemap".to_string(),
-            "spriteRemap2".to_string(),
-            "sun".to_string(),
-            "vec3A".to_string(),
-            "vec3B".to_string(),
+            "camera", "colorSeq", "cube", "cubeA", "cubeB", "cubeC", "depthSeq", "group", "lfoA",
+            "lfoB", "mat", "midiTime", "spriteMat", "spriteMat2", "spriteOsc", "spriteOsc2",
+            "spritePlane", "spritePlane2", "spritePlaneMesh", "spritePlaneMesh2", "spriteRemap",
+            "spriteRemap2", "sun", "vec3A", "vec3B",
         ],
-        "exactly the demo's 22 entities should carry a DocId"
-    );
-
-    let midi_time = entity_named(world, "midiTime");
-    let lfo_a = entity_named(world, "lfoA");
-    let lfo_b = entity_named(world, "lfoB");
-    let vec3_a = entity_named(world, "vec3A");
-    let vec3_b = entity_named(world, "vec3B");
-    let cube_a = entity_named(world, "cubeA");
-    let cube_b = entity_named(world, "cubeB");
-    let cube_c = entity_named(world, "cubeC");
-    let group = entity_named(world, "group");
-    let material = entity_named(world, "mat");
-    let camera = entity_named(world, "camera");
-    let sun = entity_named(world, "sun");
-
-    assert!(world.get::<sway_midi::MidiTime>(midi_time).is_some());
-    assert_eq!(world.get::<TimeFrom>(lfo_a).map(|w| w.0), Some(midi_time));
-    assert_eq!(world.get::<TimeFrom>(lfo_b).map(|w| w.0), Some(midi_time));
-    assert_eq!(world.get::<AmplitudeFrom>(lfo_b).map(|w| w.0), Some(lfo_a));
-    assert_eq!(world.get::<Vec3YFrom>(vec3_a).map(|w| w.0), Some(lfo_a));
-    assert_eq!(world.get::<Vec3YFrom>(vec3_b).map(|w| w.0), Some(lfo_b));
-    assert_eq!(
-        world.get::<TranslationFrom>(cube_a).map(|w| w.0),
-        Some(vec3_a)
-    );
-    assert_eq!(
-        world.get::<TranslationFrom>(cube_b).map(|w| w.0),
-        Some(vec3_b)
-    );
-    assert_eq!(
-        world.get::<MaterialFrom>(cube_a).map(|w| w.0),
-        Some(material)
-    );
-    assert_eq!(
-        world.get::<MaterialFrom>(cube_b).map(|w| w.0),
-        Some(material)
-    );
-    assert_eq!(
-        world.get::<MaterialFrom>(cube_c).map(|w| w.0),
-        Some(material)
-    );
-    assert_eq!(
-        world.get::<ChildOf>(cube_a).map(|c| c.parent()),
-        Some(group)
-    );
-    assert_eq!(
-        world.get::<ChildOf>(cube_b).map(|c| c.parent()),
-        Some(group)
-    );
-    assert_eq!(
-        world.get::<ChildOf>(cube_c).map(|c| c.parent()),
-        Some(group)
-    );
-    // cubeC is the one demo mesh with no `translation` wire (M7-7's negative
-    // case needs a mesh that does *not* spring back on the next tick).
-    assert!(
-        world.get::<TranslationFrom>(cube_c).is_none(),
-        "cubeC must not carry a translation wire",
-    );
-    assert_eq!(
-        world.get::<Transform>(cube_c).map(|t| t.translation),
-        Some(Vec3::new(0.0, 1.6, -0.8)),
-        "cubeC's authored Transform should survive apply() unchanged",
-    );
-
-    // The sprite layer (add-sprite-material): same wire-model, reusing
-    // `midiTime` rather than adding a second time source (D3).
-    let color_seq = entity_named(world, "colorSeq");
-    let depth_seq = entity_named(world, "depthSeq");
-    let sprite_osc = entity_named(world, "spriteOsc");
-    let sprite_osc2 = entity_named(world, "spriteOsc2");
-    let sprite_remap = entity_named(world, "spriteRemap");
-    let sprite_remap2 = entity_named(world, "spriteRemap2");
-    let sprite_mat = entity_named(world, "spriteMat");
-    let sprite_mat2 = entity_named(world, "spriteMat2");
-    let sprite_plane = entity_named(world, "spritePlane");
-    let sprite_plane2 = entity_named(world, "spritePlane2");
-
-    assert_eq!(
-        world.get::<TimeFrom>(sprite_osc).map(|w| w.0),
-        Some(midi_time),
-        "spriteOsc reuses the document's own midiTime"
-    );
-    assert_eq!(
-        world.get::<TimeFrom>(sprite_osc2).map(|w| w.0),
-        Some(midi_time),
-        "spriteOsc2 reuses the document's own midiTime too"
-    );
-    assert_eq!(
-        world.get::<RemapInputFrom>(sprite_remap).map(|w| w.0),
-        Some(sprite_osc)
-    );
-    assert_eq!(
-        world.get::<RemapInputFrom>(sprite_remap2).map(|w| w.0),
-        Some(sprite_osc2)
-    );
-    assert_eq!(
-        world.get::<ColorRunFrom>(sprite_mat).map(|w| w.0),
-        Some(color_seq)
-    );
-    assert_eq!(
-        world.get::<DepthRunFrom>(sprite_mat).map(|w| w.0),
-        Some(depth_seq)
-    );
-    assert_eq!(
-        world.get::<FrameFrom>(sprite_mat).map(|w| w.0),
-        Some(sprite_remap)
-    );
-    assert_eq!(
-        world.get::<ColorRunFrom>(sprite_mat2).map(|w| w.0),
-        Some(color_seq),
-        "the colour run is shared by both materials (D7's 'one sequence serves many consumers')"
-    );
-    assert_eq!(
-        world.get::<DepthRunFrom>(sprite_mat2).map(|w| w.0),
-        Some(depth_seq),
-        "the depth run is shared too"
-    );
-    assert_eq!(
-        world.get::<FrameFrom>(sprite_mat2).map(|w| w.0),
-        Some(sprite_remap2)
-    );
-    assert_eq!(
-        world.get::<SpriteMaterialFrom>(sprite_plane).map(|w| w.0),
-        Some(sprite_mat)
-    );
-    assert_eq!(
-        world.get::<SpriteMaterialFrom>(sprite_plane2).map(|w| w.0),
-        Some(sprite_mat2)
-    );
-    assert!(
-        world
-            .get::<sway_runtime::FrameSequenceOut>(color_seq)
-            .is_some(),
-        "FrameSequence requires FrameSequenceOut"
-    );
-    assert!(
-        world
-            .get::<sway_runtime::SpriteMaterialOut>(sprite_mat)
-            .is_some(),
-        "SpriteMaterial requires SpriteMaterialOut"
-    );
-    assert!(
-        world.get::<Mesh3d>(sprite_plane).is_some(),
-        "PlaneMesh requires Mesh3d"
-    );
-
-    // D4: the document names one component per node and Bevy supplies the rest.
-    // None of these appear in the file.
-    assert!(
-        world.get::<Oscillator>(lfo_a).is_some(),
-        "demo uses Oscillator"
-    );
-    assert!(
-        world.get::<Mesh3d>(cube_a).is_some(),
-        "MeshAsset requires Mesh3d"
-    );
-    assert!(
-        world.get::<Visibility>(cube_a).is_some(),
-        "MeshAsset requires Visibility"
-    );
-    assert!(
-        world.get::<Transform>(cube_a).is_some(),
-        "Mesh3d requires Transform"
-    );
-    assert!(
-        world.get::<MaterialOut>(material).is_some(),
-        "PbrMaterial requires MaterialOut"
-    );
-    assert!(
-        world.get::<Camera3d>(camera).is_some(),
-        "SceneCamera requires Camera3d"
-    );
-    assert!(
-        world.get::<Transform>(sun).is_some(),
-        "DirectionalLight requires Transform"
+        "exactly the demo's 25 nodes",
     );
 }
 
 #[test]
-fn demo_document_survives_a_reload() {
-    // The hot-reload path, and the sharp case for Task 1's exemption: on the
-    // second apply the required companions are already present and still
-    // unnamed, which is exactly what the removal pass looks for.
-    let document = sway_document::parse(DEMO_DOCUMENT).expect("parses");
-    let mut app = demo_app();
-    sway_document::apply(app.world_mut(), &document);
-    let cube = entity_named(app.world_mut(), "cubeA");
+fn geometry_material_and_placement_are_separate_nodes() {
+    let (graph, ids, _app) = loaded();
 
-    sway_document::apply(app.world_mut(), &document);
-
+    let cube = node_of(&ids, "cube");
     assert!(
-        app.world().get::<Mesh3d>(cube).is_some(),
-        "Mesh3d survived the reload"
+        kind_of(&graph, cube).ends_with("::MeshAsset"),
+        "the cube's geometry is a producer node",
     );
-    assert!(
-        app.world().get::<Transform>(cube).is_some(),
-        "Transform survived the reload"
+    for placement in ["cubeA", "cubeB", "cubeC"] {
+        let node = node_of(&ids, placement);
+        assert!(
+            kind_of(&graph, node).ends_with("::MeshNode"),
+            "{placement} is a placement, not geometry",
+        );
+        assert!(has_edge(&graph, &ids, "cube", "mesh", placement, "mesh"));
+        assert!(has_edge(&graph, &ids, "mat", "material", placement, "material"));
+    }
+
+    // The point of the split: one `cube.gltf` in the whole document.
+    let mesh_nodes: Vec<NodeId> = graph
+        .node_ids()
+        .into_iter()
+        .filter(|node| kind_of(&graph, *node).ends_with("::MeshAsset"))
+        .collect();
+    assert_eq!(mesh_nodes.len(), 1, "one mesh serves all three placements");
+    // Comments mention the path too; only the authored inlet counts.
+    assert_eq!(
+        DEMO_DOCUMENT.matches("path: \"cube.gltf#Mesh0/Primitive0\"").count(),
+        1
     );
 }
 
 #[test]
-fn demo_document_round_trips_through_the_world() {
-    let document = sway_document::parse(DEMO_DOCUMENT).expect("parses");
-    let mut app = demo_app();
-    sway_document::apply(app.world_mut(), &document);
-    let once = to_document(app.world_mut());
+fn a_marker_edge_carries_no_value_but_still_orders() {
+    let (graph, ids, _app) = loaded();
+    let cube = node_of(&ids, "cube");
+    let cube_a = node_of(&ids, "cubeA");
 
-    let mut second = demo_app();
-    let diagnostics = sway_document::apply(second.world_mut(), &once);
+    let mesh_edge = graph
+        .edges()
+        .iter()
+        .find(|edge| edge.src.node == cube && edge.dst.node == cube_a)
+        .expect("cube.mesh -> cubeA.mesh");
+    assert!(mesh_edge.valueless, "a mesh connection carries no value");
+
+    let order = &graph.order().order;
+    let at = |node: NodeId| order.iter().position(|other| *other == node);
     assert!(
-        diagnostics.is_clean(),
-        "re-apply of emitted doc: {:?}",
-        diagnostics.items
+        at(cube) < at(cube_a),
+        "the mesh producer is still ordered before the placement that reads it",
     );
-    let twice = to_document(second.world_mut());
+}
 
-    assert_eq!(once, twice);
+#[test]
+fn the_cube_chain_is_wired_as_the_header_draws_it() {
+    let (graph, ids, _app) = loaded();
+
+    assert!(has_edge(&graph, &ids, "midiTime", "out", "lfoA", "time"));
+    assert!(has_edge(&graph, &ids, "midiTime", "out", "lfoB", "time"));
+    assert!(has_edge(&graph, &ids, "lfoA", "out", "lfoB", "amplitude"));
+    assert!(has_edge(&graph, &ids, "lfoA", "out", "vec3A", "y"));
+    assert!(has_edge(&graph, &ids, "lfoB", "out", "vec3B", "y"));
+    assert!(has_edge(
+        &graph,
+        &ids,
+        "vec3A",
+        "out",
+        "cubeA",
+        "transform.translation"
+    ));
+    assert!(has_edge(
+        &graph,
+        &ids,
+        "vec3B",
+        "out",
+        "cubeB",
+        "transform.translation"
+    ));
+
+    // cubeC is the one placement with no translation edge, and it keeps its
+    // authored transform.
+    let cube_c = node_of(&ids, "cubeC");
+    assert!(
+        graph.edges_into(cube_c).all(|edge| edge.dst.path != "transform.translation"),
+        "cubeC must not be driven",
+    );
+    assert_eq!(
+        transform_of(&graph, cube_c).translation,
+        Vec3::new(0.0, 1.6, -0.8),
+    );
+}
+
+#[test]
+fn the_group_orders_its_children_by_slot() {
+    let (graph, ids, _app) = loaded();
+    let mut children: Vec<(i32, String)> = edges(&graph, &ids)
+        .into_iter()
+        .filter(|(_, _, to, dst, _)| to == "group" && dst == "children")
+        .map(|(from, _, _, _, slot)| (slot, from))
+        .collect();
+    children.sort();
+    assert_eq!(
+        children,
+        vec![
+            (10, "cubeA".to_string()),
+            (20, "cubeB".to_string()),
+            (30, "cubeC".to_string()),
+        ],
+        "sparse slots, so a fourth cube fits between two without renumbering",
+    );
+}
+
+#[test]
+fn the_sprite_layers_share_one_colour_run_and_one_depth_run() {
+    let (graph, ids, _app) = loaded();
+
+    for (osc, remap, material) in [
+        ("spriteOsc", "spriteRemap", "spriteMat"),
+        ("spriteOsc2", "spriteRemap2", "spriteMat2"),
+    ] {
+        assert!(has_edge(&graph, &ids, "midiTime", "out", osc, "time"));
+        assert!(has_edge(&graph, &ids, osc, "out", remap, "input"));
+        assert!(has_edge(&graph, &ids, remap, "out", material, "frame"));
+        assert!(has_edge(&graph, &ids, "colorSeq", "sequence", material, "color"));
+        assert!(has_edge(&graph, &ids, "depthSeq", "sequence", material, "depth"));
+    }
+
+    // The arithmetic the header records, pinned so a stray edit is caught.
+    assert_eq!(
+        float_inlet(&graph, node_of(&ids, "spriteRemap"), "out_max"),
+        30.0,
+        "exactly the frame count: the read-side clamp is what bounds it",
+    );
+    assert_eq!(
+        float_inlet(&graph, node_of(&ids, "spriteOsc2"), "phase"),
+        0.5,
+        "the two layers are never on the same frame",
+    );
+    assert!(
+        float_inlet(&graph, node_of(&ids, "spriteMat"), "depth_range") < 0.0
+            && float_inlet(&graph, node_of(&ids, "spriteMat2"), "depth_range") < 0.0,
+        "depth_range is negative on both layers (see the header's depth-sign note)",
+    );
+}
+
+#[test]
+fn each_sprite_plane_has_its_own_mesh_and_material() {
+    let (graph, ids, _app) = loaded();
+
+    for (mesh, placement, material) in [
+        ("spritePlaneMesh", "spritePlane", "spriteMat"),
+        ("spritePlaneMesh2", "spritePlane2", "spriteMat2"),
+    ] {
+        assert!(kind_of(&graph, node_of(&ids, mesh)).ends_with("::PlaneMesh"));
+        assert!(kind_of(&graph, node_of(&ids, placement)).ends_with("::MeshNode"));
+        assert!(has_edge(&graph, &ids, mesh, "mesh", placement, "mesh"));
+        assert!(has_edge(&graph, &ids, material, "material", placement, "material"));
+    }
+
+    // spritePlane interpenetrates cubeC; spritePlane2 carries the 30° yaw.
+    assert_eq!(
+        transform_of(&graph, node_of(&ids, "spritePlane")).translation,
+        Vec3::new(0.0, 1.6, -0.6),
+    );
+    let yawed = transform_of(&graph, node_of(&ids, "spritePlane2"));
+    assert_eq!(yawed.translation, Vec3::new(0.3, 1.5, -0.5));
+    assert!(
+        (yawed.rotation.y - 0.258819).abs() < 1e-5,
+        "a rotated second layer, so the two reliefs interleave",
+    );
+}
+
+#[test]
+fn the_document_round_trips_through_a_save() {
+    let (graph, mut ids, app) = loaded();
+    let type_registry = app.world().resource::<AppTypeRegistry>().clone();
+    let registry: &TypeRegistry = &type_registry.read();
+
+    let once = v3::to_document(&graph, registry, &mut ids).expect("saves");
+    let text = v3::to_ron(&once).expect("serializes");
+
+    let reparsed = v3::parse(&text).expect("the emitted document parses");
+    let (graph2, mut ids2, diagnostics) = v3::load(&reparsed, registry);
+    assert!(diagnostics.is_clean(), "{:?}", diagnostics.items);
+    let twice = v3::to_document(&graph2, registry, &mut ids2).expect("saves again");
+
+    assert_eq!(once, twice, "a save/load/save round trip is a fixed point");
+    assert_eq!(graph2.len(), graph.len());
+    assert_eq!(graph2.edges().len(), graph.edges().len());
 }

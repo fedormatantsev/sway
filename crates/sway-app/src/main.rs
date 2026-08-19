@@ -1,10 +1,18 @@
 mod presenter;
 mod shell;
 
+use std::path::PathBuf;
+
+use bevy::asset::LoadState;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::math::UVec2;
 use bevy::prelude::*;
 use bevy::window::Monitor;
+use sway_document::v3::{GraphInitialized, LiveGraphPlugin, ProjectDirectory};
+use sway_graph::graph::Graph;
+use sway_runtime::nodes::{FrameSequence, MeshAsset};
+use sway_runtime::{ProducerSet, ProjectionPlugin, ProjectionSet, RuntimeNodesPlugin};
+
 /// Provisional graph tick rate pending the measurements specified in spec §11.
 const TICK_HZ: f64 = 120.0;
 
@@ -117,8 +125,54 @@ fn log_fps(diagnostics: Res<DiagnosticsStore>, time: Res<Time>, mut since_last_l
     }
 }
 
-fn load_project(asset_server: Res<AssetServer>, mut handle: ResMut<sway_document::ProjectHandle>) {
-    handle.0 = Some(asset_server.load("demo.sway.ron"));
+/// True once the graph has loaded and every named mesh / frame-sequence asset
+/// is either ready or has failed. Evaluation and scene projection wait on
+/// this; producer loads and the MIDI drain do not
+/// (`architecture`: Evaluation waits for assets; input capture does not).
+fn assets_ready(
+    initialized: Option<Res<GraphInitialized>>,
+    graph: Option<Res<Graph>>,
+    server: Option<Res<AssetServer>>,
+) -> bool {
+    let Some(initialized) = initialized else {
+        return false;
+    };
+    if !initialized.0 {
+        return false;
+    }
+    let Some(graph) = graph else {
+        return false;
+    };
+    let Some(server) = server else {
+        return true;
+    };
+    for (_id, node) in graph.iter() {
+        if let Some(mesh) = node.value().downcast_ref::<MeshAsset>() {
+            if mesh.inlets.path.is_empty() {
+                continue;
+            }
+            if mesh.state.handle == Handle::<Mesh>::default() {
+                return false;
+            }
+            match server.load_state(&mesh.state.handle) {
+                LoadState::Loaded | LoadState::Failed(_) => {}
+                _ => return false,
+            }
+        }
+        if let Some(sequence) = node.value().downcast_ref::<FrameSequence>() {
+            if sequence.inlets.folder.is_empty() {
+                continue;
+            }
+            if sequence.state.folder == Handle::<bevy::asset::LoadedFolder>::default() {
+                return false;
+            }
+            match server.load_state(&sequence.state.folder) {
+                LoadState::Loaded | LoadState::Failed(_) => {}
+                _ => return false,
+            }
+        }
+    }
+    true
 }
 
 fn main() {
@@ -189,37 +243,35 @@ fn main() {
     let editor = args.editor;
 
     let (editor_tx, editor_rx) = crossbeam_channel::unbounded();
+    let (graph_tx, graph_rx) = crossbeam_channel::unbounded();
     let (viewport_tx, viewport_rx) = crossbeam_channel::unbounded();
 
-    // Everything demo-specific is built into the closure the shell calls
-    // once the window, shared device, and viewport texture exist --
-    // `sway_runtime::headless::build_app` builds the underlying `App`
-    // (Bevy's `RenderPlugin` in manual mode, no window, no winit event loop
-    // of its own); this closure only adds what's specific to this run.
-    let build_app: shell::AppBuilder = Box::new(move |gpu, viewport, size: UVec2| {
-        let mut app = sway_runtime::headless::build_app(gpu, viewport, size);
+    let project = shell::ProjectSpec {
+        directory: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
+        graph_file: "demo.sway.ron".into(),
+    };
+
+    // Rebuilt on Open: `Receiver` is `Clone`, so this is `Fn` rather than
+    // `FnOnce`. The window and the wgpu device survive; only the `App` does
+    // not (`architecture`: A project is a directory).
+    let build_app: shell::AppBuilder = Box::new(move |gpu, viewport, size: UVec2, project| {
+        let mut app = sway_runtime::headless::build_app(gpu, viewport, size, &project.directory);
 
         if editor {
             app.insert_resource(sway_graph::Authoring)
-                .insert_resource(sway_graph::EditorRx(editor_rx))
-                .insert_resource(sway_graph::ViewportInputRx(viewport_rx))
+                .insert_resource(sway_graph::EditorRx(editor_rx.clone()))
+                .insert_resource(sway_graph::GraphRx(graph_rx.clone()))
+                .insert_resource(sway_graph::ViewportInputRx(viewport_rx.clone()))
                 .add_plugins(sway_runtime::EditorViewportPlugin);
         }
 
-        app.add_plugins((
-            FrameTimeDiagnosticsPlugin::default(),
-            sway_graph::WiresPlugin,
-            sway_document::ProjectPlugin,
-            sway_nodes::WireNodesPlugin,
-            sway_midi::MidiPlugin { rx },
-            // Registers both sprite nodes, all six wires, `MaterialPlugin`
-            // and the three sync systems (frame_sequence + sprite_material)
-            // in one call. Added here rather than only on a `--demo` path so
-            // the project document (the `None` arm below) can use it too.
-            sway_runtime::SpriteMaterialPlugin,
-        ))
-        .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
-        .add_systems(Update, (log_monitors, log_fps));
+        app.insert_resource(ProjectDirectory(project.directory.clone()))
+            .add_plugins((
+                FrameTimeDiagnosticsPlugin::default(),
+                sway_midi::MidiPlugin { rx: rx.clone() },
+            ))
+            .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
+            .add_systems(Update, (log_monitors, log_fps));
 
         // Camera-collision hazard: the project document now authors its own
         // camera (M5), and each render-spike demo spawns one of its own, and
@@ -240,35 +292,70 @@ fn main() {
         //     second one.
         match demo {
             None => {
-                app.add_systems(Startup, load_project);
+                app.add_plugins((
+                    sway_graph::GraphPlugin,
+                    LiveGraphPlugin {
+                        graph_file: project.graph_file.clone(),
+                    },
+                    sway_nodes::GraphNodesPlugin,
+                    sway_midi::MidiGraphNodesPlugin,
+                    RuntimeNodesPlugin,
+                    ProjectionPlugin,
+                ))
+                .configure_sets(
+                    FixedUpdate,
+                    sway_graph::GraphTickSet.run_if(assets_ready),
+                )
+                .configure_sets(Update, ProjectionSet.run_if(assets_ready).after(ProducerSet));
             }
             Some(Demo::PointCloud) => {
-                app.add_plugins(sway_runtime::PointCloudPlugin)
-                    .add_systems(Startup, sway_runtime::point_cloud::spawn_demo_point_cloud);
+                app.add_plugins((
+                    sway_graph::WiresPlugin,
+                    sway_nodes::WireNodesPlugin,
+                    sway_runtime::PointCloudPlugin,
+                ))
+                .add_systems(Startup, sway_runtime::point_cloud::spawn_demo_point_cloud);
             }
             Some(Demo::Sprites) => {
-                app.add_plugins(sway_runtime::SpriteLayerPlugin)
-                    .add_systems(
-                        Startup,
-                        (
-                            sway_runtime::sprite_layer::spawn_demo_sprite_layers,
-                            sway_runtime::sprite_layer::spawn_demo_camera,
-                        ),
-                    );
+                app.add_plugins((
+                    sway_graph::WiresPlugin,
+                    sway_nodes::WireNodesPlugin,
+                    sway_runtime::SpriteMaterialPlugin,
+                    sway_runtime::SpriteLayerPlugin,
+                ))
+                .add_systems(
+                    Startup,
+                    (
+                        sway_runtime::sprite_layer::spawn_demo_sprite_layers,
+                        sway_runtime::sprite_layer::spawn_demo_camera,
+                    ),
+                );
             }
             Some(Demo::SpriteDepth) => {
-                app.add_plugins(sway_runtime::SpriteDepthPlugin)
-                    .add_systems(
-                        Startup,
-                        sway_runtime::sprite_depth_spike::spawn_depth_spike_scene,
-                    );
+                app.add_plugins((
+                    sway_graph::WiresPlugin,
+                    sway_nodes::WireNodesPlugin,
+                    sway_runtime::SpriteMaterialPlugin,
+                    sway_runtime::SpriteDepthPlugin,
+                ))
+                .add_systems(
+                    Startup,
+                    sway_runtime::sprite_depth_spike::spawn_depth_spike_scene,
+                );
             }
             Some(Demo::Scatter) => {
-                app.add_plugins(sway_runtime::ScatterPlugin)
-                    .add_systems(Startup, sway_runtime::scatter::spawn_demo_scatter);
+                app.add_plugins((
+                    sway_graph::WiresPlugin,
+                    sway_nodes::WireNodesPlugin,
+                    sway_runtime::ScatterPlugin,
+                ))
+                .add_systems(Startup, sway_runtime::scatter::spawn_demo_scatter);
             }
             Some(Demo::All) => {
                 app.add_plugins((
+                    sway_graph::WiresPlugin,
+                    sway_nodes::WireNodesPlugin,
+                    sway_runtime::SpriteMaterialPlugin,
                     sway_runtime::PointCloudPlugin,
                     sway_runtime::SpriteLayerPlugin,
                     sway_runtime::ScatterPlugin,
@@ -291,6 +378,8 @@ fn main() {
         editor,
         build_app,
         commands: editor_tx,
+        graph_commands: graph_tx,
         viewport_input: viewport_tx,
+        project,
     });
 }

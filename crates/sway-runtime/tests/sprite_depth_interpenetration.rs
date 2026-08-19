@@ -153,7 +153,7 @@ fn a_sprite_with_a_depth_channel_interpenetrates_a_cube() {
     let gpu = sway_gpu::GpuContext::new(None);
     let size = UVec2::new(VIEWPORT, VIEWPORT);
     let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);
-    let mut app = sway_runtime::headless::build_app(&gpu, &viewport, size);
+    let mut app = sway_runtime::headless::build_app(&gpu, &viewport, size, std::env::temp_dir());
     app.add_plugins(SpriteDepthPlugin)
         .add_systems(Startup, setup_scene);
     app.finish();

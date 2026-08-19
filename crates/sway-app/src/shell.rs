@@ -13,7 +13,7 @@
 //! Bevy viewport by `EditorPresenter` (see `presenter.rs`).
 
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -23,7 +23,7 @@ use bevy::math::UVec2;
 use crossbeam_channel::Sender;
 use sway_editor::{FileRequest, ViewRequest};
 use sway_gpu::{Compositor, GpuContext, ViewportTexture, WindowSurface};
-use sway_graph::{EditorCommand, ViewportInput};
+use sway_graph::{EditorCommand, GraphCommand, ViewportInput};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
@@ -40,36 +40,16 @@ use crate::presenter::{EDITOR_VIEWPORT_SIZE, EditorPresenter, ShowPresenter};
 /// a second request while one is pending is dropped, which is also what a
 /// modal dialog would do.
 struct Dialog {
-    kind: DialogKind,
     future: Pin<Box<dyn Future<Output = Option<rfd::FileHandle>>>>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DialogKind {
-    Open,
-    Save,
 }
 
 impl Dialog {
     fn open() -> Self {
         Self {
-            kind: DialogKind::Open,
             future: Box::pin(
                 rfd::AsyncFileDialog::new()
                     .add_filter("sway project", &["ron"])
                     .pick_file(),
-            ),
-        }
-    }
-
-    fn save() -> Self {
-        Self {
-            kind: DialogKind::Save,
-            future: Box::pin(
-                rfd::AsyncFileDialog::new()
-                    .add_filter("sway project", &["ron"])
-                    .set_file_name("untitled.sway.ron")
-                    .save_file(),
             ),
         }
     }
@@ -91,13 +71,19 @@ enum Presenter {
     Editor(Box<EditorPresenter>),
 }
 
+/// The project currently driving the `App`: a directory (the asset root) and
+/// the graph file inside it.
+#[derive(Clone, Debug)]
+pub struct ProjectSpec {
+    pub directory: PathBuf,
+    pub graph_file: String,
+}
+
 /// Builds the demo-specific Bevy `App` once the window, shared device, and
-/// viewport texture exist. Boxed so `main` can hand the shell a closure that
-/// closes over MIDI setup and the `--demo`/scene selection without the shell
-/// needing to know about either -- `sway_runtime::headless::build_app` does
-/// the actual `App` construction; this closure just adds whatever's specific
-/// to this run on top of the `App` it returns.
-pub type AppBuilder = Box<dyn FnOnce(&GpuContext, &ViewportTexture, UVec2) -> App>;
+/// viewport texture exist. Called again when a different project is opened:
+/// the window and the wgpu device survive, the `App` does not.
+pub type AppBuilder =
+    Box<dyn Fn(&GpuContext, &ViewportTexture, UVec2, &ProjectSpec) -> App>;
 
 /// What to run once the window is up.
 pub struct ShellConfig {
@@ -108,7 +94,9 @@ pub struct ShellConfig {
     pub editor: bool,
     pub build_app: AppBuilder,
     pub commands: Sender<EditorCommand>,
+    pub graph_commands: Sender<GraphCommand>,
     pub viewport_input: Sender<ViewportInput>,
+    pub project: ProjectSpec,
 }
 
 /// Everything that exists only once the window (and therefore the GPU
@@ -126,6 +114,8 @@ struct Running {
     presenter: Presenter,
     /// The file dialog in flight, if any. See `Dialog`'s docs.
     pending_dialog: Option<Dialog>,
+    build_app: AppBuilder,
+    project: ProjectSpec,
 }
 
 impl Running {
@@ -164,12 +154,11 @@ impl Running {
                 break;
             }
             match request {
-                FileRequest::Save => match self.current_path() {
-                    Some(path) => self.save(&path),
-                    // Never saved: Save means Save As.
-                    None => self.pending_dialog = Some(Dialog::save()),
-                },
-                FileRequest::SaveAs => self.pending_dialog = Some(Dialog::save()),
+                FileRequest::Save => {
+                    if let Err(error) = sway_document::v3::save_open_graph(self.app.world_mut()) {
+                        eprintln!("save failed: {error}");
+                    }
+                }
                 FileRequest::Open => self.pending_dialog = Some(Dialog::open()),
             }
         }
@@ -204,19 +193,9 @@ impl Running {
         self.window.request_redraw();
     }
 
-    /// The file the document currently lives in, if it has ever been saved.
-    fn current_path(&self) -> Option<PathBuf> {
-        self.app
-            .world()
-            .get_resource::<sway_document::CurrentDocument>()
-            .and_then(|current| current.path.clone())
-    }
-
-    /// Advances the open dialog, if any, and applies its result.
-    ///
-    /// A failure here is reported and dropped: a bad path or an unparseable
-    /// file must not take the editor down mid-session (global constraint --
-    /// panics are startup-only).
+    /// Advances the open dialog, if any, and rebuilds the `App` against the
+    /// picked file. The window and the wgpu device survive; only the `App`
+    /// is dropped (`architecture`: Reloading a project is an explicit action).
     fn poll_dialog(&mut self) {
         let Some(dialog) = &mut self.pending_dialog else {
             return;
@@ -224,27 +203,39 @@ impl Running {
         let Poll::Ready(picked) = dialog.poll() else {
             return;
         };
-        let kind = dialog.kind;
         self.pending_dialog = None;
 
         // `None` is a cancelled dialog, which is not an error.
         let Some(path) = picked else {
             return;
         };
-        match kind {
-            DialogKind::Open => {
-                if let Err(error) = sway_document::open_from_path(self.app.world_mut(), &path) {
-                    eprintln!("open failed: {error}");
-                }
-            }
-            DialogKind::Save => self.save(&path),
-        }
+        let directory = path
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let graph_file = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "untitled.sway.ron".into());
+        self.project = ProjectSpec {
+            directory,
+            graph_file,
+        };
+        self.rebuild_app();
     }
 
-    fn save(&mut self, path: &Path) {
-        if let Err(error) = sway_document::save_to_path(self.app.world_mut(), path) {
-            eprintln!("save failed: {error}");
-        }
+    /// Drops the current `App` and builds a new one for `self.project`.
+    ///
+    /// The window, the gpu context, the viewport texture and the masonry
+    /// presenter are left alone. `set_viewport_view` re-points the new world's
+    /// `ManualTextureViews` at the surviving texture.
+    fn rebuild_app(&mut self) {
+        let size = UVec2::new(self.viewport.width, self.viewport.height);
+        let mut app = (self.build_app)(&self.gpu, &self.viewport, size, &self.project);
+        app.finish();
+        app.cleanup();
+        sway_runtime::headless::set_viewport_view(&mut app, &self.viewport, size);
+        self.app = app;
     }
 }
 
@@ -316,8 +307,12 @@ impl ApplicationHandler for Shell {
         let viewport = ViewportTexture::new(&gpu.device, viewport_width, viewport_height);
         let compositor = Compositor::new(&gpu.device, surface.format());
 
-        let mut app =
-            (config.build_app)(&gpu, &viewport, UVec2::new(viewport_width, viewport_height));
+        let mut app = (config.build_app)(
+            &gpu,
+            &viewport,
+            UVec2::new(viewport_width, viewport_height),
+            &config.project,
+        );
         // Must run once, after construction and before the first `app.update()`,
         // or render resources stay uninitialised (normally an `App::run` runner
         // busy-waits on `plugins_state() == Ready` before calling these; we skip
@@ -341,6 +336,7 @@ impl ApplicationHandler for Shell {
                 size,
                 scale_factor,
                 config.commands,
+                config.graph_commands,
                 config.viewport_input,
             )))
         } else {
@@ -356,6 +352,8 @@ impl ApplicationHandler for Shell {
             app,
             presenter,
             pending_dialog: None,
+            build_app: config.build_app,
+            project: config.project,
         });
     }
 

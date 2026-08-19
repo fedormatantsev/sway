@@ -9,7 +9,7 @@
 use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
-use bevy_math::{Vec2, Vec3};
+use bevy_math::{Quat, Vec2, Vec3};
 use bevy_reflect::enums::{DynamicEnum, DynamicVariant};
 use bevy_reflect::std_traits::ReflectDefault;
 use bevy_reflect::{PartialReflect, TypeRegistry};
@@ -43,6 +43,8 @@ pub enum FieldValue {
     Vec2(Vec2),
     /// A `Vec3` field.
     Vec3(Vec3),
+    /// A `Quat` field — a scene node's `transform.rotation`.
+    Quat(Quat),
 }
 
 /// One edit, from the editor to the graph.
@@ -296,6 +298,9 @@ fn boxed_for(existing: &dyn PartialReflect, value: &FieldValue) -> Option<Box<dy
         FieldValue::Vec3(v) => existing
             .try_downcast_ref::<Vec3>()
             .map(|_| Box::new(*v) as Box<dyn PartialReflect>),
+        FieldValue::Quat(q) => existing
+            .try_downcast_ref::<Quat>()
+            .map(|_| Box::new(*q) as Box<dyn PartialReflect>),
         FieldValue::Enum(variant) => {
             // A unit variant, by name. `try_apply` on an enum switches variant.
             Some(Box::new(DynamicEnum::new(

@@ -7,8 +7,10 @@ use bevy::gizmos::transform_gizmo::{TransformGizmoMeshMarker, TransformGizmoRoot
 use bevy::math::Ray3d;
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
 use bevy::prelude::*;
+use sway_graph::graph::{Graph, GraphCommand, apply_graph_command};
 use sway_graph::{ViewportButton, ViewportInput};
 
+use crate::project::NodeEntities;
 use crate::viewport::{ViewportCamera, ViewportCameraRole};
 
 /// Builds a world-space ray from a normalized viewport position.
@@ -58,10 +60,9 @@ fn is_gizmo_mesh(entity: Entity, gizmo_meshes: &HashSet<Entity>) -> bool {
 
 /// Selects the mesh under a plain primary press.
 ///
-/// Writes `Selection` directly rather than sending `EditorCommand::Select`:
-/// the tree and the canvas send commands because they live on the far side
-/// of a channel, while this is already a world system — the same reasoning
-/// the gizmo uses for writing `Transform` directly (spec M7-8).
+/// Resolves the hit `Entity` to a `NodeId` through [`NodeEntities`] and
+/// writes [`GraphCommand::Select`] — identity only, never a value
+/// (`architecture`: Authoring writes reach the world only through the graph).
 ///
 /// `MeshRayCast` is used as a bare `SystemParam`. `MeshPickingPlugin` is
 /// deliberately not added: it exists to run `bevy_picking`'s own pointer
@@ -76,7 +77,9 @@ pub fn pick_on_click(
     gizmo_state: Option<Res<bevy::gizmos::transform_gizmo::TransformGizmoState>>,
     gizmo_meshes: Query<Entity, Or<(With<TransformGizmoRoot>, With<TransformGizmoMeshMarker>)>>,
     mut ray_cast: MeshRayCast,
-    mut selection: ResMut<sway_graph::Selection>,
+    nodes: Res<NodeEntities>,
+    mut graph: ResMut<Graph>,
+    type_registry: Res<AppTypeRegistry>,
 ) {
     // A drag on a gizmo handle is not a pick. `Option<Res<...>>` rather than
     // a plain `Res`: `pick_on_click` (Tasks 11-12) predates the gizmo
@@ -132,9 +135,9 @@ pub fn pick_on_click(
             .cast_ray(ray, &settings)
             .first()
             .map(|(entity, _)| *entity);
-        if selection.0 != hit {
-            selection.0 = hit;
-        }
+        let node = hit.and_then(|entity| nodes.node(entity));
+        let registry = type_registry.read();
+        apply_graph_command(&mut graph, &registry, &GraphCommand::Select { node });
     }
 }
 
@@ -164,7 +167,7 @@ mod tests {
         let gpu = sway_gpu::GpuContext::new(None);
         let size = UVec2::new(4, 4);
         let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);
-        let mut app = crate::headless::build_app(&gpu, &viewport, size);
+        let mut app = crate::headless::build_app(&gpu, &viewport, size, std::env::temp_dir());
 
         let transform = Transform::from_xyz(0.0, 0.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y);
         let entity = app.world_mut().spawn((Camera3d::default(), transform)).id();
@@ -223,8 +226,11 @@ mod tests {
 #[cfg(test)]
 pub(crate) mod click_tests {
     use super::*;
+    use crate::project::NodeEntities;
     use crate::viewport::{ViewportCamera, ViewportCameraRole};
-    use sway_graph::{Selection, ViewportButton, ViewportInput, ViewportModifiers};
+    use sway_graph::graph::{Graph, Node};
+    use sway_graph::{ViewportButton, ViewportInput, ViewportModifiers};
+    use crate::nodes::scene::MeshNode;
 
     /// A cube at the origin, a camera looking at it, in a real render-capable
     /// app — `MeshRayCast` needs `Assets<Mesh>` and the `Aabb` that Bevy's own
@@ -243,7 +249,7 @@ pub(crate) mod click_tests {
         let gpu = sway_gpu::GpuContext::new(None);
         let size = UVec2::new(64, 64);
         let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);
-        let mut app = crate::headless::build_app(&gpu, &viewport, size);
+        let mut app = crate::headless::build_app(&gpu, &viewport, size, std::env::temp_dir());
         app.add_plugins(crate::viewport::EditorViewportPlugin);
         let (tx, rx) = crossbeam_channel::unbounded();
         app.insert_resource(sway_graph::ViewportInputRx(rx));
@@ -284,6 +290,17 @@ pub(crate) mod click_tests {
         (app, cube, tx)
     }
 
+    fn bind_cube(app: &mut App, cube: Entity) -> sway_graph::NodeId {
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<Graph>();
+            graph.insert(Node::of(Vec2::ZERO, MeshNode::default()))
+        };
+        app.world_mut()
+            .resource_mut::<NodeEntities>()
+            .insert(node, cube);
+        node
+    }
+
     fn click(app: &mut App, tx: &crossbeam_channel::Sender<ViewportInput>, pos: Vec2) {
         tx.send(ViewportInput::Down {
             button: ViewportButton::Primary,
@@ -298,17 +315,21 @@ pub(crate) mod click_tests {
     fn clicking_a_mesh_selects_it() {
         let (mut app, cube, tx) = app_with_a_cube();
         *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
+        let node = bind_cube(&mut app, cube);
         click(&mut app, &tx, Vec2::splat(0.5));
-        assert_eq!(app.world().resource::<Selection>().0, Some(cube));
+        assert_eq!(app.world().resource::<Graph>().selection(), Some(node));
     }
 
     #[test]
     fn clicking_empty_space_clears_the_selection() {
         let (mut app, cube, tx) = app_with_a_cube();
         *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
-        app.world_mut().resource_mut::<Selection>().0 = Some(cube);
+        let node = bind_cube(&mut app, cube);
+        app.world_mut()
+            .resource_mut::<Graph>()
+            .set_selection(Some(node));
         click(&mut app, &tx, Vec2::new(0.02, 0.02));
-        assert_eq!(app.world().resource::<Selection>().0, None);
+        assert_eq!(app.world().resource::<Graph>().selection(), None);
     }
 
     #[test]
@@ -325,7 +346,7 @@ pub(crate) mod click_tests {
         })
         .unwrap();
         app.update();
-        assert_eq!(app.world().resource::<Selection>().0, None);
+        assert_eq!(app.world().resource::<Graph>().selection(), None);
         let _ = cube;
     }
 }

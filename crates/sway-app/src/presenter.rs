@@ -5,13 +5,14 @@
 //! (`sway_editor::EditorUi::viewport_rect`) instead of a hardcoded inset.
 
 use bevy::app::App;
+use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::math::UVec2;
 use crossbeam_channel::Sender;
 use masonry_core::core::CursorIcon;
 use sway_gpu::{
     Compositor, GpuContext, Quad, UiRenderer, UiTexture, ViewportTexture, WindowSurface,
 };
-use sway_graph::{EditorCommand, ViewportInput};
+use sway_graph::{EditorCommand, Graph, GraphCommand, ViewportInput};
 use winit::dpi::PhysicalSize;
 
 /// Blits the viewport fullscreen. No masonry, no vello.
@@ -72,9 +73,11 @@ impl EditorPresenter {
         size: PhysicalSize<u32>,
         scale_factor: f64,
         commands: Sender<EditorCommand>,
+        graph_commands: Sender<GraphCommand>,
         viewport_input: Sender<ViewportInput>,
     ) -> Self {
-        let editor = sway_editor::EditorUi::new(size, scale_factor, commands, viewport_input);
+        let mut editor = sway_editor::EditorUi::new(size, scale_factor, commands, viewport_input);
+        editor.set_graph_commands(graph_commands);
         let ui_texture = UiTexture::new(&gpu.device, size.width.max(1), size.height.max(1));
         let ui_renderer = UiRenderer::new(gpu.device.clone(), gpu.queue.clone());
         Self {
@@ -126,14 +129,17 @@ impl EditorPresenter {
     ///
     /// Called from `present` between the previous frame's `app.update()` and
     /// this frame's masonry redraw, which is the one place the two halves of
-    /// the process meet. The snapshot therefore reflects the world as of the
-    /// *previous* frame's update: `present` redraws masonry first so a
-    /// viewport resize costs no frame of lag, and that ordering is
-    /// load-bearing. A one-frame lag in a diagnostic view is invisible;
-    /// reordering `present` for it would not be.
-    fn apply_snapshot(&mut self, app: &App) {
-        self.editor
-            .apply_snapshot(&sway_editor::snapshot::capture(app.world()));
+    /// the process meet (design D11). The borrow of `&Graph` only has to
+    /// survive this call — there is no `Arc`, no mutex and no copy, because
+    /// the UI read and the tick never overlap.
+    fn apply_graph(&mut self, app: &App) {
+        let type_registry = app.world().resource::<AppTypeRegistry>().clone();
+        if let Some(graph) = app.world().get_resource::<Graph>() {
+            self.editor.apply_graph(graph, &type_registry.read());
+        }
+        if let Some(transport) = app.world().get_resource::<sway_midi::Transport>() {
+            self.editor.apply_transport(transport);
+        }
     }
 
     /// One frame, in the fixed, load-bearing order (controller dispatch
@@ -155,8 +161,8 @@ impl EditorPresenter {
         viewport: &mut ViewportTexture,
         compositor: &mut Compositor,
     ) {
-        // 0. The world snapshot, from the previous frame's `app.update()`.
-        self.apply_snapshot(app);
+        // 0. The graph, from the previous frame's `app.update()`.
+        self.apply_graph(app);
 
         // 1. Masonry first.
         let plan = self.editor.redraw();

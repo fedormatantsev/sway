@@ -64,7 +64,13 @@ pub use scene::{
     project_scene_entities, spawn_scene_entities,
 };
 
-/// Every projection system. `sway-app` hangs the load gate off this set.
+/// Asset-producing projectors. These start loads, so they must not be gated
+/// on assets already being loaded.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProducerSet;
+
+/// Scene and attachment projectors. `sway-app` hangs the load gate off this
+/// set.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProjectionSet;
 
@@ -146,9 +152,6 @@ impl Plugin for ProjectionPlugin {
                 Update,
                 (
                     prepare_projection,
-                    despawn_removed_nodes,
-                    // Producers first: a handle must exist before a consumer
-                    // looks for it, in the same pass.
                     project_mesh_assets.run_if(resource_exists::<AssetServer>),
                     project_plane_meshes.run_if(resource_exists::<Assets<Mesh>>),
                     project_frame_sequences.run_if(
@@ -156,12 +159,18 @@ impl Plugin for ProjectionPlugin {
                             .and_then(resource_exists::<Assets<Image>>)
                             .and_then(resource_exists::<Assets<LoadedFolder>>),
                     ),
-                    // Then the materials, which read the sequences above.
+                )
+                    .chain()
+                    .in_set(ProducerSet),
+            )
+            .add_systems(
+                Update,
+                (
+                    despawn_removed_nodes,
                     project_pbr_materials.run_if(resource_exists::<Assets<StandardMaterial>>),
                     project_sprite_materials.run_if(
                         resource_exists::<Assets<crate::sprite_material::SpriteMaterialAsset>>,
                     ),
-                    // Then the world.
                     spawn_scene_entities,
                     project_scene_entities,
                     attach_materials,
@@ -169,7 +178,8 @@ impl Plugin for ProjectionPlugin {
                     clear_dirty,
                 )
                     .chain()
-                    .in_set(ProjectionSet),
+                    .in_set(ProjectionSet)
+                    .after(ProducerSet),
             );
 
         // The displacement-aware bounds for sprite materials. Owned by
