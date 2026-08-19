@@ -31,12 +31,21 @@ use masonry::core::{
 use masonry::dpi::PhysicalPosition;
 use masonry::imaging::Painter;
 use masonry::layout::{LenReq, Length};
+use masonry::widgets::Label;
 use masonry_core::kurbo::{Affine, Axis, BezPath, Circle, Point, Size, Stroke, Vec2};
 use peniko::Color;
 use sway_graph::EditorCommand;
+use sway_graph::graph::{
+    Compat, ConnectError, EdgeId, Graph, GraphCommand, NodeId as GraphNodeId, Part, Port,
+    compatibility, registered_node_kinds,
+};
 
-use crate::node_box::{self, NodeBox, NodeBoxAction, SOCKET_HIT_RADIUS};
+use crate::node_box::{
+    self, GraphSocketPaths, NodeBox, NodeBoxAction, SOCKET_HIT_RADIUS, graph_inlet_local,
+    graph_outlet_local,
+};
 use crate::palette::Palette;
+use crate::reflect_ui::{PartField, part_fields, short_type_name};
 use crate::snapshot::{InletView, NodeId, WorldSnapshot};
 
 /// Converts a [`PointerState`]'s position to a window-space (logical pixels)
@@ -54,6 +63,52 @@ fn window_point(state: &PointerState) -> Point {
 /// and two of them never land on top of each other.
 const FALLBACK_ROWS: usize = 6;
 const FALLBACK_PITCH: Size = Size::new(220.0, 120.0);
+
+/// Geometry of the status readout along the canvas's bottom edge.
+const STATUS_INSET: f64 = 8.0;
+const STATUS_HEIGHT: f64 = 20.0;
+
+/// Gap between two consecutive ordering keys on a variadic inlet.
+///
+/// Slots are a sort key, not an index, so sparse keys are the intended
+/// authoring pattern (design D5): connecting between two existing edges is one
+/// write rather than a renumbering cascade.
+const SLOT_SPACING: i32 = 10;
+
+/// One node as the graph currently describes it, held only for the duration of
+/// [`GraphCanvas::populate_from_graph`] so the `&Graph` borrow ends before the
+/// widget tree is touched. Not a view model: nothing survives the call that is
+/// not something a widget paints.
+struct IncomingNode {
+    id: GraphNodeId,
+    label: String,
+    pos: Point,
+    inlets: Vec<GraphSocket>,
+    outlets: Vec<GraphSocket>,
+}
+
+/// The sockets one node offers on one side, taken from the node kind's
+/// declared schema rather than from the edge list.
+fn sockets_of(
+    graph: &Graph,
+    registry: &bevy_reflect::TypeRegistry,
+    id: GraphNodeId,
+    kind: &str,
+    part: Part,
+) -> Vec<GraphSocket> {
+    part_fields(registry, kind, part)
+        .into_iter()
+        .map(|PartField { path, info }| {
+            let connected =
+                part == Part::Inlets && graph.edges_into(id).any(|edge| edge.dst.path == path);
+            GraphSocket {
+                path,
+                info,
+                connected,
+            }
+        })
+        .collect()
+}
 
 /// One node box and everything the canvas knows about it.
 struct NodeSlot {
@@ -111,6 +166,72 @@ pub struct SocketRef {
     pub kind: SocketKind,
 }
 
+/// Which socket on a node, in the graph model: a field path within the node
+/// kind's `inlets` or its `outlets`.
+///
+/// The path is relative to the part (`"frequency"`, never
+/// `"inlets.frequency"`), matching what an [`Edge`](sway_graph::graph::Edge)
+/// stores. Layout order is not identity: re-sorting a node's sockets moves
+/// where a dot is drawn and never moves an edge, which attaches to the socket
+/// whose *key* is its path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphSocketKind {
+    Inlet(String),
+    Outlet(String),
+}
+
+impl GraphSocketKind {
+    /// The field path, whichever side this socket is on.
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Inlet(path) | Self::Outlet(path) => path,
+        }
+    }
+}
+
+/// One socket in the graph model, addressed across the whole canvas:
+/// `(NodeId, field path)` plus which side it is on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphSocketRef {
+    pub node: GraphNodeId,
+    pub kind: GraphSocketKind,
+}
+
+/// What became of a completed drag-to-connect, for the user to see.
+///
+/// [`CommandOutcome::Refused`](sway_graph::graph::CommandOutcome) is what the
+/// world reports for an illegal connection, but the world answers a frame
+/// later and through no channel the editor listens on -- so the canvas decides
+/// the same question locally, against the same reflected types
+/// `Graph::connect` compares, and never sends a command it knows would be
+/// refused. Replacement on a single-connection inlet is deliberately *not* a
+/// refusal: the graph replaces the edge, and this reports that it did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConnectFeedback {
+    Connected,
+    Replaced,
+    Refused(ConnectError),
+}
+
+impl ConnectFeedback {
+    /// One line of text, for a status readout.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Connected => "connected".to_string(),
+            Self::Replaced => "replaced the existing connection".to_string(),
+            Self::Refused(ConnectError::SelfConnection) => {
+                "refused: a node cannot connect to itself".to_string()
+            }
+            Self::Refused(ConnectError::IncompatibleTypes { src, dst }) => format!(
+                "refused: {} does not fit {}",
+                crate::reflect_ui::short_type_name(src),
+                crate::reflect_ui::short_type_name(dst),
+            ),
+            Self::Refused(error) => format!("refused: {error:?}"),
+        }
+    }
+}
+
 /// An edge drag in progress.
 struct EdgeDrag {
     from: SocketRef,
@@ -132,6 +253,79 @@ struct EdgeSlot {
     /// 0..1. Auto-ranging avoids a per-node-type table of expected ranges,
     /// which would be one more thing to keep in sync with the node set.
     range: Option<(f32, f32)>,
+}
+
+/// One socket of a node box laid out from the graph model.
+///
+/// `info` is the field's *declared* reflected type, taken straight off the
+/// node kind's `NodeParts` -- the same `TypeInfo` `Graph::connect` compares, so
+/// the canvas's own legality answer cannot drift from the graph's.
+struct GraphSocket {
+    path: String,
+    info: Option<&'static bevy_reflect::TypeInfo>,
+    /// Inlets only: whether any edge currently lands here.
+    connected: bool,
+}
+
+/// One node box laid out from the graph model.
+struct GraphNodeSlot {
+    pod: WidgetPod<NodeBox>,
+    /// Canvas-space position, seeded from `Node::pos` and owned by the widget
+    /// while a drag is in flight -- same rule as `NodeSlot::pos`.
+    pos: Point,
+    known_world_pos: Point,
+    label: String,
+    /// Mirrored so `paint` (which cannot read a live child) can place every
+    /// socket, exactly as `NodeSlot` mirrors its counts.
+    inlets: Vec<GraphSocket>,
+    outlets: Vec<GraphSocket>,
+}
+
+impl GraphNodeSlot {
+    fn socket_paths(&self) -> GraphSocketPaths {
+        GraphSocketPaths {
+            inlets: self.inlets.iter().map(|s| s.path.clone()).collect(),
+            outlets: self.outlets.iter().map(|s| s.path.clone()).collect(),
+        }
+    }
+
+    fn inlet(&self, path: &str) -> Option<&GraphSocket> {
+        self.inlets.iter().find(|socket| socket.path == path)
+    }
+
+    fn outlet(&self, path: &str) -> Option<&GraphSocket> {
+        self.outlets.iter().find(|socket| socket.path == path)
+    }
+
+    /// Where an inlet's dot is drawn, found by *key* rather than by position:
+    /// re-sorting the socket list moves the dot and takes the edge with it.
+    fn inlet_local(&self, path: &str) -> Option<Point> {
+        let ordinal = self.inlets.iter().position(|s| s.path == path)?;
+        Some(graph_inlet_local(self.inlets.len(), ordinal))
+    }
+
+    fn outlet_local(&self, path: &str) -> Option<Point> {
+        let ordinal = self.outlets.iter().position(|s| s.path == path)?;
+        Some(graph_outlet_local(self.outlets.len(), ordinal))
+    }
+}
+
+/// One painted edge in the graph model: two nodes, two field paths, and the
+/// ordering key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphEdgeView {
+    pub id: EdgeId,
+    pub src: GraphNodeId,
+    pub src_path: String,
+    pub dst: GraphNodeId,
+    pub dst_path: String,
+    pub slot: i32,
+}
+
+/// An edge drag in progress in the graph model.
+struct GraphEdgeDrag {
+    from: GraphSocketRef,
+    cursor: Point,
 }
 
 /// The node-editor canvas: owns pan/zoom, lays out its `NodeBox` children at
@@ -161,6 +355,25 @@ pub struct GraphCanvas {
     palette_layer: Option<(WidgetId, Point)>,
     /// An edge drag in progress (a press on an outlet socket), if any.
     drag: Option<EdgeDrag>,
+
+    // --- the graph model (design D11). Populated by `populate_from_graph`;
+    // empty while the old snapshot path drives this canvas, and vice versa.
+    // `graph_commands` being `Some` is what switches every gesture over.
+    /// Node boxes in graph order, keyed by `graph::NodeId`.
+    graph_nodes: Vec<GraphNodeId>,
+    graph_slots: HashMap<GraphNodeId, GraphNodeSlot>,
+    graph_edges: Vec<GraphEdgeView>,
+    graph_selected: Option<GraphNodeId>,
+    graph_drag: Option<GraphEdgeDrag>,
+    /// Every registered node kind's type path, for the palette (task 7.5).
+    graph_palette: Vec<&'static str>,
+    /// Where graph edits go. `Some` switches this canvas to the graph model.
+    graph_commands: Option<Sender<GraphCommand>>,
+    /// What became of the last completed drag-to-connect (task 7.6).
+    feedback: Option<ConnectFeedback>,
+    /// The status readout the feedback is shown in.
+    status: WidgetPod<Label>,
+    status_text: String,
 }
 
 // --- MARK: BUILDERS
@@ -179,6 +392,39 @@ impl GraphCanvas {
             palette: Vec::new(),
             palette_layer: None,
             drag: None,
+            graph_nodes: Vec::new(),
+            graph_slots: HashMap::new(),
+            graph_edges: Vec::new(),
+            graph_selected: None,
+            graph_drag: None,
+            graph_palette: Vec::new(),
+            graph_commands: None,
+            feedback: None,
+            status: Label::new(String::new()).prepare().to_pod(),
+            status_text: String::new(),
+        }
+    }
+
+    /// Points this canvas at the graph command set. Every gesture -- create,
+    /// delete, move, select, connect, disconnect, reorder -- switches over to
+    /// [`GraphCommand`] once this is set, and [`populate_from_graph`] becomes
+    /// the read path.
+    ///
+    /// [`populate_from_graph`]: Self::populate_from_graph
+    pub fn set_graph_commands(this: &mut WidgetMut<'_, Self>, commands: Sender<GraphCommand>) {
+        this.widget.graph_commands = Some(commands);
+    }
+
+    /// Whether this canvas is driven by the graph model.
+    fn on_graph(&self) -> bool {
+        self.graph_commands.is_some()
+    }
+
+    fn send(&self, command: GraphCommand) {
+        if let Some(commands) = &self.graph_commands {
+            // Send-failure is not an error worth reporting: the only way the
+            // receiver is gone is that the app is shutting down.
+            let _ = commands.send(command);
         }
     }
 }
@@ -267,6 +513,12 @@ impl Widget for GraphCanvas {
                 ctx.register_child(&mut slot.pod);
             }
         }
+        for id in &self.graph_nodes {
+            if let Some(slot) = self.graph_slots.get_mut(id) {
+                ctx.register_child(&mut slot.pod);
+            }
+        }
+        ctx.register_child(&mut self.status);
     }
 
     /// Lays out every child at `Point::ZERO`.
@@ -289,6 +541,20 @@ impl Widget for GraphCanvas {
                 ctx.place_child(&mut slot.pod, Point::ZERO);
             }
         }
+        for id in self.graph_nodes.clone() {
+            if let Some(slot) = self.graph_slots.get_mut(&id) {
+                ctx.run_layout(&mut slot.pod, node_box::SIZE);
+                ctx.place_child(&mut slot.pod, Point::ZERO);
+            }
+        }
+        // The status readout sits in the canvas's own frame, not the node
+        // frame: it is chrome, so pan and zoom must not move it.
+        let status_size = Size::new((size.width - 2.0 * STATUS_INSET).max(0.0), STATUS_HEIGHT);
+        ctx.run_layout(&mut self.status, status_size);
+        ctx.place_child(
+            &mut self.status,
+            Point::new(STATUS_INSET, (size.height - STATUS_HEIGHT).max(0.0)),
+        );
         ctx.set_clip_path(size.to_rect());
     }
 
@@ -336,6 +602,37 @@ impl Widget for GraphCanvas {
             self.paint_edge(painter, from, to, brush, width);
         }
 
+        // Graph-model edges: each carries two field paths, and each end
+        // attaches to the socket whose *key* is that path -- found by name,
+        // never by ordinal, so re-sorting a node's sockets moves the dot and
+        // takes the edge with it.
+        for edge in &self.graph_edges {
+            let (Some(from_slot), Some(to_slot)) = (
+                self.graph_slots.get(&edge.src),
+                self.graph_slots.get(&edge.dst),
+            ) else {
+                continue;
+            };
+            let (Some(from_local), Some(to_local)) = (
+                from_slot.outlet_local(&edge.src_path),
+                to_slot.inlet_local(&edge.dst_path),
+            ) else {
+                continue;
+            };
+            let from = self.to_visual(from_slot.pos + from_local.to_vec2());
+            let to = self.to_visual(to_slot.pos + to_local.to_vec2());
+            self.paint_edge(painter, from, to, Color::from_rgb8(140, 140, 155), 2.0);
+        }
+
+        if let Some(drag) = &self.graph_drag
+            && let Some(slot) = self.graph_slots.get(&drag.from.node)
+            && let Some(local) = slot.outlet_local(drag.from.kind.path())
+        {
+            let from = self.to_visual(slot.pos + local.to_vec2());
+            let to = self.to_visual(drag.cursor);
+            self.paint_edge(painter, from, to, Color::from_rgb8(220, 220, 230), 2.0);
+        }
+
         if let Some(drag) = &self.drag
             && let Some(slot) = self.slots.get(&drag.from.node)
         {
@@ -359,6 +656,43 @@ impl Widget for GraphCanvas {
         _props: &PropertiesRef<'_>,
         painter: &mut Painter<'_>,
     ) {
+        // The graph-model overlay: every inlet is marked legal or not against
+        // the drag's source type, using the same comparison the connect
+        // itself performs.
+        if let Some(drag) = &self.graph_drag {
+            let src_info = self
+                .graph_slots
+                .get(&drag.from.node)
+                .and_then(|slot| slot.outlet(drag.from.kind.path()))
+                .and_then(|socket| socket.info);
+            for id in &self.graph_nodes {
+                let Some(slot) = self.graph_slots.get(id) else {
+                    continue;
+                };
+                for (ordinal, socket) in slot.inlets.iter().enumerate() {
+                    let legal = *id != drag.from.node
+                        && match (src_info, socket.info) {
+                            (Some(src), Some(dst)) => compatibility(src, dst).is_some(),
+                            _ => false,
+                        };
+                    let local = graph_inlet_local(slot.inlets.len(), ordinal);
+                    let centre = self.to_visual(slot.pos + local.to_vec2());
+                    let colour = if legal {
+                        Color::from_rgb8(120, 220, 140)
+                    } else {
+                        Color::from_rgb8(70, 72, 80)
+                    };
+                    painter
+                        .fill(
+                            Circle::new(centre, node_box::SOCKET_RADIUS * 1.6 * self.zoom),
+                            colour,
+                        )
+                        .draw();
+                }
+            }
+            return;
+        }
+
         let Some(drag) = &self.drag else { return };
         let Some(src) = self.entity_of(drag.from.node) else {
             return;
@@ -414,9 +748,15 @@ impl Widget for GraphCanvas {
             }) => {
                 let local = ctx.local_position(state.position);
                 let canvas_pos = self.to_canvas(local);
-                let palette = NewWidget::new(
-                    Palette::new(self.palette.clone()).with_creator(ctx.widget_id()),
-                );
+                // Task 7.5: the graph model's palette is every registered node
+                // kind, listed by type path and displayed by short name --
+                // there is no `ComponentDocRegistry` any more.
+                let palette = if self.on_graph() {
+                    Palette::new(self.graph_palette.clone()).with_short_labels()
+                } else {
+                    Palette::new(self.palette.clone())
+                };
+                let palette = NewWidget::new(palette.with_creator(ctx.widget_id()));
                 self.palette_layer = Some((palette.id(), canvas_pos));
                 ctx.create_layer(LayerType::Other, palette, ctx.to_window(local));
                 ctx.set_handled();
@@ -516,6 +856,18 @@ impl Widget for GraphCanvas {
         // not a descendant, so a pick cannot bubble here as an action --
         // see `finish_palette_pick` and `palette.rs`'s module doc for the
         // `mutate_later`-based path that actually carries it back.
+        let Some(action) = action.downcast_ref::<NodeBoxAction>() else {
+            return;
+        };
+        if let Some(id) = self.graph_nodes.iter().copied().find(|id| {
+            self.graph_slots
+                .get(id)
+                .is_some_and(|slot| slot.pod.id() == source)
+        }) {
+            self.on_graph_node_action(ctx, id, action);
+            ctx.set_handled();
+            return;
+        }
         let Some(id) = self.nodes.iter().copied().find(|id| {
             self.slots
                 .get(id)
@@ -523,9 +875,7 @@ impl Widget for GraphCanvas {
         }) else {
             return;
         };
-        let Some(&action) = action.downcast_ref::<NodeBoxAction>() else {
-            return;
-        };
+        let action = action.clone();
         match action {
             NodeBoxAction::Selected => self.select_from_action(id),
             NodeBoxAction::DraggedBy(delta) => {
@@ -571,6 +921,7 @@ impl Widget for GraphCanvas {
                 self.drag = None;
                 ctx.request_paint_only();
             }
+            NodeBoxAction::GraphSocketPressed(_) => {}
         }
         ctx.set_handled();
     }
@@ -625,6 +976,12 @@ impl Widget for GraphCanvas {
         self.nodes
             .iter()
             .filter_map(|id| self.slots.get(id).map(|slot| slot.pod.id()))
+            .chain(
+                self.graph_nodes
+                    .iter()
+                    .filter_map(|id| self.graph_slots.get(id).map(|slot| slot.pod.id())),
+            )
+            .chain(std::iter::once(self.status.id()))
             .collect()
     }
 }
@@ -819,6 +1176,330 @@ impl GraphCanvas {
         this.ctx.request_render();
     }
 
+    /// Reconciles the canvas against the live graph.
+    ///
+    /// This is the graph-model read path (design D11): it borrows `&Graph` and
+    /// the `TypeRegistry` for the duration of one call, walks them with
+    /// reflection, and pushes the result into the widgets through `WidgetMut`.
+    /// No `Arc`, no mutex, no copy of the graph, and no view type in between --
+    /// what the widgets keep afterwards is what they paint.
+    ///
+    /// Sockets come from each node kind's *declared* inlets and outlets
+    /// (`NodeParts` type data), so an inlet with nothing connected to it still
+    /// has a socket, and a node's sockets do not change when an edge does.
+    pub fn populate_from_graph(
+        this: &mut WidgetMut<'_, Self>,
+        graph: &Graph,
+        registry: &bevy_reflect::TypeRegistry,
+    ) {
+        this.widget.graph_palette = registered_node_kinds(registry);
+
+        let incoming: Vec<IncomingNode> = graph
+            .iter()
+            .map(|(id, node)| IncomingNode {
+                id,
+                label: short_type_name(node.kind()),
+                pos: Point::new(node.pos().x as f64, node.pos().y as f64),
+                inlets: sockets_of(graph, registry, id, node.kind(), Part::Inlets),
+                outlets: sockets_of(graph, registry, id, node.kind(), Part::Outlets),
+            })
+            .collect();
+
+        let wanted: Vec<GraphNodeId> = incoming.iter().map(|node| node.id).collect();
+        let stale: Vec<GraphNodeId> = this
+            .widget
+            .graph_nodes
+            .iter()
+            .copied()
+            .filter(|id| !wanted.contains(id))
+            .collect();
+        for id in stale {
+            if let Some(slot) = this.widget.graph_slots.remove(&id) {
+                this.ctx.remove_child(slot.pod);
+            }
+        }
+
+        for node in incoming {
+            let paths = GraphSocketPaths {
+                inlets: node.inlets.iter().map(|s| s.path.clone()).collect(),
+                outlets: node.outlets.iter().map(|s| s.path.clone()).collect(),
+            };
+            match this.widget.graph_slots.get_mut(&node.id) {
+                Some(slot) => {
+                    // Same rule as the snapshot path: the world's answer is
+                    // adopted only when it actually changed, so a drag that
+                    // has not been echoed back yet is not snapped back.
+                    if node.pos != slot.known_world_pos {
+                        slot.pos = node.pos;
+                    }
+                    slot.known_world_pos = node.pos;
+                    if slot.label != node.label {
+                        node.label.clone_into(&mut slot.label);
+                        let mut child = this.ctx.get_mut(&mut slot.pod);
+                        NodeBox::set_label(&mut child, &node.label);
+                    }
+                    if slot.socket_paths() != paths {
+                        let mut child = this.ctx.get_mut(&mut slot.pod);
+                        NodeBox::set_graph_sockets(&mut child, paths);
+                    }
+                    slot.inlets = node.inlets;
+                    slot.outlets = node.outlets;
+                }
+                None => {
+                    let transform = Affine::translate(this.widget.pan)
+                        * Affine::scale(this.widget.zoom)
+                        * Affine::translate(node.pos.to_vec2());
+                    let pod = NodeBox::new(node.label.clone())
+                        .with_initial_transform(transform)
+                        .with_graph_sockets(paths)
+                        .prepare()
+                        .to_pod();
+                    this.widget.graph_slots.insert(
+                        node.id,
+                        GraphNodeSlot {
+                            pod,
+                            pos: node.pos,
+                            known_world_pos: node.pos,
+                            label: node.label,
+                            inlets: node.inlets,
+                            outlets: node.outlets,
+                        },
+                    );
+                    this.ctx.children_changed();
+                }
+            }
+        }
+        this.widget.graph_nodes = wanted;
+
+        // Edges are rebuilt outright -- an edge's identity is its `EdgeId`,
+        // and nothing about a painted edge is worth carrying across a frame.
+        let live: HashSet<GraphNodeId> = this.widget.graph_nodes.iter().copied().collect();
+        this.widget.graph_edges = graph
+            .edges()
+            .iter()
+            .filter(|edge| live.contains(&edge.src.node) && live.contains(&edge.dst.node))
+            .map(|edge| GraphEdgeView {
+                id: edge.id,
+                src: edge.src.node,
+                src_path: edge.src.path.clone(),
+                dst: edge.dst.node,
+                dst_path: edge.dst.path.clone(),
+                slot: edge.slot,
+            })
+            .collect();
+
+        Self::set_graph_selected(this, graph.selection());
+        Self::sync_status(this);
+        this.ctx.request_render();
+    }
+
+    /// Sets which graph node is highlighted. Selection is the graph's, not
+    /// this canvas's: a press only asks.
+    pub fn set_graph_selected(this: &mut WidgetMut<'_, Self>, selected: Option<GraphNodeId>) {
+        let previous = this.widget.graph_selected;
+        if previous == selected {
+            return;
+        }
+        this.widget.graph_selected = selected;
+        if let Some(id) = previous
+            && let Some(slot) = this.widget.graph_slots.get_mut(&id)
+        {
+            let mut child = this.ctx.get_mut(&mut slot.pod);
+            NodeBox::set_selected(&mut child, false);
+        }
+        if let Some(id) = selected
+            && let Some(slot) = this.widget.graph_slots.get_mut(&id)
+        {
+            let mut child = this.ctx.get_mut(&mut slot.pod);
+            NodeBox::set_selected(&mut child, true);
+        }
+    }
+
+    fn sync_status(this: &mut WidgetMut<'_, Self>) {
+        let wanted = this
+            .widget
+            .feedback
+            .as_ref()
+            .map(ConnectFeedback::message)
+            .unwrap_or_default();
+        if this.widget.status_text == wanted {
+            return;
+        }
+        wanted.clone_into(&mut this.widget.status_text);
+        let mut child = this.ctx.get_mut(&mut this.widget.status);
+        Label::set_text(&mut child, wanted);
+    }
+
+    /// The currently selected graph node, if any.
+    pub fn graph_selected(&self) -> Option<GraphNodeId> {
+        self.graph_selected
+    }
+
+    /// The `WidgetId` of a graph node's box.
+    pub fn graph_widget_id_of(&self, id: GraphNodeId) -> Option<WidgetId> {
+        self.graph_slots.get(&id).map(|slot| slot.pod.id())
+    }
+
+    /// A graph node's current canvas-space position.
+    pub fn graph_position_of(&self, id: GraphNodeId) -> Option<Point> {
+        self.graph_slots.get(&id).map(|slot| slot.pos)
+    }
+
+    /// Every socket key this canvas offers for a node, inlets then outlets, in
+    /// the order they are drawn.
+    pub fn graph_sockets_of(&self, id: GraphNodeId) -> Vec<GraphSocketKind> {
+        let Some(slot) = self.graph_slots.get(&id) else {
+            return Vec::new();
+        };
+        slot.inlets
+            .iter()
+            .map(|s| GraphSocketKind::Inlet(s.path.clone()))
+            .chain(
+                slot.outlets
+                    .iter()
+                    .map(|s| GraphSocketKind::Outlet(s.path.clone())),
+            )
+            .collect()
+    }
+
+    /// Whether a node's inlet currently has anything connected to it.
+    pub fn graph_inlet_connected(&self, id: GraphNodeId, path: &str) -> bool {
+        self.graph_slots
+            .get(&id)
+            .and_then(|slot| slot.inlet(path))
+            .is_some_and(|socket| socket.connected)
+    }
+
+    /// The edges this canvas paints.
+    pub fn graph_edges(&self) -> &[GraphEdgeView] {
+        &self.graph_edges
+    }
+
+    /// The edges landing on one inlet, in ordering-key order -- `(slot, source
+    /// node, edge id)`, exactly the order the graph fills a variadic inlet's
+    /// `Vec` in, so what the canvas presents is what the node evaluates.
+    pub fn graph_inlet_edges(&self, node: GraphNodeId, path: &str) -> Vec<GraphEdgeView> {
+        let mut edges: Vec<GraphEdgeView> = self
+            .graph_edges
+            .iter()
+            .filter(|edge| edge.dst == node && edge.dst_path == path)
+            .cloned()
+            .collect();
+        edges.sort_by_key(|edge| (edge.slot, edge.src, edge.id));
+        edges
+    }
+
+    /// Moves one edge of a variadic inlet to a new position in that inlet's
+    /// order (task 7.7).
+    ///
+    /// Slots are renumbered at a fixed spacing rather than squeezed between
+    /// two neighbours: an inlet with adjacent slots has no gap to squeeze
+    /// into, and a reorder that silently did nothing would be worse than one
+    /// that rewrites three keys. Only the edges whose key actually changes are
+    /// sent, so an equal write still reports nothing.
+    pub fn reorder_graph_inlet(
+        this: &mut WidgetMut<'_, Self>,
+        node: GraphNodeId,
+        path: &str,
+        from: usize,
+        to: usize,
+    ) {
+        let mut order = this.widget.graph_inlet_edges(node, path);
+        if from >= order.len() || to >= order.len() || from == to {
+            return;
+        }
+        let edge = order.remove(from);
+        order.insert(to, edge);
+        for (index, edge) in order.iter().enumerate() {
+            let slot = (index as i32) * SLOT_SPACING;
+            if slot != edge.slot {
+                this.widget.send(GraphCommand::SetSlot {
+                    edge: edge.id,
+                    slot,
+                });
+            }
+        }
+    }
+
+    /// What became of the last completed drag-to-connect. Reading it leaves it
+    /// in place; it is cleared by the next attempt.
+    pub fn connect_feedback(&self) -> Option<&ConnectFeedback> {
+        self.feedback.as_ref()
+    }
+
+    /// The socket a graph drag started from, if one is in progress.
+    pub fn graph_drag_origin(&self) -> Option<&GraphSocketRef> {
+        self.graph_drag.as_ref().map(|drag| &drag.from)
+    }
+
+    /// The graph socket at a canvas-space point, if any. Same math `paint`
+    /// uses, so what is hittable is exactly what is drawn.
+    pub fn graph_socket_at(&self, point: Point) -> Option<GraphSocketRef> {
+        for id in &self.graph_nodes {
+            let Some(slot) = self.graph_slots.get(id) else {
+                continue;
+            };
+            let local = point - slot.pos.to_vec2();
+            for (ordinal, socket) in slot.outlets.iter().enumerate() {
+                if graph_outlet_local(slot.outlets.len(), ordinal).distance(local)
+                    <= SOCKET_HIT_RADIUS
+                {
+                    return Some(GraphSocketRef {
+                        node: *id,
+                        kind: GraphSocketKind::Outlet(socket.path.clone()),
+                    });
+                }
+            }
+            for (ordinal, socket) in slot.inlets.iter().enumerate() {
+                if graph_inlet_local(slot.inlets.len(), ordinal).distance(local)
+                    <= SOCKET_HIT_RADIUS
+                {
+                    return Some(GraphSocketRef {
+                        node: *id,
+                        kind: GraphSocketKind::Inlet(socket.path.clone()),
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    /// Canvas-space endpoints of one painted edge, resolved exactly the way
+    /// `paint` resolves them: each end is the socket whose *key* is the edge's
+    /// field path, found by name and never by position.
+    pub fn graph_edge_endpoints(&self, edge: EdgeId) -> Option<(Point, Point)> {
+        let edge = self.graph_edges.iter().find(|e| e.id == edge)?;
+        let from_slot = self.graph_slots.get(&edge.src)?;
+        let to_slot = self.graph_slots.get(&edge.dst)?;
+        Some((
+            from_slot.pos + from_slot.outlet_local(&edge.src_path)?.to_vec2(),
+            to_slot.pos + to_slot.inlet_local(&edge.dst_path)?.to_vec2(),
+        ))
+    }
+
+    /// Test seam: re-sorts one node's inlet sockets, standing in for any UI
+    /// that lets the user reorder them. Layout order is not identity, so this
+    /// must move the dots and take every edge with them.
+    pub fn reverse_graph_inlets_for_test(this: &mut WidgetMut<'_, Self>, node: GraphNodeId) {
+        let Some(slot) = this.widget.graph_slots.get_mut(&node) else {
+            return;
+        };
+        slot.inlets.reverse();
+        let paths = slot.socket_paths();
+        let mut child = this.ctx.get_mut(&mut slot.pod);
+        NodeBox::set_graph_sockets(&mut child, paths);
+    }
+
+    /// Test seam for a graph socket press.
+    pub fn graph_socket_pressed_for_test(this: &mut WidgetMut<'_, Self>, socket: GraphSocketRef) {
+        this.widget.graph_socket_pressed(socket.node, socket.kind);
+    }
+
+    /// Test seam for the release of a graph edge drag.
+    pub fn graph_connect_released_for_test(this: &mut WidgetMut<'_, Self>, point: Point) {
+        this.widget.graph_connect_released(point);
+    }
+
     /// The `WidgetId` of a node's box, for tests and for M7's selection
     /// plumbing. `None` if the canvas has no such node.
     pub fn widget_id_of(&self, id: NodeId) -> Option<WidgetId> {
@@ -862,6 +1543,16 @@ impl GraphCanvas {
             let mut child = this
                 .ctx
                 .get_mut(&mut this.widget.slots.get_mut(&id).unwrap().pod);
+            child.set_transform(transform);
+        }
+        for id in this.widget.graph_nodes.clone() {
+            if !this.widget.graph_slots.contains_key(&id) {
+                continue;
+            }
+            let transform = this.widget.graph_child_transform(id);
+            let mut child = this
+                .ctx
+                .get_mut(&mut this.widget.graph_slots.get_mut(&id).unwrap().pod);
             child.set_transform(transform);
         }
     }
@@ -928,6 +1619,27 @@ impl GraphCanvas {
         Affine::translate(self.pan) * Affine::scale(self.zoom) * Affine::translate(pos.to_vec2())
     }
 
+    /// [`child_transform`](Self::child_transform) for a graph-model node.
+    fn graph_child_transform(&self, id: GraphNodeId) -> Affine {
+        let pos = self
+            .graph_slots
+            .get(&id)
+            .map(|slot| slot.pos)
+            .unwrap_or_default();
+        Affine::translate(self.pan) * Affine::scale(self.zoom) * Affine::translate(pos.to_vec2())
+    }
+
+    /// `ActionCtx` version of re-applying pan/zoom/position to a single
+    /// graph-model node.
+    fn retransform_one_graph_from_action(&mut self, ctx: &mut ActionCtx<'_>, id: GraphNodeId) {
+        let transform = self.graph_child_transform(id);
+        if let Some(slot) = self.graph_slots.get_mut(&id) {
+            ctx.mutate_child_later(&mut slot.pod, move |mut node: WidgetMut<'_, NodeBox>| {
+                node.set_transform(transform);
+            });
+        }
+    }
+
     fn paint_edge(
         &self,
         painter: &mut Painter<'_>,
@@ -967,6 +1679,12 @@ impl GraphCanvas {
     /// is the only owner now (spec M7-5) -- this just asks; `apply_snapshot`
     /// is what actually clears the highlight, once the world answers back.
     fn clear_selection(&mut self) {
+        if self.on_graph() {
+            if self.graph_selected.is_some() {
+                self.send(GraphCommand::Select { node: None });
+            }
+            return;
+        }
         if self.selected.is_none() {
             return;
         }
@@ -1049,12 +1767,201 @@ impl GraphCanvas {
         });
     }
 
+    /// One node box's action, when that box came from the graph model.
+    fn on_graph_node_action(
+        &mut self,
+        ctx: &mut ActionCtx<'_>,
+        id: GraphNodeId,
+        action: &NodeBoxAction,
+    ) {
+        match action {
+            NodeBoxAction::Selected => {
+                if self.graph_selected != Some(id) {
+                    self.send(GraphCommand::Select { node: Some(id) });
+                }
+            }
+            NodeBoxAction::DraggedBy(delta) => {
+                if let Some(slot) = self.graph_slots.get_mut(&id) {
+                    slot.pos += *delta / self.zoom;
+                }
+                self.retransform_one_graph_from_action(ctx, id);
+                ctx.request_paint_only();
+            }
+            NodeBoxAction::DragEnded => {
+                if let Some(slot) = self.graph_slots.get(&id) {
+                    self.send(GraphCommand::Move {
+                        node: id,
+                        pos: WorldVec2::new(slot.pos.x as f32, slot.pos.y as f32),
+                    });
+                }
+            }
+            NodeBoxAction::GraphSocketPressed(kind) => {
+                self.graph_socket_pressed(id, kind.clone());
+                self.push_status(ctx);
+                ctx.request_paint_only();
+            }
+            NodeBoxAction::ConnectDragged(local) => {
+                if let Some(slot) = self.graph_slots.get(&id) {
+                    let cursor = slot.pos + local.to_vec2();
+                    if let Some(drag) = &mut self.graph_drag {
+                        drag.cursor = cursor;
+                    }
+                }
+                ctx.request_paint_only();
+            }
+            NodeBoxAction::ConnectReleased(local) => {
+                let point = self
+                    .graph_slots
+                    .get(&id)
+                    .map(|slot| slot.pos + local.to_vec2());
+                if let Some(point) = point {
+                    self.graph_connect_released(point);
+                }
+                self.push_status(ctx);
+                ctx.request_paint_only();
+            }
+            NodeBoxAction::ConnectCanceled => {
+                self.graph_drag = None;
+                ctx.request_paint_only();
+            }
+            NodeBoxAction::SocketPressed(_) => {}
+        }
+    }
+
+    /// Pushes the current connect feedback into the status readout from an
+    /// action context, so a refusal is visible the moment it happens rather
+    /// than on the next frame's read.
+    fn push_status(&mut self, ctx: &mut ActionCtx<'_>) {
+        let wanted = self
+            .feedback
+            .as_ref()
+            .map(ConnectFeedback::message)
+            .unwrap_or_default();
+        if self.status_text == wanted {
+            return;
+        }
+        wanted.clone_into(&mut self.status_text);
+        ctx.mutate_child_later(&mut self.status, move |mut label: WidgetMut<'_, Label>| {
+            Label::set_text(&mut label, wanted);
+        });
+    }
+
+    /// A graph socket was pressed. An outlet starts an edge drag; a
+    /// *connected* inlet is the disconnect gesture.
+    fn graph_socket_pressed(&mut self, node: GraphNodeId, kind: GraphSocketKind) {
+        match kind {
+            GraphSocketKind::Outlet(_) => {
+                let cursor = self
+                    .graph_slots
+                    .get(&node)
+                    .map(|slot| slot.pos)
+                    .unwrap_or_default();
+                self.graph_drag = Some(GraphEdgeDrag {
+                    from: GraphSocketRef { node, kind },
+                    cursor,
+                });
+            }
+            GraphSocketKind::Inlet(path) => {
+                // A variadic inlet holds several edges; the press takes the
+                // last one in ordering-key order, which is the one drawn
+                // closest to the bottom of that inlet's fan.
+                let Some(edge) = self.graph_inlet_edges(node, &path).pop() else {
+                    return;
+                };
+                self.send(GraphCommand::Disconnect { edge: edge.id });
+            }
+        }
+    }
+
+    /// The graph edge drag ended at this canvas-space point.
+    ///
+    /// Legality is decided here against the same declared `TypeInfo`s
+    /// `Graph::connect` compares, so an illegal drop is never sent and is
+    /// reported to the user instead. A drop onto an occupied single-connection
+    /// inlet *is* sent -- the graph replaces the edge -- and is reported as a
+    /// replacement rather than as a refusal.
+    fn graph_connect_released(&mut self, point: Point) {
+        let Some(drag) = self.graph_drag.take() else {
+            return;
+        };
+        self.feedback = None;
+        let GraphSocketKind::Outlet(src_path) = drag.from.kind else {
+            return;
+        };
+        let src_node = drag.from.node;
+        let Some(GraphSocketRef {
+            node: dst_node,
+            kind: GraphSocketKind::Inlet(dst_path),
+        }) = self.graph_socket_at(point)
+        else {
+            return; // released over empty canvas, or over an outlet
+        };
+
+        if src_node == dst_node {
+            self.feedback = Some(ConnectFeedback::Refused(ConnectError::SelfConnection));
+            return;
+        }
+        let src_info = self
+            .graph_slots
+            .get(&src_node)
+            .and_then(|slot| slot.outlet(&src_path))
+            .and_then(|socket| socket.info);
+        let dst_socket = self
+            .graph_slots
+            .get(&dst_node)
+            .and_then(|slot| slot.inlet(&dst_path));
+        let (Some(src_info), Some(dst_socket)) = (src_info, dst_socket) else {
+            self.feedback = Some(ConnectFeedback::Refused(ConnectError::UntypedValue));
+            return;
+        };
+        let Some(dst_info) = dst_socket.info else {
+            self.feedback = Some(ConnectFeedback::Refused(ConnectError::UntypedValue));
+            return;
+        };
+        let occupied = dst_socket.connected;
+        let Some(compat) = compatibility(src_info, dst_info) else {
+            self.feedback = Some(ConnectFeedback::Refused(ConnectError::IncompatibleTypes {
+                src: src_info.type_path().to_string(),
+                dst: dst_info.type_path().to_string(),
+            }));
+            return;
+        };
+
+        let slot = match compat {
+            // A variadic inlet keeps every edge, so the new one lands after
+            // the ones already there.
+            Compat::Variadic => self
+                .graph_inlet_edges(dst_node, &dst_path)
+                .last()
+                .map_or(0, |edge| edge.slot + SLOT_SPACING),
+            Compat::Direct | Compat::Optional => 0,
+        };
+        self.send(GraphCommand::Connect {
+            src: Port::new(src_node, src_path),
+            dst: Port::new(dst_node, dst_path),
+            slot,
+        });
+        self.feedback = Some(if occupied && compat != Compat::Variadic {
+            ConnectFeedback::Replaced
+        } else {
+            ConnectFeedback::Connected
+        });
+    }
+
     /// `EventCtx` version of re-applying pan/zoom/position to every node
     /// (scroll-driven pan/zoom affects all of them at once).
     fn retransform_all_from_event(&mut self, ctx: &mut EventCtx<'_>) {
         for id in self.nodes.clone() {
             let transform = self.child_transform(id);
             if let Some(slot) = self.slots.get_mut(&id) {
+                ctx.mutate_child_later(&mut slot.pod, move |mut node: WidgetMut<'_, NodeBox>| {
+                    node.set_transform(transform);
+                });
+            }
+        }
+        for id in self.graph_nodes.clone() {
+            let transform = self.graph_child_transform(id);
+            if let Some(slot) = self.graph_slots.get_mut(&id) {
                 ctx.mutate_child_later(&mut slot.pod, move |mut node: WidgetMut<'_, NodeBox>| {
                     node.set_transform(transform);
                 });
@@ -1086,6 +1993,12 @@ impl GraphCanvas {
     /// not remove the node itself: the world is the truth, and the next
     /// snapshot is what takes the box away.
     fn delete_selected(&mut self) {
+        if self.on_graph() {
+            if let Some(node) = self.graph_selected {
+                self.send(GraphCommand::Delete { node });
+            }
+            return;
+        }
         let Some(entity) = self.selected.and_then(|id| self.entity_of(id)) else {
             return;
         };
@@ -1106,10 +2019,19 @@ impl GraphCanvas {
     /// the list happened to place that row.
     pub fn finish_palette_pick(this: &mut WidgetMut<'_, Self>, component: &'static str) {
         if let Some((layer_id, pos)) = this.widget.palette_layer.take() {
-            let _ = this.widget.commands.send(EditorCommand::Create {
-                component,
-                pos: WorldVec2::new(pos.x as f32, pos.y as f32),
-            });
+            if this.widget.on_graph() {
+                // The palette lists node kinds by type path (task 7.5), which
+                // is exactly what `Create` names.
+                this.widget.send(GraphCommand::Create {
+                    kind: component.to_string(),
+                    pos: WorldVec2::new(pos.x as f32, pos.y as f32),
+                });
+            } else {
+                let _ = this.widget.commands.send(EditorCommand::Create {
+                    component,
+                    pos: WorldVec2::new(pos.x as f32, pos.y as f32),
+                });
+            }
             this.ctx.remove_layer(layer_id);
         }
     }

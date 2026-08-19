@@ -13,6 +13,7 @@ pub mod canvas;
 pub mod inspector;
 pub mod node_box;
 pub mod palette;
+pub mod reflect_ui;
 pub mod scene_tree;
 pub mod snapshot;
 pub mod transport_bar;
@@ -20,12 +21,15 @@ pub mod viewport;
 
 #[cfg(test)]
 mod test_graph;
+#[cfg(test)]
+mod test_kinds;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use bevy_reflect::TypeRegistry;
 use crossbeam_channel::Sender;
 use imaging::record::replay_transformed;
 use masonry::kurbo::{Affine, Rect};
@@ -39,11 +43,12 @@ use masonry_core::core::{
     CursorIcon, NewWidget, TextEvent, Widget, WidgetTag, WindowEvent as MasonryWindowEvent,
 };
 use masonry_core::kurbo::Axis;
+use sway_graph::graph::{Graph, GraphCommand};
 use sway_graph::{EditorCommand, ViewportInput};
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use winit::dpi::PhysicalSize;
 
-use crate::canvas::GraphCanvas;
+use crate::canvas::{ConnectFeedback, GraphCanvas};
 use crate::inspector::Inspector;
 use crate::palette::Palette;
 use crate::scene_tree::SceneTree;
@@ -380,6 +385,73 @@ impl EditorUi {
             .edit_widget_with_tag(INSPECTOR_TAG, |mut inspector| {
                 Inspector::apply_snapshot(&mut inspector, snap);
             });
+    }
+
+    /// Points every write-capable pane at the graph command set.
+    ///
+    /// Call this once, right after [`EditorUi::new`]. It is what switches the
+    /// canvas, the inspector and the tree from the entity/wire model to the
+    /// graph model: every gesture then sends a [`GraphCommand`] and
+    /// [`apply_graph`](Self::apply_graph) becomes the read path.
+    ///
+    /// The world side owns the other end:
+    /// `app.insert_resource(GraphRx(rx))`, drained by
+    /// `sway_graph::graph::apply_graph_commands` (scheduled by `GraphPlugin`).
+    pub fn set_graph_commands(&mut self, commands: Sender<GraphCommand>) {
+        self.root
+            .edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
+                GraphCanvas::set_graph_commands(&mut canvas, commands.clone());
+            });
+        self.root
+            .edit_widget_with_tag(INSPECTOR_TAG, |mut inspector| {
+                Inspector::set_graph_commands(&mut inspector, commands.clone());
+            });
+        self.root.edit_widget_with_tag(SCENE_TREE_TAG, |mut tree| {
+            SceneTree::set_graph_commands(&mut tree, commands);
+        });
+    }
+
+    /// Pushes one frame's graph state into every pane that reads it.
+    ///
+    /// This is the graph-model read path (design D11) and replaces
+    /// `apply_snapshot`. It is called at the presenter's step 0, before
+    /// masonry lays out and paints and before `app.update()` runs, so the
+    /// borrow of `&Graph` only has to survive this call -- there is no `Arc`,
+    /// no mutex, no copy of the graph, and no view layer between the graph and
+    /// the widgets.
+    pub fn apply_graph(&mut self, graph: &Graph, registry: &TypeRegistry) {
+        self.root.edit_widget_with_tag(SCENE_TREE_TAG, |mut tree| {
+            SceneTree::populate_from_graph(&mut tree, graph);
+        });
+        self.root
+            .edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
+                GraphCanvas::populate_from_graph(&mut canvas, graph, registry);
+            });
+        self.root
+            .edit_widget_with_tag(INSPECTOR_TAG, |mut inspector| {
+                Inspector::populate_from_graph(&mut inspector, graph, registry);
+            });
+    }
+
+    /// Pushes the transport readout into the transport bar.
+    ///
+    /// Separate from [`apply_graph`](Self::apply_graph) because the transport
+    /// is not graph state: it is a `sway-midi` resource the presenter reads at
+    /// step 0 alongside the graph.
+    pub fn apply_transport(&mut self, transport: &sway_midi::Transport) {
+        self.root
+            .edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
+                TransportBar::apply_transport(&mut bar, transport);
+            });
+    }
+
+    /// What became of the last completed drag-to-connect on the canvas, if
+    /// anything. The canvas shows this in its own status readout; this is the
+    /// same answer, for a shell that wants to surface it elsewhere too.
+    pub fn connect_feedback(&self) -> Option<ConnectFeedback> {
+        self.root
+            .get_widget_with_tag(GRAPH_CANVAS_TAG)
+            .and_then(|canvas| canvas.connect_feedback().cloned())
     }
 
     /// The Bevy viewport's current window-space (logical pixel) rectangle, or

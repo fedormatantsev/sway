@@ -144,6 +144,41 @@ impl TransportBar {
         this.ctx.request_layout();
     }
 
+    /// Pushes the transport readout in without a `WorldSnapshot`.
+    ///
+    /// The graph model has no snapshot to carry the transport along with, and
+    /// the transport was never graph state in the first place: it is a
+    /// `sway-midi` resource the presenter reads at step 0 alongside `&Graph`.
+    pub fn apply_transport(this: &mut WidgetMut<'_, Self>, transport: &sway_midi::Transport) {
+        let fields = vec![
+            if transport.playing { "PLAY" } else { "STOP" }.to_string(),
+            if transport.locked {
+                format!("{:.1} BPM", transport.bpm)
+            } else {
+                format!("~{:.1} BPM", transport.bpm)
+            },
+            sway_midi::MusicalTime::from_ppq(transport.ppq, transport.beats_per_bar).to_string(),
+        ];
+        this.widget.playing = transport.playing;
+        if fields == this.widget.fields {
+            return;
+        }
+
+        for label in this.widget.labels.drain(..) {
+            this.ctx.remove_child(label);
+        }
+        for field in &fields {
+            this.widget
+                .labels
+                .push(Label::new(field.clone()).prepare().to_pod());
+        }
+
+        this.widget.fields = fields;
+        this.widget.generation += 1;
+        this.ctx.children_changed();
+        this.ctx.request_layout();
+    }
+
     /// Drains what the toolbar has asked for. Called once per frame by the
     /// shell, through `EditorUi::take_file_requests`.
     pub fn take_file_requests(this: &mut WidgetMut<'_, Self>) -> Vec<FileRequest> {

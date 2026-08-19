@@ -62,6 +62,13 @@ pub struct Palette {
     /// The `GraphCanvas` this palette reports its pick back to, if any. See
     /// the module doc for why a plain `submit_action` can't reach it.
     creator: Option<WidgetId>,
+    /// Display each row by the last segment of its name rather than in full.
+    /// The graph model's palette lists node kinds by reflected *type path*
+    /// (`my_crate::nodes::Oscillator`), because that is what
+    /// `GraphCommand::Create` names -- but "Oscillator" is what a user picks
+    /// from. The filter still matches the full path, so a module name is a
+    /// usable search term.
+    short_labels: bool,
 }
 
 // --- MARK: BUILDERS
@@ -76,6 +83,7 @@ impl Palette {
             input_area,
             rows: Vec::new(),
             creator: None,
+            short_labels: false,
         };
         palette.rebuild_rows();
         palette
@@ -85,6 +93,13 @@ impl Palette {
     /// instead of `PaletteAction::Picked`. See the module doc.
     pub fn with_creator(mut self, creator: WidgetId) -> Self {
         self.creator = Some(creator);
+        self
+    }
+
+    /// Displays each row by the last segment of its name. See `short_labels`.
+    pub fn with_short_labels(mut self) -> Self {
+        self.short_labels = true;
+        self.rebuild_rows();
         self
     }
 }
@@ -133,10 +148,18 @@ impl Palette {
     }
 
     fn rebuild_rows(&mut self) {
+        let short = self.short_labels;
         self.rows = self
             .visible()
             .into_iter()
-            .map(|name| (name, WidgetPod::new(Button::with_text(name))))
+            .map(|name| {
+                let label = if short {
+                    crate::reflect_ui::short_type_name(name)
+                } else {
+                    name.to_string()
+                };
+                (name, WidgetPod::new(Button::with_text(label)))
+            })
             .collect();
     }
 

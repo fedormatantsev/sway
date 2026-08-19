@@ -26,7 +26,9 @@ use masonry::widgets::Label;
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
 use sway_graph::EditorCommand;
+use sway_graph::graph::{Graph, GraphCommand, NodeId as GraphNodeId};
 
+use crate::reflect_ui::short_type_name;
 use crate::snapshot::{NodeId, TreeGroup, WorldSnapshot};
 
 /// Height of one row, in logical pixels.
@@ -54,6 +56,9 @@ struct Row {
     /// `None` for a section header, which is not selectable.
     entity: Option<Entity>,
     node_id: Option<NodeId>,
+    /// The graph node this row stands for, when the tree is driven by the
+    /// graph model. `None` for headers and for snapshot-driven rows.
+    graph_node: Option<GraphNodeId>,
 }
 
 /// The world hierarchy pane.
@@ -73,6 +78,12 @@ pub struct SceneTree {
     selected: Option<Entity>,
     /// Where a row press sends `EditorCommand::Select`.
     commands: Sender<EditorCommand>,
+
+    // --- the graph model (design D11).
+    /// Where a row press sends `GraphCommand::Select` once set.
+    graph_commands: Option<Sender<GraphCommand>>,
+    graph_selected: Option<GraphNodeId>,
+    graph_signature: Vec<String>,
 }
 
 impl SceneTree {
@@ -83,7 +94,27 @@ impl SceneTree {
             generation: 0,
             selected: None,
             commands,
+            graph_commands: None,
+            graph_selected: None,
+            graph_signature: Vec::new(),
         }
+    }
+
+    /// Points this pane at the graph command set. Once set,
+    /// [`populate_from_graph`](Self::populate_from_graph) is the read path and
+    /// a row press asks the graph to move its selection.
+    pub fn set_graph_commands(this: &mut WidgetMut<'_, Self>, commands: Sender<GraphCommand>) {
+        this.widget.graph_commands = Some(commands);
+    }
+
+    /// The graph node currently highlighted, if any.
+    pub fn graph_selected(&self) -> Option<GraphNodeId> {
+        self.graph_selected
+    }
+
+    /// The graph node each row stands for, headers included as `None`.
+    pub fn graph_rows(&self) -> Vec<Option<GraphNodeId>> {
+        self.rows.iter().map(|row| row.graph_node).collect()
     }
 
     /// Total rows, headers included.
@@ -181,6 +212,7 @@ impl SceneTree {
                     depth: 0,
                     entity: None,
                     node_id: None,
+                    graph_node: None,
                 });
             }
             this.widget.rows.push(Row {
@@ -188,10 +220,60 @@ impl SceneTree {
                 depth: row.depth,
                 entity: Some(row.entity),
                 node_id: row.node_id,
+                graph_node: None,
             });
         }
 
         this.widget.signature = signature;
+        this.widget.generation += 1;
+        this.ctx.children_changed();
+        this.ctx.request_layout();
+    }
+
+    /// Rebuilds the row set from the live graph.
+    ///
+    /// One row per node, labelled by the short form of its kind's reflected
+    /// type path -- there is no `Name` component and no entity hierarchy in
+    /// the graph model, so the tree is a flat list in `NodeId` order, which is
+    /// the same order the graph iterates and evaluates in.
+    pub fn populate_from_graph(this: &mut WidgetMut<'_, Self>, graph: &Graph) {
+        if this.widget.graph_selected != graph.selection() {
+            this.widget.graph_selected = graph.selection();
+            this.ctx.request_paint_only();
+        }
+
+        let rows: Vec<(GraphNodeId, String)> = graph
+            .iter()
+            .map(|(id, node)| (id, format!("{} {}", short_type_name(node.kind()), id)))
+            .collect();
+        let signature: Vec<String> = rows.iter().map(|(_, label)| label.clone()).collect();
+        if signature == this.widget.graph_signature {
+            return;
+        }
+
+        for row in this.widget.rows.drain(..) {
+            this.ctx.remove_child(row.pod);
+        }
+        this.widget.rows.push(Row {
+            pod: Label::new(group_header(TreeGroup::Graph))
+                .prepare()
+                .to_pod(),
+            depth: 0,
+            entity: None,
+            node_id: None,
+            graph_node: None,
+        });
+        for (id, label) in rows {
+            this.widget.rows.push(Row {
+                pod: Label::new(label).prepare().to_pod(),
+                depth: 0,
+                entity: None,
+                node_id: None,
+                graph_node: Some(id),
+            });
+        }
+
+        this.widget.graph_signature = signature;
         this.widget.generation += 1;
         this.ctx.children_changed();
         this.ctx.request_layout();
@@ -258,9 +340,12 @@ impl Widget for SceneTree {
                 width,
                 (index + 1) as f64 * ROW_HEIGHT,
             );
-            if row.entity.is_none() {
+            let header = row.entity.is_none() && row.graph_node.is_none();
+            let selected = (row.entity.is_some() && row.entity == self.selected)
+                || (row.graph_node.is_some() && row.graph_node == self.graph_selected);
+            if header {
                 painter.fill_rect(band, Color::from_rgb8(44, 46, 54));
-            } else if row.entity == self.selected {
+            } else if selected {
                 painter.fill_rect(band, Color::from_rgb8(90, 120, 200));
             }
         }
@@ -288,6 +373,17 @@ impl Widget for SceneTree {
         else {
             return;
         };
+        // A graph row asks the graph to select; there is no `Entity` in the
+        // new model, and selection lives on `Graph` (graph API §8).
+        if self.graph_commands.is_some() {
+            if let Some(node) = row.graph_node
+                && let Some(commands) = &self.graph_commands
+            {
+                let _ = commands.send(GraphCommand::Select { node: Some(node) });
+            }
+            ctx.set_handled();
+            return;
+        }
         // A header is not selectable.
         let Some(entity) = row.entity else {
             ctx.set_handled();

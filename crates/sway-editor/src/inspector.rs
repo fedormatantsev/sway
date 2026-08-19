@@ -22,8 +22,12 @@ use masonry::widgets::{
 };
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
+use sway_graph::graph::{Graph, GraphCommand, NodeId as GraphNodeId, Part, path};
 use sway_graph::{EditorCommand, FieldValue};
 
+use crate::reflect_ui::{
+    enum_variants, format_value, has_control, is_bool, parse_field, part_fields, short_type_name,
+};
 use crate::snapshot::{FieldKind, WorldSnapshot};
 
 // `TextInput` and `Selector` carry the theme's default border+padding
@@ -58,10 +62,35 @@ enum RowKind {
     },
 }
 
+/// Which inlet field of which graph node a row edits.
+///
+/// The field's *reflected type* is what the row carries, not a parallel
+/// classification of it (design D11): the control was chosen from this
+/// `TypeInfo` and the committed text is parsed back against the same one, so
+/// the two can never disagree.
+#[derive(Clone, Debug)]
+struct GraphFieldTarget {
+    node: GraphNodeId,
+    /// Inlets-relative field path, exactly what `SetField` takes.
+    path: String,
+    info: Option<&'static bevy_reflect::TypeInfo>,
+}
+
+impl PartialEq for GraphFieldTarget {
+    fn eq(&self, other: &Self) -> bool {
+        self.node == other.node
+            && self.path == other.path
+            && self.info.map(|info| info.type_id()) == other.info.map(|info| info.type_id())
+    }
+}
+
 struct Row {
     kind: RowKind,
     /// Which component and field this row edits. `None` for headers.
     target: Option<(&'static str, String, FieldKind)>,
+    /// Which graph inlet field this row edits, when the inspector is driven by
+    /// the graph model. `None` for headers and for snapshot-driven rows.
+    graph_target: Option<GraphFieldTarget>,
 }
 
 pub struct Inspector {
@@ -77,6 +106,15 @@ pub struct Inspector {
     /// which fires on `Update::ChildFocusChanged(false)` (design spec:
     /// "committing on Enter and on blur").
     pending: HashMap<(&'static str, String), String>,
+
+    // --- the graph model (design D11).
+    /// Where inlet edits go once this inspector is driven by the graph.
+    graph_commands: Option<Sender<GraphCommand>>,
+    /// The node whose inlets are currently listed.
+    graph_node: Option<GraphNodeId>,
+    graph_signature: Vec<String>,
+    /// Uncommitted keystrokes, keyed by inlets-relative field path.
+    graph_pending: HashMap<String, String>,
 }
 
 /// Parses exactly `N` comma-separated floats, or nothing.
@@ -103,7 +141,18 @@ impl Inspector {
             entity: None,
             commands,
             pending: HashMap::new(),
+            graph_commands: None,
+            graph_node: None,
+            graph_signature: Vec::new(),
+            graph_pending: HashMap::new(),
         }
+    }
+
+    /// Points this inspector at the graph command set. Once set,
+    /// [`populate_from_graph`](Self::populate_from_graph) is the read path and
+    /// every edit commits as a [`GraphCommand::SetField`].
+    pub fn set_graph_commands(this: &mut WidgetMut<'_, Self>, commands: Sender<GraphCommand>) {
+        this.widget.graph_commands = Some(commands);
     }
 
     pub fn row_count(&self) -> usize {
@@ -180,10 +229,217 @@ impl Inspector {
         });
     }
 
+    /// Parses `text` against the row's *reflected field type* and sends one
+    /// [`GraphCommand::SetField`].
+    ///
+    /// A connection into the field changes nothing here (task 7.8): an inlet
+    /// with an edge is still editable, and the edit holds until the next tick
+    /// propagates over it. Refusing the edit, or greying the row out, would
+    /// misrepresent a graph that accepts the write.
+    fn commit_graph(&mut self, row_index: usize, text: &str) {
+        let Some(row) = self.rows.get(row_index) else {
+            return;
+        };
+        let Some(target) = row.graph_target.clone() else {
+            return; // a header row
+        };
+        // Acted on either way -- do not replay it on the next blur.
+        self.graph_pending.remove(&target.path);
+        let Some(info) = target.info else {
+            return; // no static type info: no control, nothing to parse
+        };
+        let Some(value) = parse_field(info, text) else {
+            return; // unparseable, or a type with no control
+        };
+        if let Some(commands) = &self.graph_commands {
+            let _ = commands.send(GraphCommand::SetField {
+                node: target.node,
+                path: target.path,
+                value,
+            });
+        }
+    }
+
     /// Test seam for `commit`, which is otherwise only reachable through a
     /// real text-input action.
     pub fn commit_for_test(this: &mut WidgetMut<'_, Self>, row_index: usize, text: &str) {
         this.widget.commit(row_index, text);
+    }
+
+    /// Test seam for `commit_graph`.
+    pub fn commit_graph_for_test(this: &mut WidgetMut<'_, Self>, row_index: usize, text: &str) {
+        this.widget.commit_graph(row_index, text);
+    }
+
+    /// The inlets-relative field path each row edits, headers included as
+    /// `None`. Lets a caller (and a test) address a row by field rather than
+    /// by the order it happens to be laid out in.
+    pub fn graph_row_paths(&self) -> Vec<Option<String>> {
+        self.rows
+            .iter()
+            .map(|row| row.graph_target.as_ref().map(|t| t.path.clone()))
+            .collect()
+    }
+
+    /// Whether the row editing `path` accepts input.
+    pub fn graph_row_is_editable(&self, path: &str) -> bool {
+        self.rows.iter().any(|row| {
+            row.graph_target.as_ref().is_some_and(|t| t.path == path)
+                && !matches!(row.kind, RowKind::Header(_) | RowKind::ReadOnly(_))
+        })
+    }
+
+    /// Whether a row for `path` exists at all -- a field with no control is
+    /// shown read-only rather than dropped, so this is `true` either way.
+    pub fn graph_lists(&self, path: &str) -> bool {
+        self.rows
+            .iter()
+            .any(|row| row.graph_target.as_ref().is_some_and(|t| t.path == path))
+    }
+
+    /// Rebuilds the inspector from the graph's current selection.
+    ///
+    /// Reads the selected node's `inlets` part and nothing else: state is
+    /// never shown, and outlets are canvas sockets rather than authored
+    /// fields. Which control a field gets is decided from that field's own
+    /// reflected type; a type with no control is listed read-only rather than
+    /// omitted, because a silently missing field misrepresents the node.
+    pub fn populate_from_graph(
+        this: &mut WidgetMut<'_, Self>,
+        graph: &Graph,
+        registry: &bevy_reflect::TypeRegistry,
+    ) {
+        let selection = graph.selection();
+        let node = selection.and_then(|id| graph.get(id));
+        let header = node.map(|node| short_type_name(node.kind()));
+        let fields: Vec<(GraphFieldTarget, String)> = match (selection, node) {
+            (Some(id), Some(node)) => part_fields(registry, node.kind(), Part::Inlets)
+                .into_iter()
+                .map(|field| {
+                    let value = path::resolve(node, Part::Inlets, &field.path)
+                        .map(format_value)
+                        .unwrap_or_default();
+                    (
+                        GraphFieldTarget {
+                            node: id,
+                            path: field.path,
+                            info: field.info,
+                        },
+                        value,
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+
+        let mut signature: Vec<String> = vec![header.clone().unwrap_or_default()];
+        signature.extend(fields.iter().map(|(target, value)| {
+            format!(
+                "{}={}#{:?}",
+                target.path,
+                value,
+                target.info.map(|info| info.type_path())
+            )
+        }));
+        if signature == this.widget.graph_signature {
+            return;
+        }
+
+        // Same minimum-exclusion rule the snapshot path uses: the row that
+        // currently holds focus survives a rebuild triggered by an unrelated
+        // field, so a value ticking underneath does not eat a keystroke.
+        let focused_id = this.ctx.focus_target_id();
+        let focused_target = focused_id.and_then(|id| {
+            this.widget
+                .rows
+                .iter()
+                .find(|row| focus_id_of_row(&row.kind) == Some(id))
+                .and_then(|row| row.graph_target.clone())
+        });
+
+        let mut preserved: Option<Row> = None;
+        for row in std::mem::take(&mut this.widget.rows) {
+            if preserved.is_none() && focused_target.is_some() && row.graph_target == focused_target
+            {
+                preserved = Some(row);
+                continue;
+            }
+            remove_row(&mut this.ctx, row);
+        }
+
+        this.widget.graph_node = selection;
+        this.widget.entity = None;
+
+        match &header {
+            Some(header) => this.widget.rows.push(Row {
+                kind: RowKind::Header(WidgetPod::new(Label::new(header.clone()))),
+                target: None,
+                graph_target: None,
+            }),
+            None => this.widget.rows.push(Row {
+                kind: RowKind::Header(WidgetPod::new(Label::new("nothing selected"))),
+                target: None,
+                graph_target: None,
+            }),
+        }
+
+        for (target, value) in fields {
+            if preserved.as_ref().and_then(|row| row.graph_target.clone()) == Some(target.clone()) {
+                this.widget
+                    .rows
+                    .push(preserved.take().expect("checked above"));
+                continue;
+            }
+            let label = WidgetPod::new(Label::new(target.path.clone()));
+            let kind = match target.info {
+                Some(info) if is_bool(info) => RowKind::Bool {
+                    label,
+                    toggle: WidgetPod::new(Checkbox::new(value == "true", "")),
+                },
+                // `Selector::new` debug-panics on an empty list, so a
+                // variant-less enum falls through to read-only rather than
+                // being trusted.
+                Some(info) if enum_variants(info).is_some_and(|variants| !variants.is_empty()) => {
+                    let variants = enum_variants(info).expect("checked above");
+                    RowKind::Enum {
+                        label,
+                        selector: WidgetPod::new(
+                            Selector::new(variants.clone()).with_selected_option(
+                                variants.iter().position(|v| *v == value).unwrap_or(0),
+                            ),
+                        ),
+                    }
+                }
+                Some(info) if has_control(info) => {
+                    let text_input = TextInput::new(&value);
+                    let input_area = text_input.area_pod().id();
+                    RowKind::Text {
+                        label,
+                        input: WidgetPod::new(text_input),
+                        input_area,
+                    }
+                }
+                // No control: shown, not omitted.
+                _ => RowKind::ReadOnly(WidgetPod::new(Label::new(format!(
+                    "{}  {}",
+                    target.path, value
+                )))),
+            };
+            this.widget.rows.push(Row {
+                kind,
+                target: None,
+                graph_target: Some(target),
+            });
+        }
+
+        if let Some(row) = preserved.take() {
+            remove_row(&mut this.ctx, row);
+        }
+
+        this.widget.graph_signature = signature;
+        this.widget.generation += 1;
+        this.ctx.children_changed();
+        this.ctx.request_layout();
     }
 
     /// Commits every field with an uncommitted keystroke (a `TextAction::Changed`
@@ -204,6 +460,17 @@ impl Inspector {
     /// since the last commit, not just the one that happened to hold focus
     /// last.
     fn commit_pending(&mut self) {
+        if !self.graph_pending.is_empty() {
+            for (path, text) in std::mem::take(&mut self.graph_pending) {
+                if let Some(index) = self
+                    .rows
+                    .iter()
+                    .position(|row| row.graph_target.as_ref().is_some_and(|t| t.path == path))
+                {
+                    self.commit_graph(index, &text);
+                }
+            }
+        }
         if self.pending.is_empty() {
             return;
         }
@@ -259,12 +526,14 @@ impl Inspector {
             this.widget.rows.push(Row {
                 kind: RowKind::Header(WidgetPod::new(Label::new("nothing selected"))),
                 target: None,
+                graph_target: None,
             });
         }
         for component in &snap.inspector.components {
             this.widget.rows.push(Row {
                 kind: RowKind::Header(WidgetPod::new(Label::new(component.name))),
                 target: None,
+                graph_target: None,
             });
             for field in &component.fields {
                 let target = Some((component.name, field.name.clone(), field.kind.clone()));
@@ -307,13 +576,18 @@ impl Inspector {
                         }
                     }
                 };
-                this.widget.rows.push(Row { kind, target });
+                this.widget.rows.push(Row {
+                    kind,
+                    target,
+                    graph_target: None,
+                });
             }
         }
         if this.widget.rows.is_empty() {
             this.widget.rows.push(Row {
                 kind: RowKind::Header(WidgetPod::new(Label::new("no authored components"))),
                 target: None,
+                graph_target: None,
             });
         }
         // The preserved row's field no longer exists in the new snapshot
@@ -474,13 +748,26 @@ impl Widget for Inspector {
         action: &ErasedAction,
         source: WidgetId,
     ) {
+        let on_graph = self.graph_commands.is_some();
         match self.resolve_action(action, source) {
             Some(RowEvent::Commit(index, text)) => {
-                self.commit(index, &text);
+                if on_graph {
+                    self.commit_graph(index, &text);
+                } else {
+                    self.commit(index, &text);
+                }
                 ctx.set_handled();
             }
             Some(RowEvent::Pending(index, text)) => {
-                if let Some((component, field, _)) =
+                if on_graph {
+                    if let Some(target) = self
+                        .rows
+                        .get(index)
+                        .and_then(|row| row.graph_target.clone())
+                    {
+                        self.graph_pending.insert(target.path, text);
+                    }
+                } else if let Some((component, field, _)) =
                     self.rows.get(index).and_then(|row| row.target.clone())
                 {
                     self.pending.insert((component, field), text);

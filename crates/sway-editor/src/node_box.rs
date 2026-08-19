@@ -52,7 +52,7 @@ use masonry::widgets::Label;
 use masonry_core::kurbo::{Affine, Axis, Circle, Point, RoundedRect, Size, Stroke};
 use peniko::Color;
 
-use crate::canvas::SocketKind;
+use crate::canvas::{GraphSocketKind, SocketKind};
 
 /// Fixed footprint of every node box, in canvas-space logical pixels.
 ///
@@ -96,10 +96,25 @@ enum Gesture {
     Connecting,
 }
 
+/// The socket paths a node box laid out from the graph model draws, in the
+/// order they are drawn: inlets down the left edge, outlets down the right.
+///
+/// Paths are relative to the part (`"frequency"`, not `"inlets.frequency"`),
+/// which is what makes a socket's key survive a re-sort: layout order is a
+/// position in these `Vec`s, identity is the string.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GraphSocketPaths {
+    pub inlets: Vec<String>,
+    pub outlets: Vec<String>,
+}
+
 /// The action a [`NodeBox`] reports to its parent [`GraphCanvas`] through
 /// [`EventCtx::submit_action`]/[`Widget::on_action`]. Deltas are window-space
 /// (logical pixels); see the module doc.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// `Clone` rather than `Copy` since the graph model addresses a socket by an
+/// owned field path.
+#[derive(Debug, Clone, PartialEq)]
 pub enum NodeBoxAction {
     /// This node was pressed: the canvas should select it.
     Selected,
@@ -113,6 +128,9 @@ pub enum NodeBoxAction {
     /// variants below are in this box's own local space; the canvas adds the
     /// box's canvas position to get canvas space (see the task preamble).
     SocketPressed(SocketKind),
+    /// A press landed on one of this box's sockets, addressed the graph
+    /// model's way: a field path within the node kind's inlets or outlets.
+    GraphSocketPressed(GraphSocketKind),
     /// The pointer moved while dragging from a socket.
     ConnectDragged(Point),
     /// The socket drag ended here.
@@ -148,6 +166,11 @@ pub struct NodeBox {
     /// How many outlet fields this node has. Never per-slot: an outlet can't
     /// be a `Vec` (design §12).
     outlets: u16,
+    /// Sockets addressed the graph model's way, when this box was laid out
+    /// from a reflected read of `&Graph` rather than from a `WorldSnapshot`.
+    /// `Some` switches hit-testing and painting to the field-path sockets;
+    /// the two paths never both populate one box.
+    graph_sockets: Option<GraphSocketPaths>,
     /// Applied to this widget's own transform on `Update::WidgetAdded`.
     ///
     /// A freshly created `WidgetPod` isn't yet registered in masonry's arena
@@ -173,6 +196,7 @@ impl NodeBox {
             inlets: Vec::new(),
             inlet_wires: Vec::new(),
             outlets: 0,
+            graph_sockets: None,
             initial_transform: Affine::IDENTITY,
         }
     }
@@ -199,6 +223,37 @@ impl NodeBox {
     pub(crate) fn with_inlet_wires(mut self, wires: Vec<&'static str>) -> Self {
         self.inlet_wires = wires;
         self
+    }
+
+    /// Seeds the field-path sockets of a box laid out from the graph model.
+    pub(crate) fn with_graph_sockets(mut self, sockets: GraphSocketPaths) -> Self {
+        self.graph_sockets = Some(sockets);
+        self
+    }
+
+    /// The field-path sockets this box draws, if it was laid out from the
+    /// graph model.
+    pub fn graph_sockets(&self) -> Option<&GraphSocketPaths> {
+        self.graph_sockets.as_ref()
+    }
+
+    /// Which field-path socket a local-space point is on, if any.
+    fn graph_socket_at_local(&self, local: Point) -> Option<GraphSocketKind> {
+        let sockets = self.graph_sockets.as_ref()?;
+        for (ordinal, path) in sockets.outlets.iter().enumerate() {
+            if graph_outlet_local(sockets.outlets.len(), ordinal).distance(local)
+                <= SOCKET_HIT_RADIUS
+            {
+                return Some(GraphSocketKind::Outlet(path.clone()));
+            }
+        }
+        for (ordinal, path) in sockets.inlets.iter().enumerate() {
+            if graph_inlet_local(sockets.inlets.len(), ordinal).distance(local) <= SOCKET_HIT_RADIUS
+            {
+                return Some(GraphSocketKind::Inlet(path.clone()));
+            }
+        }
+        None
     }
 
     /// The text this box currently displays.
@@ -291,6 +346,20 @@ pub(crate) fn outlet_socket_local(inlet_field_count: u16, outlets: u16, field: u
     Point::new(SIZE.width, socket_y(outlets as usize, ordinal))
 }
 
+/// Local position of the `ordinal`th inlet socket of a box laid out from the
+/// graph model: one socket per declared inlet field, down the left edge.
+/// A free function for the same reason [`inlet_socket_local`] is -- the canvas
+/// needs the same math from `paint`, where it cannot read a live child.
+pub(crate) fn graph_inlet_local(total: usize, ordinal: usize) -> Point {
+    Point::new(0.0, socket_y(total, ordinal))
+}
+
+/// Local position of the `ordinal`th outlet socket of a box laid out from the
+/// graph model: one socket per declared outlet field, down the right edge.
+pub(crate) fn graph_outlet_local(total: usize, ordinal: usize) -> Point {
+    Point::new(SIZE.width, socket_y(total, ordinal))
+}
+
 /// Every inlet socket's local position, in slot order -- what `NodeBox::paint`
 /// draws dots at.
 fn inlet_socket_positions(inlets: &[u16]) -> impl Iterator<Item = Point> + '_ {
@@ -363,6 +432,16 @@ impl NodeBox {
         this.widget.inlets = inlets;
         this.widget.inlet_wires = inlet_wires;
         this.widget.outlets = outlets;
+        this.ctx.request_paint_only();
+    }
+
+    /// Updates the field-path sockets of a box laid out from the graph model.
+    /// Equal-write guarded, same as [`set_sockets`](Self::set_sockets).
+    pub fn set_graph_sockets(this: &mut WidgetMut<'_, Self>, sockets: GraphSocketPaths) {
+        if this.widget.graph_sockets.as_ref() == Some(&sockets) {
+            return;
+        }
+        this.widget.graph_sockets = Some(sockets);
         this.ctx.request_paint_only();
     }
 }
@@ -439,7 +518,10 @@ impl Widget for NodeBox {
                 ctx.request_focus();
                 ctx.capture_pointer();
                 let local = ctx.local_position(state.position);
-                if let Some(kind) = self.socket_at_local(local) {
+                if let Some(kind) = self.graph_socket_at_local(local) {
+                    self.gesture = Gesture::Connecting;
+                    ctx.submit_action::<Self::Action>(NodeBoxAction::GraphSocketPressed(kind));
+                } else if let Some(kind) = self.socket_at_local(local) {
                     self.gesture = Gesture::Connecting;
                     ctx.submit_action::<Self::Action>(NodeBoxAction::SocketPressed(kind));
                 } else {
@@ -527,6 +609,31 @@ impl Widget for NodeBox {
         // Sockets: one dot per slot, so every edge visibly starts and ends
         // somewhere on the box rather than at its unmarked centre.
         let socket_fill = Color::from_rgb8(220, 220, 230);
+        if let Some(sockets) = &self.graph_sockets {
+            for ordinal in 0..sockets.inlets.len() {
+                painter
+                    .fill(
+                        Circle::new(
+                            graph_inlet_local(sockets.inlets.len(), ordinal),
+                            SOCKET_RADIUS,
+                        ),
+                        socket_fill,
+                    )
+                    .draw();
+            }
+            for ordinal in 0..sockets.outlets.len() {
+                painter
+                    .fill(
+                        Circle::new(
+                            graph_outlet_local(sockets.outlets.len(), ordinal),
+                            SOCKET_RADIUS,
+                        ),
+                        socket_fill,
+                    )
+                    .draw();
+            }
+            return;
+        }
         for pos in inlet_socket_positions(&self.inlets) {
             painter
                 .fill(Circle::new(pos, SOCKET_RADIUS), socket_fill)
