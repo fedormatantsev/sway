@@ -53,16 +53,23 @@ A write MUST NOT mark a value changed when it equals what was already there.
 - **AND** nothing downstream of it is recomputed
 
 ### Requirement: An edge addresses fields by path
-An edge MUST name a source node and a path within its outlets, and a destination node and a path within its inlets. A path MUST be able to address a field nested at any depth, so that a connection into part of a compound value needs no dedicated declaration.
+An edge MUST name a source node and a path within its outlets, and a destination node and a path within its inlets. That path MUST name a **declared field of the part** — a field of the inlets or outlets struct — not a nested field inside a compound value.
+
+A compound inlet (for example a whole transform) MUST be connected as a whole: its type is the legality of the edge. To drive one component of a compound, that component MUST be a declared inlet of its own, or a separate node MUST construct the compound from its parts.
 
 An edge MUST be legal if and only if the type at the source path is accepted by the type at the destination path. Legality MUST be decided when the connection is made, not when it is evaluated.
 
 Evaluating an edge MUST read only the named source field and write only the named destination field.
 
-#### Scenario: A nested field is addressable
-- **WHEN** an edge names a destination path addressing one component of a compound inlet
-- **THEN** only that component is written
-- **AND** the rest of the compound value is unchanged
+#### Scenario: A compound inlet is wired as a whole
+- **WHEN** an inlet's type is a compound value
+- **THEN** an edge into that inlet names the inlet itself
+- **AND** connecting a component type of that compound to the inlet is refused
+
+#### Scenario: Driving a component is a declared inlet
+- **WHEN** a scene node needs its translation driven by a `Vec3`
+- **THEN** translation is a declared inlet of that node
+- **AND** the edge names `translation`, not a nested path through a transform
 
 #### Scenario: An illegal connection is refused when made
 - **WHEN** a connection is attempted between two paths whose types are not compatible
@@ -168,7 +175,7 @@ The unit of ordering MUST be the node, because evaluation reads every inlet and 
 **Migration**: Remove wire-type registration. Legality checks read the reflected type information of the node kinds involved.
 
 ### Requirement: Default wire evaluation is a reflected field copy
-**Reason**: Superseded by `An edge addresses fields by path`, which generalises the copy to paths of any depth on both sides and removes the special case of the source being tuple field `0`.
+**Reason**: Superseded by `An edge addresses fields by path`, which copies the named outlet field into the named inlet field and removes the special case of the source being tuple field `0`.
 
 **Migration**: A wire that copied source tuple field `0` into a named target field becomes an edge whose source path names that outlet field explicitly.
 

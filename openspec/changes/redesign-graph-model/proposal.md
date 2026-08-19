@@ -41,9 +41,12 @@ means building `sway-events` twice.
   the MIDI snapshot itself, so no MIDI machinery enters `sway-graph` and no
   pre-tick injection phase exists.
 - **BREAKING: all 19 wire types are deleted.** An edge is
-  `(src NodeId, outlet path) -> (dst NodeId, inlet path, slot)`. Paths resolve
-  through `bevy_reflect::GetPath`, so nested paths work and `Vec3XFrom` /
-  `Vec3YFrom` / `Vec3ZFrom` become the strings `"x"` / `"y"` / `"z"`.
+  `(src NodeId, outlet path) -> (dst NodeId, inlet path, slot)`. The path names
+  a declared field of the part. A compound inlet is wired as a whole; to drive
+  one component, that component is its own inlet (`translation` / `rotation` /
+  `scale` on scene nodes, `"x"` / `"y"` / `"z"` on a `Vec3` node). `Vec3XFrom`
+  / `Vec3YFrom` / `Vec3ZFrom` become those inlet names rather than nested
+  destinations on a transform.
 - **`Option<T>` and `Vec<T>` inlets are first-class.** An unwired `Option<T>` is
   `None` and the node decides; a `Vec<T>` inlet accepts many edges, ordered by
   the edge's `slot` — a sort key, not an array index, so the `Vec` is derived

@@ -12,7 +12,7 @@ use bevy::reflect::{Reflect, TypeRegistry};
 use sway_graph::graph::{Graph, NodeId};
 
 use crate::nodes::protocol::{self, ReflectMaterialNode, ReflectMeshNode};
-use crate::nodes::scene::{Camera, DirectionalLight, Group, MeshNode, PointLight};
+use crate::nodes::scene::{self, Camera, DirectionalLight, Group, MeshNode, PointLight};
 use crate::project::{NodeEntities, nodes_in_graph_order, source_of};
 
 /// What material a scene entity currently carries, and how to take it off.
@@ -51,20 +51,40 @@ fn is_scene_node(value: &dyn Reflect) -> bool {
         || value.downcast_ref::<PointLight>().is_some()
 }
 
-/// The transform a scene node authors, whichever kind it is.
+/// The transform a scene node authors, assembled from its three pose inlets.
 fn authored_transform(value: &dyn Reflect) -> Option<Transform> {
     if let Some(node) = value.downcast_ref::<MeshNode>() {
-        Some(node.inlets.transform)
+        Some(scene::pose(
+            node.inlets.translation,
+            node.inlets.rotation,
+            node.inlets.scale,
+        ))
     } else if let Some(node) = value.downcast_ref::<Group>() {
-        Some(node.inlets.transform)
+        Some(scene::pose(
+            node.inlets.translation,
+            node.inlets.rotation,
+            node.inlets.scale,
+        ))
     } else if let Some(node) = value.downcast_ref::<Camera>() {
-        Some(node.inlets.transform)
+        Some(scene::pose(
+            node.inlets.translation,
+            node.inlets.rotation,
+            node.inlets.scale,
+        ))
     } else if let Some(node) = value.downcast_ref::<DirectionalLight>() {
-        Some(node.inlets.transform)
+        Some(scene::pose(
+            node.inlets.translation,
+            node.inlets.rotation,
+            node.inlets.scale,
+        ))
     } else {
-        value
-            .downcast_ref::<PointLight>()
-            .map(|node| node.inlets.transform)
+        value.downcast_ref::<PointLight>().map(|node| {
+            scene::pose(
+                node.inlets.translation,
+                node.inlets.rotation,
+                node.inlets.scale,
+            )
+        })
     }
 }
 

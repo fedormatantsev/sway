@@ -4,8 +4,8 @@
 //
 //   midiTime ──time──▶ lfoA, lfoB
 //   lfoA ──amplitude──▶ lfoB
-//   lfoA ──y──▶ vec3A ──transform.translation──▶ cubeA ─┐
-//   lfoB ──y──▶ vec3B ──transform.translation──▶ cubeB ─┤─children─▶ group
+//   lfoA ──y──▶ vec3A ──translation──▶ cubeA ─┐
+//   lfoB ──y──▶ vec3B ──translation──▶ cubeB ─┤─children─▶ group
 //   mat  ──material──▶ cubeA, cubeB, cubeC              │
 //   cube ──mesh──────▶ cubeA, cubeB, cubeC ─────────────┘
 //
@@ -25,11 +25,11 @@
 // exists before the placement asks for it.
 //
 // The cubes' x offsets live in the `Vec3` nodes because an edge writes
-// `transform.translation` whole. `cubeA`/`cubeB` therefore carry an identity
-// transform in this file: their translation is driven, and an authored one
-// would be overwritten on the first tick anyway.
+// `translation` whole. `cubeA`/`cubeB` therefore carry an identity pose in
+// this file: their translation is driven, and an authored one would be
+// overwritten on the first tick anyway.
 //
-// `cubeC` is the odd one out: an authored transform and no translation edge,
+// `cubeC` is the odd one out: an authored pose and no translation edge,
 // on purpose (M7 Task 15's exit-criterion walkthrough needs one mesh whose
 // drag actually holds — cubeA/cubeB's translate handle springs back on the
 // next tick by design, M7-7, which makes them useless for proving a
@@ -128,16 +128,16 @@ Graph(
         // ---------------------------------------------------------------
         "cube": Node(type: "MeshAsset", pos: (20.0, -80.0), inlets: (path: "cube.gltf#Mesh0/Primitive0")),
         "mat": Node(type: "PbrMaterial", pos: (180.0, 260.0), inlets: (base_color: (0.6, 0.7, 0.9), metallic: 0.1, roughness: 0.4)),
-        "cubeA": Node(type: "MeshNode", pos: (20.0, 40.0), inlets: (transform: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)))),
-        "cubeB": Node(type: "MeshNode", pos: (20.0, 160.0), inlets: (transform: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)))),
-        "cubeC": Node(type: "MeshNode", pos: (20.0, 280.0), inlets: (transform: (translation: (0.0, 1.6, -0.8), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)))),
-        "group": Node(type: "Group", pos: (260.0, 100.0), inlets: (transform: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)))),
+        "cubeA": Node(type: "MeshNode", pos: (20.0, 40.0), inlets: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
+        "cubeB": Node(type: "MeshNode", pos: (20.0, 160.0), inlets: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
+        "cubeC": Node(type: "MeshNode", pos: (20.0, 280.0), inlets: (translation: (0.0, 1.6, -0.8), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
+        "group": Node(type: "Group", pos: (260.0, 100.0), inlets: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
 
         // ---------------------------------------------------------------
         // What looks at the scene, and what lights it.
         // ---------------------------------------------------------------
-        "camera": Node(type: "Camera", pos: (420.0, -120.0), inlets: (transform: (translation: (0.0, 1.5, 5.0), rotation: (-0.14521316, 0.0, 0.0, 0.98940045), scale: (1.0, 1.0, 1.0)))),
-        "sun": Node(type: "DirectionalLight", pos: (420.0, -20.0), inlets: (transform: (translation: (4.0, 8.0, 4.0), rotation: (-0.424708, 0.339851, 0.175920, 0.820473), scale: (1.0, 1.0, 1.0)), illuminance: 6000.0)),
+        "camera": Node(type: "Camera", pos: (420.0, -120.0), inlets: (translation: (0.0, 1.5, 5.0), rotation: (-0.14521316, 0.0, 0.0, 0.98940045), scale: (1.0, 1.0, 1.0))),
+        "sun": Node(type: "DirectionalLight", pos: (420.0, -20.0), inlets: (translation: (4.0, 8.0, 4.0), rotation: (-0.424708, 0.339851, 0.175920, 0.820473), scale: (1.0, 1.0, 1.0), illuminance: 6000.0)),
 
         // ---------------------------------------------------------------
         // Sprite layers (add-sprite-material). See the header diagram and
@@ -165,13 +165,13 @@ Graph(
         "spriteMat2": Node(type: "SpriteMaterial", pos: (20.0, 620.0), inlets: (tint: (1.0, 0.82, 0.86), depth_range: -3.5, depth_pivot: 0.5)),
         "spritePlaneMesh": Node(type: "PlaneMesh", pos: (180.0, 360.0), inlets: (size: (1.4, 1.4))),
         "spritePlaneMesh2": Node(type: "PlaneMesh", pos: (180.0, 560.0), inlets: (size: (1.2, 1.2))),
-        // Authored transforms, no translation edge, like cubeC — these
+        // Authored poses, no translation edge, like cubeC — these
         // placements are static, chosen to interpenetrate cubeC and each
         // other (see the header's arithmetic).
-        "spritePlane": Node(type: "MeshNode", pos: (260.0, 420.0), inlets: (transform: (translation: (0.0, 1.6, -0.6), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)))),
+        "spritePlane": Node(type: "MeshNode", pos: (260.0, 420.0), inlets: (translation: (0.0, 1.6, -0.6), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
         // 30° yaw about Y — a non-trivial authored rotation, so its relief's
         // displacement axis is not parallel to spritePlane's.
-        "spritePlane2": Node(type: "MeshNode", pos: (260.0, 620.0), inlets: (transform: (translation: (0.3, 1.5, -0.5), rotation: (0.0, 0.258819, 0.0, 0.965926), scale: (1.0, 1.0, 1.0)))),
+        "spritePlane2": Node(type: "MeshNode", pos: (260.0, 620.0), inlets: (translation: (0.3, 1.5, -0.5), rotation: (0.0, 0.258819, 0.0, 0.965926), scale: (1.0, 1.0, 1.0))),
     },
     edges: [
         // Time into every oscillator.
@@ -184,8 +184,8 @@ Graph(
         Edge(from: ("lfoA", "out"), to: ("vec3A", "y"), slot: 0),
         Edge(from: ("lfoB", "out"), to: ("vec3B", "y"), slot: 0),
         // A whole Vec3 into a placement's translation.
-        Edge(from: ("vec3A", "out"), to: ("cubeA", "transform.translation"), slot: 0),
-        Edge(from: ("vec3B", "out"), to: ("cubeB", "transform.translation"), slot: 0),
+        Edge(from: ("vec3A", "out"), to: ("cubeA", "translation"), slot: 0),
+        Edge(from: ("vec3B", "out"), to: ("cubeB", "translation"), slot: 0),
         // One mesh, three placements. Marker edges: no value flows.
         Edge(from: ("cube", "mesh"), to: ("cubeA", "mesh"), slot: 0),
         Edge(from: ("cube", "mesh"), to: ("cubeB", "mesh"), slot: 0),

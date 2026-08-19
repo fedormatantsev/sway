@@ -4,11 +4,11 @@
 //! nothing else (design D7: "the scene node set is closed"). Each owns one
 //! entity; none owns an asset.
 //!
-//! **The duplication is deliberate.** `transform` and `children` appear on all
-//! five, and there is no shared trait and no base struct for them. Two lines
-//! of duplication is cheaper than a supertype, which would be the first crack
-//! in a closed set — the moment scene nodes can be assembled from parts, the
-//! set is open.
+//! **The duplication is deliberate.** `translation`, `rotation`, `scale` and
+//! `children` appear on all five, and there is no shared trait and no base
+//! struct for them. A few lines of duplication is cheaper than a supertype,
+//! which would be the first crack in a closed set — the moment scene nodes
+//! can be assembled from parts, the set is open.
 //!
 //! **`Group` refuses geometry** by simply not declaring a `mesh` or
 //! `material` port. `Graph::connect` then refuses the connection with
@@ -21,7 +21,7 @@
 //! never confused for one another.
 
 use bevy::ecs::world::World;
-use bevy::math::Vec3;
+use bevy::math::{Quat, Vec3};
 use bevy::prelude::{
     Color, DirectionalLight as BevyDirectionalLight, PointLight as BevyPointLight,
 };
@@ -31,6 +31,22 @@ use bevy::transform::components::Transform;
 use sway_graph::graph::{NodeKind, ReflectNodeKind};
 
 use crate::nodes::protocol::{MeshSource, SceneChild, SceneMaterial, SceneNodeOut};
+
+/// The Bevy `Transform` a scene node projects, assembled from its three pose
+/// inlets. A derived `Default` on `Vec3` would zero the scale; identity pose
+/// is taken from [`Transform::default`].
+pub(crate) fn pose(translation: Vec3, rotation: Quat, scale: Vec3) -> Transform {
+    Transform {
+        translation,
+        rotation,
+        scale,
+    }
+}
+
+fn identity_pose() -> (Vec3, Quat, Vec3) {
+    let transform = Transform::default();
+    (transform.translation, transform.rotation, transform.scale)
+}
 
 /// A colour authored the way a human types one, as sRGB components.
 pub(crate) fn to_color(value: Vec3) -> Color {
@@ -42,13 +58,14 @@ pub(crate) fn to_color(value: Vec3) -> Color {
 // ---------------------------------------------------------------------------
 
 /// [`MeshNode`]'s inlets.
-#[derive(Reflect, Default, Debug, Clone, PartialEq)]
+#[derive(Reflect, Debug, Clone, PartialEq)]
 #[reflect(Default, Debug, PartialEq)]
 pub struct MeshNodeIn {
-    /// Authored, or driven field by field — an edge may name
-    /// `"transform.translation"` or `"transform.scale"`, and the gizmo emits
-    /// the same `SetField` command the inspector does.
-    pub transform: Transform,
+    /// Pose is three inlets, not one `Transform`: a `Vec3` outlet connects to
+    /// `translation` or `scale`, and the gizmo writes the same fields.
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub scale: Vec3,
     /// The geometry port. A marker inlet: pure schema (design D6). The
     /// projector reads the edge and asks the producer for its handle through
     /// [`protocol::MeshNode`](crate::nodes::protocol::MeshNode); it never
@@ -61,6 +78,20 @@ pub struct MeshNodeIn {
     /// The child port. Variadic: many scene nodes may connect here, and the
     /// slot orders them. Pure schema again — the projector reads the edges.
     pub children: Vec<SceneChild>,
+}
+
+impl Default for MeshNodeIn {
+    fn default() -> Self {
+        let (translation, rotation, scale) = identity_pose();
+        Self {
+            translation,
+            rotation,
+            scale,
+            mesh: MeshSource,
+            material: SceneMaterial,
+            children: Vec::new(),
+        }
+    }
 }
 
 /// A placement of geometry in the scene. Carries no geometry and no material
@@ -81,12 +112,26 @@ impl NodeKind for MeshNode {
 // Group
 // ---------------------------------------------------------------------------
 
-/// [`Group`]'s inlets: a transform and children, and nothing else.
-#[derive(Reflect, Default, Debug, Clone, PartialEq)]
+/// [`Group`]'s inlets: pose and children, and nothing else.
+#[derive(Reflect, Debug, Clone, PartialEq)]
 #[reflect(Default, Debug, PartialEq)]
 pub struct GroupIn {
-    pub transform: Transform,
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub scale: Vec3,
     pub children: Vec<SceneChild>,
+}
+
+impl Default for GroupIn {
+    fn default() -> Self {
+        let (translation, rotation, scale) = identity_pose();
+        Self {
+            translation,
+            rotation,
+            scale,
+            children: Vec::new(),
+        }
+    }
 }
 
 /// A placement that draws nothing and moves what is connected under it.
@@ -107,11 +152,25 @@ impl NodeKind for Group {
 // ---------------------------------------------------------------------------
 
 /// [`Camera`]'s inlets.
-#[derive(Reflect, Default, Debug, Clone, PartialEq)]
+#[derive(Reflect, Debug, Clone, PartialEq)]
 #[reflect(Default, Debug, PartialEq)]
 pub struct CameraIn {
-    pub transform: Transform,
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub scale: Vec3,
     pub children: Vec<SceneChild>,
+}
+
+impl Default for CameraIn {
+    fn default() -> Self {
+        let (translation, rotation, scale) = identity_pose();
+        Self {
+            translation,
+            rotation,
+            scale,
+            children: Vec::new(),
+        }
+    }
 }
 
 /// The scene's camera, as opposed to the editor's own. What this node carries
@@ -140,7 +199,9 @@ impl NodeKind for Camera {
 #[derive(Reflect, Debug, Clone, PartialEq)]
 #[reflect(Default, Debug, PartialEq)]
 pub struct DirectionalLightIn {
-    pub transform: Transform,
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub scale: Vec3,
     /// sRGB, like every other colour inlet.
     pub color: Vec3,
     pub illuminance: f32,
@@ -151,8 +212,11 @@ pub struct DirectionalLightIn {
 impl Default for DirectionalLightIn {
     fn default() -> Self {
         let light = BevyDirectionalLight::default();
+        let (translation, rotation, scale) = identity_pose();
         Self {
-            transform: Transform::default(),
+            translation,
+            rotation,
+            scale,
             // White, stated exactly: round-tripping Bevy's own `Color::WHITE`
             // through sRGB components lands on 0.99999994, which would show
             // up in every hand-written document.
@@ -197,7 +261,9 @@ impl DirectionalLightIn {
 #[derive(Reflect, Debug, Clone, PartialEq)]
 #[reflect(Default, Debug, PartialEq)]
 pub struct PointLightIn {
-    pub transform: Transform,
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub scale: Vec3,
     /// sRGB, like every other colour inlet.
     pub color: Vec3,
     pub intensity: f32,
@@ -210,8 +276,11 @@ pub struct PointLightIn {
 impl Default for PointLightIn {
     fn default() -> Self {
         let light = BevyPointLight::default();
+        let (translation, rotation, scale) = identity_pose();
         Self {
-            transform: Transform::default(),
+            translation,
+            rotation,
+            scale,
             // See `DirectionalLightIn::default`.
             color: Vec3::ONE,
             intensity: light.intensity,
@@ -265,7 +334,7 @@ mod tests {
             panic!("GroupIn is a struct");
         };
         let names: Vec<&str> = info.iter().map(|field| field.name()).collect();
-        assert_eq!(names, vec!["transform", "children"]);
+        assert_eq!(names, vec!["translation", "rotation", "scale", "children"]);
 
         // And the same read through a value, which is what `connect` does.
         let group = GroupIn::default();
@@ -289,6 +358,17 @@ mod tests {
         assert!(has_children(&PointLightIn::default()));
 
         assert_eq!(SceneNodeOut::default().child, SceneChild);
+    }
+
+    #[test]
+    fn pose_inlets_default_to_identity_not_zero_scale() {
+        // A derived `Default` on `Vec3` would zero the scale and collapse
+        // every unauthored placement. Identity is Bevy's `Transform::default`.
+        let identity = Transform::default();
+        let inlets = MeshNodeIn::default();
+        assert_eq!(inlets.translation, identity.translation);
+        assert_eq!(inlets.rotation, identity.rotation);
+        assert_eq!(inlets.scale, identity.scale);
     }
 
     #[test]

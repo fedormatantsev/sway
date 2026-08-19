@@ -8,12 +8,12 @@
 //!
 //!   midiTime ──time──▶ lfoA, lfoB
 //!   lfoA ──amplitude──▶ lfoB
-//!   lfoA ──y──▶ vec3A ──transform.translation──▶ cubeA ─┐
-//!   lfoB ──y──▶ vec3B ──transform.translation──▶ cubeB ─┤─children─▶ group
+//!   lfoA ──y──▶ vec3A ──translation──▶ cubeA ─┐
+//!   lfoB ──y──▶ vec3B ──translation──▶ cubeB ─┤─children─▶ group
 //!   mat  ──material──▶ cubeA, cubeB, cubeC              │
 //!   cube ──mesh──────▶ cubeA, cubeB, cubeC ─────────────┘
 //!
-//! `cubeC` carries an authored transform and no translation edge — the one
+//! `cubeC` carries an authored pose and no translation edge — the one
 //! mesh in the demo whose translate-drag holds (M7 Task 15's exit criterion
 //! needs this; cubeA/cubeB spring back on the next tick by design).
 //!
@@ -111,14 +111,25 @@ fn float_inlet(graph: &Graph, node: NodeId, field: &str) -> f32 {
         .unwrap_or_else(|| panic!("no f32 inlet \"{field}\""))
 }
 
-fn transform_of(graph: &Graph, node: NodeId) -> Transform {
-    path::resolve(
-        graph.get(node).expect("a live node"),
-        Part::Inlets,
-        "transform",
-    )
-    .and_then(|value| value.try_downcast_ref::<Transform>().copied())
-    .expect("a scene node's transform")
+fn pose_of(graph: &Graph, node: NodeId) -> Transform {
+    let value = graph.get(node).expect("a live node");
+    let field = |name: &str| {
+        path::resolve(value, Part::Inlets, name).unwrap_or_else(|| panic!("a scene node's {name}"))
+    };
+    Transform {
+        translation: field("translation")
+            .try_downcast_ref::<Vec3>()
+            .copied()
+            .expect("translation is Vec3"),
+        rotation: field("rotation")
+            .try_downcast_ref::<Quat>()
+            .copied()
+            .expect("rotation is Quat"),
+        scale: field("scale")
+            .try_downcast_ref::<Vec3>()
+            .copied()
+            .expect("scale is Vec3"),
+    }
 }
 
 #[test]
@@ -247,7 +258,7 @@ fn the_cube_chain_is_wired_as_the_header_draws_it() {
         "vec3A",
         "out",
         "cubeA",
-        "transform.translation"
+        "translation"
     ));
     assert!(has_edge(
         &graph,
@@ -255,20 +266,20 @@ fn the_cube_chain_is_wired_as_the_header_draws_it() {
         "vec3B",
         "out",
         "cubeB",
-        "transform.translation"
+        "translation"
     ));
 
     // cubeC is the one placement with no translation edge, and it keeps its
-    // authored transform.
+    // authored pose.
     let cube_c = node_of(&ids, "cubeC");
     assert!(
         graph
             .edges_into(cube_c)
-            .all(|edge| edge.dst.path != "transform.translation"),
+            .all(|edge| edge.dst.path != "translation"),
         "cubeC must not be driven",
     );
     assert_eq!(
-        transform_of(&graph, cube_c).translation,
+        pose_of(&graph, cube_c).translation,
         Vec3::new(0.0, 1.6, -0.8),
     );
 }
@@ -348,10 +359,10 @@ fn each_sprite_plane_has_its_own_mesh_and_material() {
 
     // spritePlane interpenetrates cubeC; spritePlane2 carries the 30° yaw.
     assert_eq!(
-        transform_of(&graph, node_of(&ids, "spritePlane")).translation,
+        pose_of(&graph, node_of(&ids, "spritePlane")).translation,
         Vec3::new(0.0, 1.6, -0.6),
     );
-    let yawed = transform_of(&graph, node_of(&ids, "spritePlane2"));
+    let yawed = pose_of(&graph, node_of(&ids, "spritePlane2"));
     assert_eq!(yawed.translation, Vec3::new(0.3, 1.5, -0.5));
     assert!(
         (yawed.rotation.y - 0.258819).abs() < 1e-5,

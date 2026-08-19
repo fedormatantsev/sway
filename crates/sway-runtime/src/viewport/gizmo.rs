@@ -554,7 +554,7 @@ fn write_gizmo_fields(
         &registry,
         &GraphCommand::SetField {
             node,
-            path: "transform.translation".into(),
+            path: "translation".into(),
             value: FieldValue::Vec3(transform.translation),
         },
     );
@@ -563,7 +563,7 @@ fn write_gizmo_fields(
         &registry,
         &GraphCommand::SetField {
             node,
-            path: "transform.rotation".into(),
+            path: "rotation".into(),
             value: FieldValue::Quat(transform.rotation),
         },
     );
@@ -572,7 +572,7 @@ fn write_gizmo_fields(
         &registry,
         &GraphCommand::SetField {
             node,
-            path: "transform.scale".into(),
+            path: "scale".into(),
             value: FieldValue::Vec3(transform.scale),
         },
     );

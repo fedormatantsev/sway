@@ -107,9 +107,11 @@ part is `()`:
 | Outlets | Values other nodes can read | Outlet sockets only | No |
 
 An **edge** is `(src NodeId, outlet path) → (dst NodeId, inlet path)` plus a
-`slot` sort key. Paths resolve through `bevy_reflect::GetPath`; the resolver
-prepends `inlets.` / `outlets.`, so stored paths stay short (`"frequency"`, not
-`"inlets.frequency"`).
+`slot` sort key. The path names a **declared field** of the inlets or outlets
+part. The resolver prepends `inlets.` / `outlets.`, so stored paths stay short
+(`"translation"`, not `"inlets.translation"`). A compound inlet is connected as
+a whole; scene placement is three inlets (`translation`, `rotation`, `scale`)
+so a `Vec3` can drive a cube without a nested path.
 
 Connect-time legality is decided from reflected types:
 
@@ -315,8 +317,8 @@ are allocated structurally at node creation so a connection is never waiting
 on a handle that does not exist yet — only its content is ever pending.
 
 The scene node set is closed: `MeshNode`, `Group`, `Camera`,
-`DirectionalLight`, `PointLight`. `Group` carries transform and children only
-and refuses geometry.
+`DirectionalLight`, `PointLight`. `Group` carries translation, rotation, scale
+and children only and refuses geometry.
 
 ### Protocols
 

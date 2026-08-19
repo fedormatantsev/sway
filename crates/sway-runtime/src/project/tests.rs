@@ -243,7 +243,7 @@ fn the_world_is_not_an_authoring_surface() {
         &mut app,
         MeshNode {
             inlets: crate::nodes::scene::MeshNodeIn {
-                transform: Transform::from_xyz(1.0, 2.0, 3.0),
+                translation: Vec3::new(1.0, 2.0, 3.0),
                 ..default()
             },
             ..default()
@@ -264,12 +264,11 @@ fn the_world_is_not_an_authoring_surface() {
     );
     let graph = app.world().resource::<Graph>();
     let node = graph.get(placement).expect("still there");
-    let inlets = node
+    let inlets = &node
         .value()
         .downcast_ref::<MeshNode>()
         .expect("a mesh node")
-        .inlets
-        .transform;
+        .inlets;
     assert_eq!(
         inlets.translation,
         Vec3::new(1.0, 2.0, 3.0),
@@ -882,7 +881,7 @@ fn a_group_places_its_children_without_drawing() {
         &mut app,
         Group {
             inlets: crate::nodes::scene::GroupIn {
-                transform: Transform::from_xyz(10.0, 0.0, 0.0),
+                translation: Vec3::new(10.0, 0.0, 0.0),
                 ..default()
             },
             ..default()
@@ -894,7 +893,7 @@ fn a_group_places_its_children_without_drawing() {
                 &mut app,
                 MeshNode {
                     inlets: crate::nodes::scene::MeshNodeIn {
-                        transform: Transform::from_xyz(0.0, index as f32, 0.0),
+                        translation: Vec3::new(0.0, index as f32, 0.0),
                         ..default()
                     },
                     ..default()
@@ -1004,7 +1003,7 @@ fn a_scene_node_with_no_child_connection_is_never_given_a_parent() {
         &mut app,
         MeshNode {
             inlets: crate::nodes::scene::MeshNodeIn {
-                transform: Transform::from_xyz(1.0, 0.0, 0.0),
+                translation: Vec3::new(1.0, 0.0, 0.0),
                 ..default()
             },
             ..default()

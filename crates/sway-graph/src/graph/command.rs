@@ -43,7 +43,7 @@ pub enum FieldValue {
     Vec2(Vec2),
     /// A `Vec3` field.
     Vec3(Vec3),
-    /// A `Quat` field — a scene node's `transform.rotation`.
+    /// A `Quat` field — a scene node's `rotation`.
     Quat(Quat),
 }
 

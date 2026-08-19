@@ -145,8 +145,14 @@ recorded here so it is not rediscovered through a flaky test.
 
 ### D5 — An edge is `(NodeId, path) -> (NodeId, path, slot)`
 
-Paths resolve through `bevy_reflect::GetPath`, so arbitrary depth
-(`"transform.translation.x"`) works with no extra machinery.
+An edge names a **declared field** of the source outlets and of the destination inlets. A compound inlet is connected as a whole: `Transform` to `Transform`, `Vec3` to `Vec3`. Driving one component of a compound is not a nested path on that inlet — the component is its own declared inlet, or a node constructs the compound from parts.
+
+`SetField` still resolves through `bevy_reflect::GetPath`, so an inspector or gizmo can edit `translation` as a `Vec3` (and, if needed, a nested path such as `"x"` on a `Vec3` node). That is authoring a value, not an extra inlet.
+
+Scene nodes therefore flatten Bevy's `Transform` into `translation`, `rotation` and `scale`. The projector builds the entity `Transform` from those three. The demo's `vec3A.out → cubeA.translation` is then a legal top-level edge and a canvas socket.
+
+Paths are stored short: the resolver prepends `inlets.` / `outlets.`, so the document says `"translation"`, not `"inlets.translation"`.
+
 `propagate_field_copy` in `wire.rs` hand-rolls single-level field access and is
 superseded entirely.
 
@@ -220,19 +226,19 @@ projectors then run post-tick with no ordering constraint between them, and a
 handle inlet is never empty; only its content is ever pending.
 
 The scene node set is closed: `MeshNode`, `Group`, `Camera`, `DirectionalLight`,
-`PointLight`. `Group` is a distinct kind carrying transform and children only,
+`PointLight`. `Group` is a distinct kind carrying translation, rotation, scale and children only,
 rather than a `MeshNode` with an `Option`-shaped mesh — explicit on the canvas
-and in the palette, at the cost of duplicating two fields. The two
+and in the palette, at the cost of duplicating those fields. The two
 implementations stay separate: no shared trait or base struct for the duplicated
-`transform` / `children` fields, because the duplication is two lines and a
+`translation` / `rotation` / `scale` / `children` fields, because the duplication is a few lines and a
 shared supertype would be the first crack in the closed set.
 
 **Authoring is single-direction.** Commands write authored fields; external
 systems write source-node outlets and producer handles; the tick writes
 propagated inlets, state and pure outlets. Nothing else writes the graph, and no
 value flows world to graph. The gizmo emits the same `SetField` command the
-inspector does — `viewport/gizmo.rs` currently writes `Transform` directly,
-which is the asymmetry that would make a mirror unstable. Picking returns an
+inspector does — `translation`, `rotation` and `scale` on the scene node, not
+a nested path through a `Transform`. Picking returns an
 `Entity` only to look up a `NodeId` for selection.
 
 ### D8 — `Vec<Node>` addressed by generational `NodeId`

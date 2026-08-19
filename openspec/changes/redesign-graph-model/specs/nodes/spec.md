@@ -58,9 +58,11 @@ Connecting a material node MUST make the connected scene node render with that m
 ### Requirement: The scene node set is fixed
 The nodes that place things in the scene MUST be a fixed set: a mesh placement, a group, a camera, a directional light and a point light. Scene nodes MUST NOT be assembled from an open set of parts.
 
-A group MUST carry a transform and children and nothing else. It MUST NOT accept geometry or a material.
+A group MUST carry translation, rotation, scale and children and nothing else. It MUST NOT accept geometry or a material.
 
 Every scene node MUST accept children. A child connection MUST make the child's placement relative to its parent's, and a scene node with no child connection MUST NOT be given a parent.
+
+Scene placement MUST be three declared inlets — translation (`Vec3`), rotation (`Quat`) and scale (`Vec3`) — not one compound transform inlet. A `Vec3` outlet MUST connect to `translation` or `scale`; it MUST NOT connect through a nested path on a transform.
 
 #### Scenario: A group places its children without drawing
 - **WHEN** three mesh placements are connected as children of a group and the group is moved
@@ -70,6 +72,11 @@ Every scene node MUST accept children. A child connection MUST make the child's 
 #### Scenario: A group refuses geometry
 - **WHEN** a mesh node is connected to a group
 - **THEN** the connection is refused
+
+#### Scenario: Translation is a declared inlet
+- **WHEN** a `Vec3` node is connected to a mesh placement's translation
+- **THEN** the edge names `translation`
+- **AND** the canvas draws that edge to the translation socket
 
 #### Scenario: An unparented node has no parent
 - **WHEN** a scene node has no child connection into any other scene node
