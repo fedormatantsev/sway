@@ -242,7 +242,6 @@ fn main() {
     let demo = args.demo;
     let editor = args.editor;
 
-    let (editor_tx, editor_rx) = crossbeam_channel::unbounded();
     let (graph_tx, graph_rx) = crossbeam_channel::unbounded();
     let (viewport_tx, viewport_rx) = crossbeam_channel::unbounded();
 
@@ -258,9 +257,7 @@ fn main() {
         let mut app = sway_runtime::headless::build_app(gpu, viewport, size, &project.directory);
 
         if editor {
-            app.insert_resource(sway_graph::Authoring)
-                .insert_resource(sway_graph::EditorRx(editor_rx.clone()))
-                .insert_resource(sway_graph::GraphRx(graph_rx.clone()))
+            app.insert_resource(sway_graph::GraphRx(graph_rx.clone()))
                 .insert_resource(sway_graph::ViewportInputRx(viewport_rx.clone()))
                 .add_plugins(sway_runtime::EditorViewportPlugin);
         }
@@ -302,60 +299,39 @@ fn main() {
                     RuntimeNodesPlugin,
                     ProjectionPlugin,
                 ))
+                .configure_sets(FixedUpdate, sway_graph::GraphTickSet.run_if(assets_ready))
                 .configure_sets(
-                    FixedUpdate,
-                    sway_graph::GraphTickSet.run_if(assets_ready),
-                )
-                .configure_sets(Update, ProjectionSet.run_if(assets_ready).after(ProducerSet));
+                    Update,
+                    ProjectionSet.run_if(assets_ready).after(ProducerSet),
+                );
             }
             Some(Demo::PointCloud) => {
-                app.add_plugins((
-                    sway_graph::WiresPlugin,
-                    sway_nodes::WireNodesPlugin,
-                    sway_runtime::PointCloudPlugin,
-                ))
-                .add_systems(Startup, sway_runtime::point_cloud::spawn_demo_point_cloud);
+                app.add_plugins(sway_runtime::PointCloudPlugin)
+                    .add_systems(Startup, sway_runtime::point_cloud::spawn_demo_point_cloud);
             }
             Some(Demo::Sprites) => {
-                app.add_plugins((
-                    sway_graph::WiresPlugin,
-                    sway_nodes::WireNodesPlugin,
-                    sway_runtime::SpriteMaterialPlugin,
-                    sway_runtime::SpriteLayerPlugin,
-                ))
-                .add_systems(
-                    Startup,
-                    (
-                        sway_runtime::sprite_layer::spawn_demo_sprite_layers,
-                        sway_runtime::sprite_layer::spawn_demo_camera,
-                    ),
-                );
+                app.add_plugins(sway_runtime::SpriteLayerPlugin)
+                    .add_systems(
+                        Startup,
+                        (
+                            sway_runtime::sprite_layer::spawn_demo_sprite_layers,
+                            sway_runtime::sprite_layer::spawn_demo_camera,
+                        ),
+                    );
             }
             Some(Demo::SpriteDepth) => {
-                app.add_plugins((
-                    sway_graph::WiresPlugin,
-                    sway_nodes::WireNodesPlugin,
-                    sway_runtime::SpriteMaterialPlugin,
-                    sway_runtime::SpriteDepthPlugin,
-                ))
-                .add_systems(
-                    Startup,
-                    sway_runtime::sprite_depth_spike::spawn_depth_spike_scene,
-                );
+                app.add_plugins(sway_runtime::SpriteDepthPlugin)
+                    .add_systems(
+                        Startup,
+                        sway_runtime::sprite_depth_spike::spawn_depth_spike_scene,
+                    );
             }
             Some(Demo::Scatter) => {
-                app.add_plugins((
-                    sway_graph::WiresPlugin,
-                    sway_nodes::WireNodesPlugin,
-                    sway_runtime::ScatterPlugin,
-                ))
-                .add_systems(Startup, sway_runtime::scatter::spawn_demo_scatter);
+                app.add_plugins(sway_runtime::ScatterPlugin)
+                    .add_systems(Startup, sway_runtime::scatter::spawn_demo_scatter);
             }
             Some(Demo::All) => {
                 app.add_plugins((
-                    sway_graph::WiresPlugin,
-                    sway_nodes::WireNodesPlugin,
-                    sway_runtime::SpriteMaterialPlugin,
                     sway_runtime::PointCloudPlugin,
                     sway_runtime::SpriteLayerPlugin,
                     sway_runtime::ScatterPlugin,
@@ -377,8 +353,7 @@ fn main() {
     shell::run(shell::ShellConfig {
         editor,
         build_app,
-        commands: editor_tx,
-        graph_commands: graph_tx,
+        commands: graph_tx,
         viewport_input: viewport_tx,
         project,
     });

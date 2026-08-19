@@ -6,10 +6,7 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Res, ResMut};
 use crossbeam_channel::Receiver;
 
-use crate::{
-    MidiMessage, MidiTime, PulseClock, TimedMidi, Transport, host_time_now, host_time_to_secs,
-    write_midi_time,
-};
+use crate::{MidiMessage, PulseClock, TimedMidi, Transport, host_time_now, host_time_to_secs};
 
 #[derive(Resource)]
 pub struct MidiClock {
@@ -45,7 +42,6 @@ pub struct MidiPlugin {
 
 impl Plugin for MidiPlugin {
     fn build(&self, app: &mut App) {
-        sway_graph::register_authorable::<MidiTime>(app, "MidiTime");
         app.insert_resource(MidiRx(self.rx.clone()))
             .init_resource::<MidiInbox>()
             .init_resource::<TickMidi>()
@@ -53,9 +49,8 @@ impl Plugin for MidiPlugin {
             .init_resource::<Transport>()
             .add_systems(
                 FixedUpdate,
-                (feed_inbox, drain_and_clock, write_midi_time)
+                (feed_inbox, drain_and_clock)
                     .chain()
-                    .before(sway_graph::graph_tick)
                     .before(sway_graph::GraphTickSet),
             );
     }
@@ -142,13 +137,12 @@ mod tests {
     use bevy_app::App;
     use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
     use crossbeam_channel::Receiver;
-    use sway_graph::WiresPlugin;
+    use sway_graph::GraphPlugin;
 
     use super::{
         MidiClock, MidiInbox, MidiPlugin, TickMidi, apply_tick, drain_window, feed_receiver,
     };
-    use crate::{MidiMessage, MidiTime, TimedMidi, Transport};
-    use sway_nodes::FloatOut;
+    use crate::{MidiMessage, TimedMidi, Transport};
 
     const SPP_120: f64 = 0.5 / 24.0;
 
@@ -157,7 +151,7 @@ mod tests {
         app.add_plugins(TimePlugin)
             .insert_resource(Time::<Fixed>::from_hz(120.0))
             .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
-            .add_plugins((WiresPlugin, MidiPlugin { rx }));
+            .add_plugins((GraphPlugin, MidiPlugin { rx }));
         app.update();
         app
     }
@@ -172,27 +166,6 @@ mod tests {
         assert!(app.world().get_resource::<MidiClock>().is_some());
         assert!(app.world().get_resource::<MidiInbox>().is_some());
         assert!(app.world().get_resource::<TickMidi>().is_some());
-    }
-
-    #[test]
-    fn midi_time_writes_ppq_before_the_graph_tick() {
-        let (_tx, rx) = crossbeam_channel::unbounded();
-        let mut app = plugin_app(rx);
-        let e = app.world_mut().spawn(MidiTime).id();
-        app.world_mut()
-            .resource_mut::<MidiClock>()
-            .clock
-            .push(0.0, MidiMessage::SongPosition { sixteenths: 13 });
-        app.world_mut().resource_mut::<Transport>().ppq = 3.25;
-
-        app.update();
-
-        let output = app.world().get::<FloatOut>(e).unwrap().0;
-        let transport = app.world().resource::<Transport>().ppq;
-        assert!(
-            (output - 3.25).abs() < 1e-5,
-            "output={output}, transport={transport}"
-        );
     }
 
     #[test]

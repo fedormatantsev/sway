@@ -3,11 +3,10 @@
 //! Rows are `Label` children for headers and read-only values, for the same
 //! reason `SceneTree`'s are: `imaging::Painter` takes only pre-shaped
 //! glyphs. An editable field gets the widget its `FieldKind` calls for, and
-//! committing an edit sends exactly one `EditorCommand::SetField`.
+//! committing an edit sends exactly one `GraphCommand::SetField`.
 
 use std::collections::HashMap;
 
-use bevy_ecs::entity::Entity;
 use crossbeam_channel::Sender;
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
@@ -24,14 +23,12 @@ use masonry::widgets::{
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
 use sway_graph::graph::{EdgeId, Graph, GraphCommand, NodeId as GraphNodeId, Part, path};
-use sway_graph::{EditorCommand, FieldValue};
 
 use crate::canvas::reorder_commands;
 use crate::reflect_ui::{
     enum_variants, format_value, has_control, is_bool, is_variadic, parse_field, part_fields,
     short_type_name,
 };
-use crate::views::FieldKind;
 
 // `TextInput` and `Selector` carry the theme's default border+padding
 // (`Padding::from_vh(6px, 12px)` plus a 1px border on each side — see
@@ -118,10 +115,7 @@ struct EdgeOrderRow {
 
 struct Row {
     kind: RowKind,
-    /// Which component and field this row edits. `None` for headers.
-    target: Option<(&'static str, String, FieldKind)>,
-    /// Which graph inlet field this row edits, when the inspector is driven by
-    /// the graph model. `None` for headers and for snapshot-driven rows.
+    /// Which graph inlet field this row edits. `None` for headers.
     graph_target: Option<GraphFieldTarget>,
     /// Which edge of a variadic inlet this row reorders. `None` for every
     /// other row.
@@ -130,18 +124,7 @@ struct Row {
 
 pub struct Inspector {
     rows: Vec<Row>,
-    signature: Vec<String>,
     generation: u64,
-    entity: Option<Entity>,
-    commands: Sender<EditorCommand>,
-    /// Text a `Text` row has typed but not yet committed (`TextAction::Changed`
-    /// without a following `Entered`), keyed by `(component, field)` rather
-    /// than row index -- a row's index can shift under `apply_snapshot`
-    /// while an edit is pending. Flushed by [`Inspector::commit_pending`],
-    /// which fires on `Update::ChildFocusChanged(false)` (design spec:
-    /// "committing on Enter and on blur").
-    pending: HashMap<(&'static str, String), String>,
-
     // --- the graph model (design D11).
     /// Where inlet edits go once this inspector is driven by the graph.
     graph_commands: Option<Sender<GraphCommand>>,
@@ -152,31 +135,12 @@ pub struct Inspector {
     graph_pending: HashMap<String, String>,
 }
 
-/// Parses exactly `N` comma-separated floats, or nothing.
-///
-/// Every component must parse and the count must match. The earlier
-/// `Vec3`-only version discarded unparseable components instead, so
-/// `"1, abc, 2, 3"` committed as `(1, 2, 3)` — a typo silently became a
-/// different vector. Shared by both vector kinds so they cannot drift.
-fn parse_components<const N: usize>(text: &str) -> Option<[f32; N]> {
-    let mut parts = text.split(',');
-    let mut out = [0.0; N];
-    for slot in out.iter_mut() {
-        *slot = parts.next()?.trim().parse::<f32>().ok()?;
-    }
-    parts.next().is_none().then_some(out)
-}
-
 impl Inspector {
-    pub fn new(commands: Sender<EditorCommand>) -> Self {
+    pub fn new(commands: Sender<GraphCommand>) -> Self {
         Self {
             rows: Vec::new(),
-            signature: Vec::new(),
             generation: 0,
-            entity: None,
-            commands,
-            pending: HashMap::new(),
-            graph_commands: None,
+            graph_commands: Some(commands),
             graph_node: None,
             graph_signature: Vec::new(),
             graph_pending: HashMap::new(),
@@ -227,48 +191,7 @@ impl Inspector {
     /// A value that does not parse sends nothing -- the field simply snaps back
     /// on the next snapshot.
     fn commit(&mut self, row_index: usize, text: &str) {
-        let Some(row) = self.rows.get(row_index) else {
-            return;
-        };
-        let (Some(entity), Some((component, field, kind))) = (self.entity, row.target.clone())
-        else {
-            return; // a header row, or nothing selected
-        };
-        // Whether this commit succeeds or not, the pending keystroke (if any)
-        // for this field has been acted on -- don't replay it again on the
-        // next blur.
-        self.pending.remove(&(component, field.clone()));
-        let value = match kind {
-            FieldKind::Float => match text.trim().parse::<f32>() {
-                Ok(v) => FieldValue::Float(v),
-                Err(_) => return,
-            },
-            FieldKind::Int => match text.trim().parse::<i64>() {
-                Ok(v) => FieldValue::Int(v),
-                Err(_) => return,
-            },
-            FieldKind::Bool => FieldValue::Bool(text == "true"),
-            FieldKind::Enum(_) => FieldValue::Enum(text.to_string()),
-            FieldKind::Str => FieldValue::Str(text.to_string()),
-            FieldKind::Vec2 => match parse_components::<2>(text) {
-                Some([x, y]) => FieldValue::Vec2(bevy_math::Vec2::new(x, y)),
-                None => return,
-            },
-            FieldKind::Vec3 => match parse_components::<3>(text) {
-                Some([x, y, z]) => FieldValue::Vec3(bevy_math::Vec3::new(x, y, z)),
-                None => return,
-            },
-            FieldKind::Opaque => return,
-        };
-
-        // Send-failure is not an error worth reporting: the only way the
-        // receiver is gone is that the app is shutting down.
-        let _ = self.commands.send(EditorCommand::SetField {
-            entity,
-            component,
-            field,
-            value,
-        });
+        self.commit_graph(row_index, text);
     }
 
     /// Parses `text` against the row's *reflected field type* and sends one
@@ -460,18 +383,15 @@ impl Inspector {
         }
 
         this.widget.graph_node = selection;
-        this.widget.entity = None;
 
         match &header {
             Some(header) => this.widget.rows.push(Row {
                 kind: RowKind::Header(WidgetPod::new(Label::new(header.clone()))),
-                target: None,
                 graph_target: None,
                 edge_order: None,
             }),
             None => this.widget.rows.push(Row {
                 kind: RowKind::Header(WidgetPod::new(Label::new("nothing selected"))),
-                target: None,
                 graph_target: None,
                 edge_order: None,
             }),
@@ -488,7 +408,6 @@ impl Inspector {
                             up: WidgetPod::new(Button::with_text(MOVE_UP)),
                             down: WidgetPod::new(Button::with_text(MOVE_DOWN)),
                         },
-                        target: None,
                         graph_target: None,
                         edge_order: Some(edge),
                     });
@@ -538,7 +457,6 @@ impl Inspector {
             };
             this.widget.rows.push(Row {
                 kind,
-                target: None,
                 graph_target: Some(target),
                 edge_order: None,
             });
@@ -572,27 +490,16 @@ impl Inspector {
     /// since the last commit, not just the one that happened to hold focus
     /// last.
     fn commit_pending(&mut self) {
-        if !self.graph_pending.is_empty() {
-            for (path, text) in std::mem::take(&mut self.graph_pending) {
-                if let Some(index) = self
-                    .rows
-                    .iter()
-                    .position(|row| row.graph_target.as_ref().is_some_and(|t| t.path == path))
-                {
-                    self.commit_graph(index, &text);
-                }
-            }
-        }
-        if self.pending.is_empty() {
+        if self.graph_pending.is_empty() {
             return;
         }
-        for ((component, field), text) in std::mem::take(&mut self.pending) {
-            if let Some(index) = self.rows.iter().position(|row| {
-                row.target
-                    .as_ref()
-                    .is_some_and(|(c, f, _)| *c == component && *f == field)
-            }) {
-                self.commit(index, &text);
+        for (path, text) in std::mem::take(&mut self.graph_pending) {
+            if let Some(index) = self
+                .rows
+                .iter()
+                .position(|row| row.graph_target.as_ref().is_some_and(|t| t.path == path))
+            {
+                self.commit_graph(index, &text);
             }
         }
     }
@@ -854,18 +761,13 @@ impl Widget for Inspector {
                 ctx.set_handled();
             }
             Some(RowEvent::Pending(index, text)) => {
-                if on_graph {
-                    if let Some(target) = self
+                if on_graph
+                    && let Some(target) = self
                         .rows
                         .get(index)
                         .and_then(|row| row.graph_target.clone())
-                    {
-                        self.graph_pending.insert(target.path, text);
-                    }
-                } else if let Some((component, field, _)) =
-                    self.rows.get(index).and_then(|row| row.target.clone())
                 {
-                    self.pending.insert((component, field), text);
+                    self.graph_pending.insert(target.path, text);
                 }
                 ctx.set_handled();
             }

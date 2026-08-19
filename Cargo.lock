@@ -5709,7 +5709,6 @@ dependencies = [
  "bevy_time",
  "bevy_transform",
  "crossbeam-channel",
- "sway-graph",
 ]
 
 [[package]]

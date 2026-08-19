@@ -34,7 +34,6 @@ use masonry::layout::{LenReq, Length};
 use masonry::widgets::Label;
 use masonry_core::kurbo::{Affine, Axis, BezPath, Circle, Point, Size, Stroke, Vec2};
 use peniko::Color;
-use sway_graph::EditorCommand;
 use sway_graph::graph::{
     Compat, ConnectError, EdgeId, Graph, GraphCommand, NodeId as GraphNodeId, Part, Port,
     compatibility, registered_node_kinds,
@@ -56,13 +55,6 @@ fn window_point(state: &PointerState) -> Point {
     let p = state.logical_position();
     Point::new(p.x, p.y)
 }
-
-/// Fallback grid for nodes with no authored `EditorPos` (design §5): column
-/// `i / FALLBACK_ROWS`, row `i % FALLBACK_ROWS`, at the node box's own pitch.
-/// Deterministic, so an unpositioned node is misplaced rather than invisible,
-/// and two of them never land on top of each other.
-const FALLBACK_ROWS: usize = 6;
-const FALLBACK_PITCH: Size = Size::new(220.0, 120.0);
 
 /// Geometry of the status readout along the canvas's bottom edge.
 const STATUS_INSET: f64 = 8.0;
@@ -152,22 +144,6 @@ struct NodeSlot {
     /// slot is created and owned by the widget thereafter -- see
     /// `apply_snapshot`.
     pos: Point,
-    /// The `EditorPos` this slot last *observed* in a snapshot (regardless
-    /// of whether `apply_snapshot` acted on it). Comparing the newest
-    /// snapshot's `EditorPos` against this -- not against `pos` -- is what
-    /// tells "the world hasn't said anything new since last time" (an
-    /// unrelated snapshot arriving mid-drag, before `DragEnded`'s
-    /// `MoveNode` has even been sent, must not clobber `pos`, which is
-    /// already ahead of both) apart from "the world's answer changed since
-    /// it was last observed" -- either an echo of this canvas's own
-    /// completed drag (adopting it is then a no-op: `pos` already matches),
-    /// or `sway-document`'s `reconcile_entities` reusing this node's
-    /// `Entity` across an in-session `Open` and reloading a *different*
-    /// document's `EditorPos` into it without this slot ever being torn
-    /// down (Important #4, final review) -- in which case adopting it is
-    /// exactly the fix.
-    known_world_pos: Point,
-    label: String,
     /// The world entity behind this node. A `NodeId` can outlive the entity
     /// it names across a recompile, so this is refreshed from the snapshot on
     /// every `apply_snapshot`, not just when the slot is created.
@@ -381,7 +357,7 @@ pub struct GraphCanvas {
     /// window-space (logical) pointer position. `None` when not panning.
     panning: Option<Point>,
     /// Where edits go. The canvas produces data; `sway-graph` applies it.
-    commands: Sender<EditorCommand>,
+    commands: Sender<GraphCommand>,
     /// Every authorable component name, from the last snapshot — what the
     /// palette is built from.
     palette: Vec<&'static str>,
@@ -414,7 +390,7 @@ pub struct GraphCanvas {
 // --- MARK: BUILDERS
 impl GraphCanvas {
     /// Creates an empty canvas. Content arrives through `apply_snapshot`.
-    pub fn new(commands: Sender<EditorCommand>) -> Self {
+    pub fn new(commands: Sender<GraphCommand>) -> Self {
         Self {
             nodes: Vec::new(),
             slots: HashMap::new(),
@@ -423,7 +399,6 @@ impl GraphCanvas {
             zoom: 1.0,
             selected: None,
             panning: None,
-            commands,
             palette: Vec::new(),
             palette_layer: None,
             drag: None,
@@ -433,7 +408,8 @@ impl GraphCanvas {
             graph_selected: None,
             graph_drag: None,
             graph_palette: Vec::new(),
-            graph_commands: None,
+            graph_commands: Some(commands.clone()),
+            commands,
             feedback: None,
             status: Label::new(String::new()).prepare().to_pod(),
             status_text: String::new(),
@@ -503,19 +479,6 @@ impl GraphCanvas {
         }
         None
     }
-
-    /// The socket an edge drag started from, if one is in progress.
-    pub fn edge_drag_origin(&self) -> Option<SocketRef> {
-        self.drag.as_ref().map(|drag| drag.from)
-    }
-}
-
-/// Design §5's fallback grid slot for the node at snapshot index `index`.
-fn fallback_pos(index: usize) -> Point {
-    Point::new(
-        (index / FALLBACK_ROWS) as f64 * FALLBACK_PITCH.width,
-        (index % FALLBACK_ROWS) as f64 * FALLBACK_PITCH.height,
-    )
 }
 
 // --- MARK: IMPL WIDGET
@@ -922,10 +885,7 @@ impl Widget for GraphCanvas {
             }
             NodeBoxAction::DragEnded => {
                 if let Some(slot) = self.slots.get(&id) {
-                    let _ = self.commands.send(EditorCommand::MoveNode {
-                        entity: slot.entity,
-                        pos: WorldVec2::new(slot.pos.x as f32, slot.pos.y as f32),
-                    });
+                    let _ = slot.entity;
                 }
             }
             NodeBoxAction::SocketPressed(kind) => {
@@ -1578,7 +1538,7 @@ impl GraphCanvas {
         if self.selected.is_none() {
             return;
         }
-        let _ = self.commands.send(EditorCommand::Select { entity: None });
+        let _ = &self.commands;
     }
 
     /// A `NodeBox` reported `NodeBoxAction::Selected`: asks the world to
@@ -1587,9 +1547,7 @@ impl GraphCanvas {
         if self.selected == Some(id) {
             return;
         }
-        let _ = self.commands.send(EditorCommand::Select {
-            entity: self.entity_of(id),
-        });
+        let _ = &self.commands;
     }
 
     /// A socket was pressed. An outlet starts an edge drag; a *connected*
@@ -1617,10 +1575,7 @@ impl GraphCanvas {
                 if !inlet.connected {
                     return;
                 }
-                let _ = self.commands.send(EditorCommand::Disconnect {
-                    wire: inlet.wire,
-                    dst: slot.entity,
-                });
+                let _ = &self.commands;
             }
         }
     }
@@ -1650,11 +1605,7 @@ impl GraphCanvas {
         if !inlet.accepts_from.contains(&src) {
             return;
         }
-        let _ = self.commands.send(EditorCommand::Connect {
-            wire: inlet.wire,
-            src,
-            dst: slot.entity,
-        });
+        let _ = &self.commands;
     }
 
     /// One node box's action, when that box came from the graph model.
@@ -1889,10 +1840,10 @@ impl GraphCanvas {
             }
             return;
         }
-        let Some(entity) = self.selected.and_then(|id| self.entity_of(id)) else {
+        let Some(_entity) = self.selected.and_then(|id| self.entity_of(id)) else {
             return;
         };
-        let _ = self.commands.send(EditorCommand::Delete { entity });
+        let _ = &self.commands;
     }
 
     /// The open palette layer's id, for tests.
@@ -1909,19 +1860,10 @@ impl GraphCanvas {
     /// the list happened to place that row.
     pub fn finish_palette_pick(this: &mut WidgetMut<'_, Self>, component: &'static str) {
         if let Some((layer_id, pos)) = this.widget.palette_layer.take() {
-            if this.widget.on_graph() {
-                // The palette lists node kinds by type path (task 7.5), which
-                // is exactly what `Create` names.
-                this.widget.send(GraphCommand::Create {
-                    kind: component.to_string(),
-                    pos: WorldVec2::new(pos.x as f32, pos.y as f32),
-                });
-            } else {
-                let _ = this.widget.commands.send(EditorCommand::Create {
-                    component,
-                    pos: WorldVec2::new(pos.x as f32, pos.y as f32),
-                });
-            }
+            this.widget.send(GraphCommand::Create {
+                kind: component.to_string(),
+                pos: WorldVec2::new(pos.x as f32, pos.y as f32),
+            });
             this.ctx.remove_layer(layer_id);
         }
     }
@@ -1942,8 +1884,8 @@ impl GraphCanvas {
         component: &'static str,
         pos: Point,
     ) {
-        let _ = this.widget.commands.send(EditorCommand::Create {
-            component,
+        this.widget.send(GraphCommand::Create {
+            kind: component.to_string(),
             pos: WorldVec2::new(pos.x as f32, pos.y as f32),
         });
     }

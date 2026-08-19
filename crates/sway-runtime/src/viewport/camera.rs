@@ -5,7 +5,7 @@
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
-use sway_graph::{HiddenFromEditor, ViewportButton, ViewportInput};
+use sway_graph::{ViewportButton, ViewportInput};
 
 /// How far a full-viewport drag turns the camera. Deltas arrive normalized
 /// to the viewport rect (spec M7-1), so this is radians per viewport width —
@@ -23,10 +23,8 @@ const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_2 - 0.001;
 /// The editor's viewpoint, as opposed to `SceneCamera`, which is what the
 /// show looks through.
 ///
-/// Carries no `EditorPos` and no `DocId` on purpose: `capture_nodes` walks
-/// every `EditorPos` entity and `to_document` walks every `DocId` carrier, so
-/// this camera is invisible to the graph canvas and to the saved file without
-/// either of them needing a special case.
+/// Not a graph node: the editor camera is a viewport tool, so it does not
+/// appear on the canvas and is not saved with the document.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 #[require(Camera3d)]
 pub struct EditorCamera {
@@ -94,20 +92,9 @@ enum NavigationMode {
 }
 
 /// Spawns the one editor camera. `Startup`, editor builds only.
-///
-/// Carries `HiddenFromEditor`: it has a `Transform` and no `Transform`-carrying
-/// parent, so without this it would satisfy `capture_tree`'s (`sway-editor`,
-/// `snapshot.rs`) walk and show up as a selectable scene-tree row — selecting
-/// it and dragging a gizmo handle would then corrupt the editor camera's own
-/// transform, which the next Alt-drag or camera-toggle silently overwrites.
 pub fn spawn_editor_camera(mut commands: Commands) {
     let cam = EditorCamera::default();
-    commands.spawn((
-        cam,
-        orbit_transform(&cam),
-        ViewportCameraRole::Editor,
-        HiddenFromEditor,
-    ));
+    commands.spawn((cam, orbit_transform(&cam), ViewportCameraRole::Editor));
 }
 
 /// Turns this frame's viewport events into camera motion.
@@ -336,10 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn the_editor_camera_is_hidden_from_the_editor_tree() {
-        // Without this, `capture_tree` (`sway-editor`, `snapshot.rs`) would
-        // show the editor camera as a selectable scene row, and a gizmo drag
-        // on it would corrupt a transform the renderer silently overwrites.
+    fn spawn_editor_camera_inserts_one_editor_camera() {
         let mut app = App::new();
         app.add_systems(Startup, spawn_editor_camera);
         app.update();
@@ -347,10 +331,9 @@ mod tests {
         let mut query = app
             .world_mut()
             .query_filtered::<Entity, With<EditorCamera>>();
-        let camera = query
+        query
             .single(app.world())
             .expect("spawn_editor_camera should spawn one");
-        assert!(app.world().get::<HiddenFromEditor>(camera).is_some());
     }
 
     #[test]

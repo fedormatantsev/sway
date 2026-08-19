@@ -210,18 +210,12 @@ impl NodeBox {
         self
     }
 
-    /// Seeds this box's socket counts. Called by `GraphCanvas::apply_snapshot`
-    /// when creating a new box, from that frame's `NodeView`; `set_sockets`
-    /// (below) is the update path for a box that already exists.
+    /// Seeds this box's socket counts. Used by unit tests that assert
+    /// inlet/outlet geometry without a live graph.
+    #[cfg(test)]
     pub(crate) fn with_sockets(mut self, inlets: Vec<u16>, outlets: u16) -> Self {
         self.inlets = inlets;
         self.outlets = outlets;
-        self
-    }
-
-    /// Seeds the type path for each inlet socket so hit-test can name a wire.
-    pub(crate) fn with_inlet_wires(mut self, wires: Vec<&'static str>) -> Self {
-        self.inlet_wires = wires;
         self
     }
 

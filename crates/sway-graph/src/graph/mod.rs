@@ -1,9 +1,5 @@
 //! The graph model — nodes, edges, commands, order and the tick.
 //!
-//! This is the model described by `openspec/changes/redesign-graph-model`. It
-//! lands **beside** the entity/wire engine in the crate root; nothing there is
-//! deleted until that change's group 9.
-//!
 //! ## Shape
 //!
 //! - A [`Graph`] is [`Node`]s and [`Edge`]s and nothing else. It is a

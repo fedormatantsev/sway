@@ -47,14 +47,13 @@
 use bevy::camera::visibility::RenderLayers;
 use bevy::gizmos::transform_gizmo::{
     AXIS_START_OFFSET, TransformGizmoAxis, TransformGizmoCamera, TransformGizmoFocus,
-    TransformGizmoMeshMarker, TransformGizmoMode, TransformGizmoRoot, TransformGizmoSettings,
-    TransformGizmoState, VIEW_CIRCLE_MAJOR, VIEW_RING_MAJOR, axis_direction, effective_space,
-    gizmo_rotation, intersect_plane, point_to_ring_screen_dist, point_to_segment_dist,
-    translation_plane_normal,
+    TransformGizmoMode, TransformGizmoSettings, TransformGizmoState, VIEW_CIRCLE_MAJOR,
+    VIEW_RING_MAJOR, axis_direction, effective_space, gizmo_rotation, intersect_plane,
+    point_to_ring_screen_dist, point_to_segment_dist, translation_plane_normal,
 };
 use bevy::prelude::*;
 use sway_graph::graph::{FieldValue, Graph, GraphCommand, apply_graph_command};
-use sway_graph::{HiddenFromEditor, ViewportButton, ViewportInput, ViewportKey};
+use sway_graph::{ViewportButton, ViewportInput, ViewportKey};
 
 use crate::project::NodeEntities;
 
@@ -127,43 +126,6 @@ pub fn mark_gizmo_camera(
 /// `camera::tag_scene_cameras` — so this literal is the same public
 /// stand-in used there.
 const GIZMO_RENDER_LAYER: usize = 15;
-
-/// Tags every gizmo mesh entity, and the gizmo overlay camera itself, as
-/// [`HiddenFromEditor`] as they appear.
-///
-/// The renderer spawns `TransformGizmoRoot` and its `TransformGizmoMeshMarker`
-/// children, and its own overlay camera (carrying `RenderLayers::layer(
-/// GIZMO_RENDER_LAYER)` — the same discriminator `camera::tag_scene_cameras`
-/// uses to *exclude* it from scene-camera tagging), once, in `Startup` — but
-/// this runs in `Update` rather than ordered after that private system,
-/// because ordering against a system this crate cannot name is not possible;
-/// `With<T>, Without<HiddenFromEditor>` makes running every frame both
-/// correct and (after the first frame) free.
-///
-/// The overlay camera needs this too: like `spawn_editor_camera`'s camera, it
-/// carries a `Transform` and no `Transform`-carrying parent, so `capture_tree`
-/// (`sway-editor`, `snapshot.rs`) would otherwise list it as a selectable
-/// scene row, and a gizmo drag on it would corrupt a transform the renderer
-/// silently overwrites every frame. Matched by `With<Camera>, With<RenderLayers>`
-/// — the same "carries a `RenderLayers`" discriminator `tag_scene_cameras`
-/// already uses, rather than by the exact `GIZMO_RENDER_LAYER` value, since
-/// (per that discriminator's own doc comment) nothing else in this codebase
-/// ever attaches a `RenderLayers` to a camera.
-#[allow(clippy::type_complexity)] // an ECS query filter tuple, not a type to simplify
-pub fn hide_gizmo_meshes_from_editor(
-    mut commands: Commands,
-    roots: Query<Entity, (With<TransformGizmoRoot>, Without<HiddenFromEditor>)>,
-    meshes: Query<Entity, (With<TransformGizmoMeshMarker>, Without<HiddenFromEditor>)>,
-    overlay_cameras: Query<Entity, (With<Camera>, With<RenderLayers>, Without<HiddenFromEditor>)>,
-) {
-    for entity in roots
-        .iter()
-        .chain(meshes.iter())
-        .chain(overlay_cameras.iter())
-    {
-        commands.entity(entity).insert(HiddenFromEditor);
-    }
-}
 
 /// Stops the gizmo overlay camera from blanking the scene beneath it.
 ///
@@ -570,13 +532,7 @@ pub fn viewport_gizmo_drag(
         }
     }
 
-    write_gizmo_fields(
-        &mut graph,
-        &type_registry,
-        &nodes,
-        drag_entity,
-        *transform,
-    );
+    write_gizmo_fields(&mut graph, &type_registry, &nodes, drag_entity, *transform);
 }
 
 /// Mirrors a gizmo write into the graph. The entity `Transform` is already
@@ -705,60 +661,6 @@ mod tests {
             !app.is_plugin_added::<bevy::gizmos::transform_gizmo::TransformGizmoPlugin>(),
             "its two systems need a Window this app does not have (spec M7-8)",
         );
-    }
-
-    #[test]
-    fn gizmo_root_and_mesh_entities_are_tagged_hidden_from_editor() {
-        let mut app = App::new();
-        app.add_systems(Update, hide_gizmo_meshes_from_editor);
-        let root = app.world_mut().spawn(TransformGizmoRoot).id();
-        let mesh = app
-            .world_mut()
-            .spawn(TransformGizmoMeshMarker {
-                axis: bevy::gizmos::transform_gizmo::TransformGizmoAxis::X,
-                mode: bevy::gizmos::transform_gizmo::TransformGizmoMode::Translate,
-            })
-            .id();
-        // An ordinary scene entity, so the system does not tag everything.
-        let other = app.world_mut().spawn(Transform::default()).id();
-
-        app.update();
-
-        assert!(app.world().get::<HiddenFromEditor>(root).is_some());
-        assert!(app.world().get::<HiddenFromEditor>(mesh).is_some());
-        assert!(app.world().get::<HiddenFromEditor>(other).is_none());
-    }
-
-    #[test]
-    fn the_gizmo_overlay_camera_is_hidden_from_the_editor_tree() {
-        // Same hazard `spawn_editor_camera` has (see its doc comment in
-        // `camera.rs`): the overlay camera carries `Transform` and no
-        // `Transform`-carrying parent, so without this it would satisfy
-        // `capture_tree`'s walk and show up as a selectable scene row.
-        let mut app = App::new();
-        app.add_systems(Update, hide_gizmo_meshes_from_editor);
-        let overlay = app
-            .world_mut()
-            .spawn((
-                Camera {
-                    order: 1,
-                    ..Default::default()
-                },
-                Transform::default(),
-                RenderLayers::layer(GIZMO_RENDER_LAYER),
-            ))
-            .id();
-        // A scene camera, carrying no `RenderLayers`, must be left alone —
-        // the same discriminator `tag_scene_cameras` relies on.
-        let scene = app
-            .world_mut()
-            .spawn((Camera::default(), Transform::default()))
-            .id();
-
-        app.update();
-
-        assert!(app.world().get::<HiddenFromEditor>(overlay).is_some());
-        assert!(app.world().get::<HiddenFromEditor>(scene).is_none());
     }
 
     #[test]

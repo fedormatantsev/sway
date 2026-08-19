@@ -226,11 +226,11 @@ mod tests {
 #[cfg(test)]
 pub(crate) mod click_tests {
     use super::*;
+    use crate::nodes::scene::MeshNode;
     use crate::project::NodeEntities;
     use crate::viewport::{ViewportCamera, ViewportCameraRole};
     use sway_graph::graph::{Graph, Node};
     use sway_graph::{ViewportButton, ViewportInput, ViewportModifiers};
-    use crate::nodes::scene::MeshNode;
 
     /// A cube at the origin, a camera looking at it, in a real render-capable
     /// app — `MeshRayCast` needs `Assets<Mesh>` and the `Aabb` that Bevy's own

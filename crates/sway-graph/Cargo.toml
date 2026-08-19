@@ -15,9 +15,3 @@ bevy_reflect.workspace = true
 bevy_time.workspace = true
 bevy_transform.workspace = true
 crossbeam-channel.workspace = true
-
-[dev-dependencies]
-sway-graph = { workspace = true, features = ["test-wires"] }
-
-[features]
-test-wires = []

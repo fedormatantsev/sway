@@ -25,11 +25,10 @@ use masonry::layout::{LenReq, Length};
 use masonry::widgets::Label;
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
-use sway_graph::EditorCommand;
 use sway_graph::graph::{Graph, GraphCommand, NodeId as GraphNodeId};
 
 use crate::reflect_ui::short_type_name;
-use crate::views::{NodeId, TreeGroup};
+use crate::views::NodeId;
 
 /// Height of one row, in logical pixels.
 pub const ROW_HEIGHT: f64 = 20.0;
@@ -64,20 +63,11 @@ struct Row {
 /// The world hierarchy pane.
 pub struct SceneTree {
     rows: Vec<Row>,
-    /// The `(entity, label, depth)` triples the current rows were built from,
-    /// compared against the next snapshot to decide whether to rebuild.
-    signature: Vec<(Option<Entity>, String, usize)>,
     /// Bumped on every actual rebuild; lets a test assert that an unchanged
     /// snapshot did nothing.
     generation: u64,
-    /// The world's answer, mirrored here for painting only. Set from
-    /// `snap.selection` in `apply_snapshot`, never by this widget itself --
-    /// a row press asks the world to select via `commands` instead (spec
-    /// M7-5). The world is the only owner; two opinions reconciled every
-    /// frame is what caused the M6 flicker this replaces.
+    /// The world's answer, mirrored here for painting only.
     selected: Option<Entity>,
-    /// Where a row press sends `EditorCommand::Select`.
-    commands: Sender<EditorCommand>,
 
     // --- the graph model (design D11).
     /// Where a row press sends `GraphCommand::Select` once set.
@@ -87,14 +77,12 @@ pub struct SceneTree {
 }
 
 impl SceneTree {
-    pub fn new(commands: Sender<EditorCommand>) -> Self {
+    pub fn new(commands: Sender<GraphCommand>) -> Self {
         Self {
             rows: Vec::new(),
-            signature: Vec::new(),
             generation: 0,
             selected: None,
-            commands,
-            graph_commands: None,
+            graph_commands: Some(commands),
             graph_selected: None,
             graph_signature: Vec::new(),
         }
@@ -149,15 +137,6 @@ impl SceneTree {
     }
 }
 
-fn group_header(group: TreeGroup) -> &'static str {
-    match group {
-        TreeGroup::Scene => "SCENE",
-        TreeGroup::Graph => "GRAPH",
-        TreeGroup::Edges => "EDGES",
-        TreeGroup::Other => "OTHER",
-    }
-}
-
 impl SceneTree {
     /// Rebuilds the row set from the live graph.
     ///
@@ -184,9 +163,7 @@ impl SceneTree {
             this.ctx.remove_child(row.pod);
         }
         this.widget.rows.push(Row {
-            pod: Label::new(group_header(TreeGroup::Graph))
-                .prepare()
-                .to_pod(),
+            pod: Label::new("GRAPH").prepare().to_pod(),
             depth: 0,
             entity: None,
             node_id: None,
@@ -323,9 +300,7 @@ impl Widget for SceneTree {
         // every frame is what caused the M6 flicker. This widget just asks;
         // `apply_snapshot` is what actually moves the highlight, once the
         // world answers back.
-        let _ = self.commands.send(EditorCommand::Select {
-            entity: Some(entity),
-        });
+        // old wire-model select; graph path handles this
         ctx.submit_action::<Self::Action>(SceneTreeAction {
             entity,
             node_id: row.node_id,

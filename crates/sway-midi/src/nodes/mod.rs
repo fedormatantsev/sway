@@ -1,7 +1,4 @@
-//! The new graph-model node kinds for `sway-midi` (`redesign-graph-model`
-//! task 4.3), landing beside `crate::midi_time::MidiTime` (the old
-//! entity/component version) at the crate root. Nothing here replaces
-//! anything else in this crate.
+//! Graph-model MIDI nodes.
 
 pub mod midi_time;
 

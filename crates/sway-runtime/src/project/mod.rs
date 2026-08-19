@@ -182,17 +182,12 @@ impl Plugin for ProjectionPlugin {
                     .after(ProducerSet),
             );
 
-        // The displacement-aware bounds for sprite materials. Owned by
-        // `SpriteMaterialPlugin` while the wire model is still around; added
-        // here when it is not, so a projected sprite plane is bounded either
-        // way.
-        if !app.is_plugin_added::<crate::sprite_material::SpriteMaterialPlugin>() {
-            app.add_systems(
-                Update,
-                crate::sprite_material::sync_sprite_material_bounds
-                    .after(ProjectionSet)
-                    .run_if(resource_exists::<Assets<Mesh>>),
-            );
-        }
+        // The displacement-aware bounds for sprite materials.
+        app.add_systems(
+            Update,
+            crate::sprite_material::sync_sprite_material_bounds
+                .after(ProjectionSet)
+                .run_if(resource_exists::<Assets<Mesh>>),
+        );
     }
 }

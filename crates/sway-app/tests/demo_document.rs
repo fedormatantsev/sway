@@ -24,8 +24,8 @@
 use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 use bevy::reflect::TypeRegistry;
-use sway_graph::graph::{Graph, NodeId, Part, path};
 use sway_document::v3;
+use sway_graph::graph::{Graph, NodeId, Part, path};
 
 const DEMO_DOCUMENT: &str = include_str!("../assets/demo.sway.ron");
 
@@ -88,7 +88,14 @@ fn edges(graph: &Graph, ids: &v3::StableIds) -> Vec<(String, String, String, Str
         .collect()
 }
 
-fn has_edge(graph: &Graph, ids: &v3::StableIds, from: &str, src: &str, to: &str, dst: &str) -> bool {
+fn has_edge(
+    graph: &Graph,
+    ids: &v3::StableIds,
+    from: &str,
+    src: &str,
+    to: &str,
+    dst: &str,
+) -> bool {
     edges(graph, ids)
         .iter()
         .any(|(a, b, c, d, _)| a == from && b == src && c == to && d == dst)
@@ -127,16 +134,41 @@ fn the_demo_document_loads_clean_and_holds_every_node() {
     let mut named: Vec<String> = graph
         .node_ids()
         .into_iter()
-        .map(|node| ids.id_of(node).expect("every node has a stable id").to_string())
+        .map(|node| {
+            ids.id_of(node)
+                .expect("every node has a stable id")
+                .to_string()
+        })
         .collect();
     named.sort();
     assert_eq!(
         named,
         vec![
-            "camera", "colorSeq", "cube", "cubeA", "cubeB", "cubeC", "depthSeq", "group", "lfoA",
-            "lfoB", "mat", "midiTime", "spriteMat", "spriteMat2", "spriteOsc", "spriteOsc2",
-            "spritePlane", "spritePlane2", "spritePlaneMesh", "spritePlaneMesh2", "spriteRemap",
-            "spriteRemap2", "sun", "vec3A", "vec3B",
+            "camera",
+            "colorSeq",
+            "cube",
+            "cubeA",
+            "cubeB",
+            "cubeC",
+            "depthSeq",
+            "group",
+            "lfoA",
+            "lfoB",
+            "mat",
+            "midiTime",
+            "spriteMat",
+            "spriteMat2",
+            "spriteOsc",
+            "spriteOsc2",
+            "spritePlane",
+            "spritePlane2",
+            "spritePlaneMesh",
+            "spritePlaneMesh2",
+            "spriteRemap",
+            "spriteRemap2",
+            "sun",
+            "vec3A",
+            "vec3B",
         ],
         "exactly the demo's 25 nodes",
     );
@@ -158,7 +190,9 @@ fn geometry_material_and_placement_are_separate_nodes() {
             "{placement} is a placement, not geometry",
         );
         assert!(has_edge(&graph, &ids, "cube", "mesh", placement, "mesh"));
-        assert!(has_edge(&graph, &ids, "mat", "material", placement, "material"));
+        assert!(has_edge(
+            &graph, &ids, "mat", "material", placement, "material"
+        ));
     }
 
     // The point of the split: one `cube.gltf` in the whole document.
@@ -170,7 +204,9 @@ fn geometry_material_and_placement_are_separate_nodes() {
     assert_eq!(mesh_nodes.len(), 1, "one mesh serves all three placements");
     // Comments mention the path too; only the authored inlet counts.
     assert_eq!(
-        DEMO_DOCUMENT.matches("path: \"cube.gltf#Mesh0/Primitive0\"").count(),
+        DEMO_DOCUMENT
+            .matches("path: \"cube.gltf#Mesh0/Primitive0\"")
+            .count(),
         1
     );
 }
@@ -226,7 +262,9 @@ fn the_cube_chain_is_wired_as_the_header_draws_it() {
     // authored transform.
     let cube_c = node_of(&ids, "cubeC");
     assert!(
-        graph.edges_into(cube_c).all(|edge| edge.dst.path != "transform.translation"),
+        graph
+            .edges_into(cube_c)
+            .all(|edge| edge.dst.path != "transform.translation"),
         "cubeC must not be driven",
     );
     assert_eq!(
@@ -266,8 +304,12 @@ fn the_sprite_layers_share_one_colour_run_and_one_depth_run() {
         assert!(has_edge(&graph, &ids, "midiTime", "out", osc, "time"));
         assert!(has_edge(&graph, &ids, osc, "out", remap, "input"));
         assert!(has_edge(&graph, &ids, remap, "out", material, "frame"));
-        assert!(has_edge(&graph, &ids, "colorSeq", "sequence", material, "color"));
-        assert!(has_edge(&graph, &ids, "depthSeq", "sequence", material, "depth"));
+        assert!(has_edge(
+            &graph, &ids, "colorSeq", "sequence", material, "color"
+        ));
+        assert!(has_edge(
+            &graph, &ids, "depthSeq", "sequence", material, "depth"
+        ));
     }
 
     // The arithmetic the header records, pinned so a stray edit is caught.
@@ -299,7 +341,9 @@ fn each_sprite_plane_has_its_own_mesh_and_material() {
         assert!(kind_of(&graph, node_of(&ids, mesh)).ends_with("::PlaneMesh"));
         assert!(kind_of(&graph, node_of(&ids, placement)).ends_with("::MeshNode"));
         assert!(has_edge(&graph, &ids, mesh, "mesh", placement, "mesh"));
-        assert!(has_edge(&graph, &ids, material, "material", placement, "material"));
+        assert!(has_edge(
+            &graph, &ids, material, "material", placement, "material"
+        ));
     }
 
     // spritePlane interpenetrates cubeC; spritePlane2 carries the 30° yaw.

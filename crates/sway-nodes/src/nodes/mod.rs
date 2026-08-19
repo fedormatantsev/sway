@@ -1,7 +1,4 @@
-//! The new graph-model node kinds (`redesign-graph-model` tasks 4.1-4.3),
-//! landing beside the wire-model equivalents at this crate's root. Nothing
-//! here replaces anything else in this crate — group 9 deletes the wire
-//! model, not this module tree.
+//! Graph-model node kinds (`redesign-graph-model` tasks 4.1-4.3).
 //!
 //! Each kind is one `#[derive(Reflect)]` struct with exactly the fields
 //! `inlets`, `state`, `outlets` (design D3), registered with

@@ -23,7 +23,7 @@ use bevy::math::UVec2;
 use crossbeam_channel::Sender;
 use sway_editor::{FileRequest, ViewRequest};
 use sway_gpu::{Compositor, GpuContext, ViewportTexture, WindowSurface};
-use sway_graph::{EditorCommand, GraphCommand, ViewportInput};
+use sway_graph::{GraphCommand, ViewportInput};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
@@ -82,8 +82,7 @@ pub struct ProjectSpec {
 /// Builds the demo-specific Bevy `App` once the window, shared device, and
 /// viewport texture exist. Called again when a different project is opened:
 /// the window and the wgpu device survive, the `App` does not.
-pub type AppBuilder =
-    Box<dyn Fn(&GpuContext, &ViewportTexture, UVec2, &ProjectSpec) -> App>;
+pub type AppBuilder = Box<dyn Fn(&GpuContext, &ViewportTexture, UVec2, &ProjectSpec) -> App>;
 
 /// What to run once the window is up.
 pub struct ShellConfig {
@@ -93,8 +92,7 @@ pub struct ShellConfig {
     /// plain `ShowPresenter` (viewport fullscreen, no masonry).
     pub editor: bool,
     pub build_app: AppBuilder,
-    pub commands: Sender<EditorCommand>,
-    pub graph_commands: Sender<GraphCommand>,
+    pub commands: Sender<GraphCommand>,
     pub viewport_input: Sender<ViewportInput>,
     pub project: ProjectSpec,
 }
@@ -336,7 +334,6 @@ impl ApplicationHandler for Shell {
                 size,
                 scale_factor,
                 config.commands,
-                config.graph_commands,
                 config.viewport_input,
             )))
         } else {

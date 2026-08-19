@@ -80,16 +80,16 @@ correctly at the end of groups 5, 6 and 7.
 
 ## 9. Removal
 
-- [ ] 9.1 Delete `wire.rs`, `dispatch.rs`, `watch.rs`, `registry_components.rs`, `behaviour.rs` and `register.rs` from `sway-graph`, and `test_wires.rs`.
-- [ ] 9.2 Delete the `field_wire!` macro and every expansion of it across `sway-nodes` and `sway-runtime`, and `wire_testing.rs`.
-- [ ] 9.3 Delete `claim.rs` and the four-pass reconcile in `sway-document`.
-- [ ] 9.4 Remove `EditorPos` and `HiddenFromEditor` as components now that position is a node field.
-- [ ] 9.5 `cargo build --workspace` clean, no dead-code warnings from the removal.
+- [x] 9.1 Delete `wire.rs`, `dispatch.rs`, `watch.rs`, `registry_components.rs`, `behaviour.rs` and `register.rs` from `sway-graph`, and `test_wires.rs`.
+- [x] 9.2 Delete the `field_wire!` macro and every expansion of it across `sway-nodes` and `sway-runtime`, and `wire_testing.rs`.
+- [x] 9.3 Delete `claim.rs` and the four-pass reconcile in `sway-document`.
+- [x] 9.4 Remove `EditorPos` and `HiddenFromEditor` as components now that position is a node field.
+- [x] 9.5 `cargo build --workspace` clean, no dead-code warnings from the removal.
 
 ## 10. Verification
 
-- [ ] 10.1 `cargo test --workspace` passes.
-- [ ] 10.2 `cargo clippy --workspace --all-targets` clean; `cargo fmt --all --check` clean.
+- [x] 10.1 `cargo test --workspace` passes.
+- [x] 10.2 `cargo clippy --workspace --all-targets` clean; `cargo fmt --all --check` clean.
 - [ ] 10.3 Run the editor on the version 3 demo: create a node, connect it, edit a field, drag a gizmo handle, save, reopen — all without leaving the editor.
 - [ ] 10.4 Confirm by eye that the demo renders as it does today: cubes animating from MIDI time, both sprite layers interpenetrating `cubeC` and each other.
-- [ ] 10.5 Update `docs/architecture.md` to the new model, replacing §2 (wire contract), §4 (order/rebuild/tick), §6 (scene composition) and §7 (graph state), and remove the false-cycle open question from §4 and §10.
+- [x] 10.5 Update `docs/architecture.md` to the new model, replacing §2 (wire contract), §4 (order/rebuild/tick), §6 (scene composition) and §7 (graph state), and remove the false-cycle open question from §4 and §10.

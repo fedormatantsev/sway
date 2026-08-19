@@ -12,7 +12,7 @@ use masonry_core::core::CursorIcon;
 use sway_gpu::{
     Compositor, GpuContext, Quad, UiRenderer, UiTexture, ViewportTexture, WindowSurface,
 };
-use sway_graph::{EditorCommand, Graph, GraphCommand, ViewportInput};
+use sway_graph::{Graph, GraphCommand, ViewportInput};
 use winit::dpi::PhysicalSize;
 
 /// Blits the viewport fullscreen. No masonry, no vello.
@@ -72,12 +72,10 @@ impl EditorPresenter {
         gpu: &GpuContext,
         size: PhysicalSize<u32>,
         scale_factor: f64,
-        commands: Sender<EditorCommand>,
-        graph_commands: Sender<GraphCommand>,
+        commands: Sender<GraphCommand>,
         viewport_input: Sender<ViewportInput>,
     ) -> Self {
-        let mut editor = sway_editor::EditorUi::new(size, scale_factor, commands, viewport_input);
-        editor.set_graph_commands(graph_commands);
+        let editor = sway_editor::EditorUi::new(size, scale_factor, commands, viewport_input);
         let ui_texture = UiTexture::new(&gpu.device, size.width.max(1), size.height.max(1));
         let ui_renderer = UiRenderer::new(gpu.device.clone(), gpu.queue.clone());
         Self {

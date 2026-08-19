@@ -47,7 +47,7 @@ pub struct EditorViewportPlugin;
 
 impl Plugin for EditorViewportPlugin {
     fn build(&self, app: &mut App) {
-        app            .init_resource::<ViewportEvents>()
+        app.init_resource::<ViewportEvents>()
             .init_resource::<camera::ViewportCamera>()
             .init_resource::<sway_graph::graph::Graph>()
             .init_resource::<crate::project::NodeEntities>()
@@ -82,7 +82,6 @@ impl Plugin for EditorViewportPlugin {
                 (
                     gizmo::follow_selection,
                     gizmo::mark_gizmo_camera,
-                    gizmo::hide_gizmo_meshes_from_editor,
                     gizmo::disable_gizmo_camera_clear,
                 ),
             )

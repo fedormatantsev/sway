@@ -41,8 +41,8 @@ use masonry_core::core::{
     CursorIcon, NewWidget, TextEvent, Widget, WidgetTag, WindowEvent as MasonryWindowEvent,
 };
 use masonry_core::kurbo::Axis;
+use sway_graph::ViewportInput;
 use sway_graph::graph::{Graph, GraphCommand};
-use sway_graph::{EditorCommand, ViewportInput};
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use winit::dpi::PhysicalSize;
 
@@ -114,12 +114,10 @@ pub enum ViewRequest {
 ///
 /// `commands` is handed to every pane that writes: the inspector edits
 /// fields, the canvas creates, deletes, moves and rewires, and the tree asks
-/// the world to change its selection (spec M7-5 -- neither pane owns
-/// selection any more, both just send `EditorCommand::Select` and read the
-/// answer back off the next snapshot). Only the transport bar is read-only
+/// the graph to change its selection. Only the transport bar is read-only
 /// and does not get it.
 fn graph_root(
-    commands: Sender<EditorCommand>,
+    commands: Sender<GraphCommand>,
     viewport_input: Sender<ViewportInput>,
 ) -> NewWidget<dyn Widget> {
     let tree = Portal::new(
@@ -194,18 +192,13 @@ pub struct EditorUi {
     signals: Rc<RefCell<Vec<RenderRootSignal>>>,
     /// The most recent cursor request, for the shell to apply to the window.
     cursor: Option<CursorIcon>,
-    /// Handed to `graph_root`'s write-capable children at construction time;
-    /// kept here too so a future caller doesn't have to thread its own copy
-    /// through `EditorUi`. Unused as a read from this struct until then.
-    #[allow(dead_code)]
-    commands: Sender<EditorCommand>,
 }
 
 impl EditorUi {
     pub fn new(
         size: PhysicalSize<u32>,
         scale_factor: f64,
-        commands: Sender<EditorCommand>,
+        commands: Sender<GraphCommand>,
         viewport_input: Sender<ViewportInput>,
     ) -> Self {
         let signals: Rc<RefCell<Vec<RenderRootSignal>>> = Rc::new(RefCell::new(Vec::new()));
@@ -229,7 +222,6 @@ impl EditorUi {
             last_anim_tick: Instant::now(),
             signals,
             cursor: None,
-            commands,
         }
     }
 
@@ -359,12 +351,7 @@ impl EditorUi {
             .handle_window_event(MasonryWindowEvent::Rescale(scale_factor));
     }
 
-    /// Points every write-capable pane at the graph command set.
-    ///
-    /// Call this once, right after [`EditorUi::new`]. It is what switches the
-    /// canvas, the inspector and the tree from the entity/wire model to the
-    /// graph model: every gesture then sends a [`GraphCommand`] and
-    /// [`apply_graph`](Self::apply_graph) becomes the read path.
+    /// Re-points every write-capable pane at a graph command channel.
     ///
     /// The world side owns the other end:
     /// `app.insert_resource(GraphRx(rx))`, drained by

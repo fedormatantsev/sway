@@ -1,10 +1,5 @@
 //! Version 3 document format: nodes and edges keyed by stable ids.
 //!
-//! `openspec/changes/redesign-graph-model` group 6. Lands **beside** the
-//! version 2 format (`crate::doc`, `crate::apply`, `crate::emit`,
-//! `crate::claim`, `crate::file`, `crate::asset`) — nothing there is touched;
-//! task 9.3 deletes it in a later wave, not this one.
-//!
 //! - `doc` — the on-disk shape and its parser (tasks 6.1, 6.5).
 //! - `ids` — the stable-id map, design D9 (task 6.2).
 //! - `load` — document -> a fresh `sway_graph::graph::Graph`, reporting and
