@@ -69,9 +69,10 @@ HDMI. The runtime runs whether or not a graph is loaded.
 **Document (`sway-document`)** is out of `sway-graph`. It reads and writes the
 `Graph` resource — no parallel snapshot model inside the engine.
 
-**Supporting crates:** `sway-nodes` (built-in value node kinds), `sway-midi-core`
-(MIDI IO, messages, and pulse-clock math), `sway-midi` (Bevy MIDI plugin,
-transport snapshot, and `MidiTime` as an ordinary node), `sway-geo` (geometry
+**Supporting crates:** `sway-base-nodes` (built-in value node kinds),
+`sway-midi-core` (MIDI IO, messages, and pulse-clock math), `sway-midi` (Bevy
+MIDI plugin, transport and control-change snapshots, and `MidiTime` / `MidiCc`
+as ordinary nodes), `sway-geo` (geometry
 tables and CPU operators), `sway-editor` (masonry UI on the live graph),
 `sway-gpu` (single device-creation pin for the bevy↔vello coupling).
 
@@ -313,7 +314,7 @@ not months of dependency patching.
 | Editor metadata / reflect payloads | `bevy_reflect` |
 | Fixed tick rate / accumulator | `bevy_time` (`Time<Fixed>`) |
 | MIDI IO, typed messages, pulse-grid clock math | **`sway-midi-core`** |
-| Beat / transport snapshot + `MidiTime` | **`sway-midi`** |
+| Beat / transport + control-change snapshots, `MidiTime`, `MidiCc` | **`sway-midi`** |
 | Topological order, step list, walk | **`sway-graph`** |
 | Selection | **`sway-selection`** (`Selection` resource), set by the editor's panes and by viewport picking |
 | Node placement on the editor canvas | **`sway-editor`**, persisted as a `"pos"` annotation on the node |

@@ -4,7 +4,7 @@ See `proposal.md` — Why. Constraints that shape the approach:
 
 - `MidiTime` is the pattern: an ordinary node in `sway-midi` that reads a plugin-owned snapshot (`Transport`) from `&World` during `evaluate`. The graph engine names no MIDI type.
 - `MidiPlugin` already drains the inbox into `TickMidi` before `GraphTickSet`. `PulseClock` consumes clock/transport messages and ignores `MidiMessage::Control`, which `sway-midi-core` already parses.
-- Numeric inlets elsewhere are `f32` so they wire to `Math` / `Oscillator` / `Remap` without a new field type. The inspector already has an `f32` control.
+- Driveable numeric inlets elsewhere are `f32`, so they wire to `Math` / `Oscillator` / `Remap` without a new field type. Non-`f32` numeric inlets do exist (`Camera.resolution` is a `UVec2`), but they are authored-only: connect legality is exact-type, so nothing in the graph can drive them.
 - Architecture: one plugin is the whole MIDI domain; `sway-midi` must not depend on `sway-base-nodes` or `sway-runtime`.
 
 ## Goals / Non-Goals
@@ -38,9 +38,9 @@ Alternative rejected: store last value in the node's `state`. Cheaper to write, 
 
 ### D3: `channel` and `cc` are `f32` inlets
 
-Same type as every other numeric inlet, so they are inspector-editable and driveable. Evaluation truncates toward zero then clamps to 0–15 / 0–127. Defaults: channel `0`, cc `1` (mod wheel).
+Same type as every other *driveable* numeric inlet, so they are inspector-editable **and** connectable. Evaluation truncates toward zero then clamps to 0–15 / 0–127. Defaults: channel `0`, cc `1` (mod wheel).
 
-Alternative rejected: `u8` inlets. The inspector has no integer control yet, and they would not connect from existing scalar outlets.
+Alternative rejected: `u8` inlets. Not for want of a control — `reflect_ui` already offers a saturating text control for every integer width, and `Camera.resolution` is an authored `UVec2` inlet. The reason is connect legality: `sway-graph`'s rule is exact type match (plus `Option<S>` / `Vec<S>` wrappers), so no existing `f32` outlet — `Math`, `Remap`, `MidiTime` — could drive a `u8` inlet. A `channel` nothing can reach is a knob the graph cannot automate.
 
 ### D4: Channel numbers are protocol 0–15
 

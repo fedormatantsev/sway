@@ -7,7 +7,9 @@ use bevy_ecs::system::{Res, ResMut};
 use crossbeam_channel::Receiver;
 use sway_graph::graph::RegisterNodeKind;
 
-use crate::{MidiMessage, PulseClock, TimedMidi, Transport, host_time_now, host_time_to_secs};
+use crate::{
+    MidiControls, MidiMessage, PulseClock, TimedMidi, Transport, host_time_now, host_time_to_secs,
+};
 
 #[derive(Resource)]
 pub struct MidiClock {
@@ -47,10 +49,14 @@ impl Plugin for MidiPlugin {
         // node kinds that read them. A host adds this and nothing else.
         app.register_node_kind::<crate::nodes::MidiTime>()
             .register_type::<crate::nodes::MidiTimeOut>()
+            .register_node_kind::<crate::nodes::MidiCc>()
+            .register_type::<crate::nodes::MidiCcIn>()
+            .register_type::<crate::nodes::MidiCcOut>()
             .insert_resource(MidiRx(self.rx.clone()))
             .init_resource::<MidiInbox>()
             .init_resource::<TickMidi>()
             .init_resource::<MidiClock>()
+            .init_resource::<MidiControls>()
             .init_resource::<Transport>()
             .add_systems(
                 FixedUpdate,
@@ -86,6 +92,7 @@ fn drain_and_clock(
     mut tick_midi: ResMut<TickMidi>,
     mut midi_clock: ResMut<MidiClock>,
     mut transport: ResMut<Transport>,
+    mut controls: ResMut<MidiControls>,
 ) {
     let tick_end = host_time_to_secs(host_time_now());
     let tick_start = if midi_clock.tick_start_host == f64::NEG_INFINITY {
@@ -95,6 +102,7 @@ fn drain_and_clock(
     };
 
     tick_midi.events = drain_window(&mut inbox.events, tick_start, tick_end);
+    apply_controls(&mut controls, &tick_midi.events);
     apply_tick(&mut midi_clock.clock, &tick_midi.events, tick_start);
     *transport = Transport {
         ppq: midi_clock.clock.ppq(tick_end),
@@ -129,6 +137,17 @@ pub fn drain_window(
     due
 }
 
+/// Folds this tick's Control Changes into the session snapshot, in arrival
+/// order — so the last matching message of a burst is the value every
+/// `MidiCc` node reads when the graph ticks (design D1).
+pub fn apply_controls(controls: &mut MidiControls, events: &[(f32, MidiMessage)]) {
+    for &(_, message) in events {
+        if let MidiMessage::Control { channel, cc, value } = message {
+            controls.set(channel, cc, value);
+        }
+    }
+}
+
 pub fn apply_tick(clock: &mut PulseClock, events: &[(f32, MidiMessage)], tick_start: f64) {
     for &(offset, message) in events {
         clock.push(tick_start + f64::from(offset), message);
@@ -143,11 +162,13 @@ mod tests {
     use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
     use crossbeam_channel::Receiver;
     use sway_graph::GraphPlugin;
+    use sway_graph::graph::testing::read_field;
+    use sway_graph::graph::{Graph, Node, Part};
 
     use super::{
         MidiClock, MidiInbox, MidiPlugin, TickMidi, apply_tick, drain_window, feed_receiver,
     };
-    use crate::{MidiMessage, TimedMidi, Transport};
+    use crate::{MidiControls, MidiMessage, TimedMidi, Transport};
 
     const SPP_120: f64 = 0.5 / 24.0;
 
@@ -171,6 +192,87 @@ mod tests {
         assert!(app.world().get_resource::<MidiClock>().is_some());
         assert!(app.world().get_resource::<MidiInbox>().is_some());
         assert!(app.world().get_resource::<TickMidi>().is_some());
+        assert!(app.world().get_resource::<MidiControls>().is_some());
+    }
+
+    /// Pushes messages straight into the inbox, stamped now, and runs the
+    /// tick that drains them.
+    fn tick_with(app: &mut App, messages: impl IntoIterator<Item = MidiMessage>) {
+        let now = crate::host_time_to_secs(crate::host_time_now());
+        let mut inbox = app.world_mut().resource_mut::<MidiInbox>();
+        for message in messages {
+            inbox.events.push_back((now, message));
+        }
+        app.update();
+    }
+
+    #[test]
+    fn an_inbox_control_lands_in_the_snapshot() {
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let mut app = plugin_app(rx);
+
+        tick_with(
+            &mut app,
+            [MidiMessage::Control {
+                channel: 0,
+                cc: 1,
+                value: 127,
+            }],
+        );
+
+        let controls = app.world().resource::<MidiControls>();
+        assert_eq!(controls.get(0.0, 1.0), 127, "the raw value, not scaled");
+    }
+
+    #[test]
+    fn a_later_control_overwrites_the_same_cell() {
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let mut app = plugin_app(rx);
+
+        tick_with(
+            &mut app,
+            [
+                MidiMessage::Control {
+                    channel: 0,
+                    cc: 1,
+                    value: 10,
+                },
+                MidiMessage::Control {
+                    channel: 0,
+                    cc: 1,
+                    value: 20,
+                },
+            ],
+        );
+
+        assert_eq!(app.world().resource::<MidiControls>().get(0.0, 1.0), 20);
+    }
+
+    #[test]
+    fn a_control_on_another_cell_leaves_the_first_alone() {
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let mut app = plugin_app(rx);
+        tick_with(
+            &mut app,
+            [MidiMessage::Control {
+                channel: 0,
+                cc: 1,
+                value: 64,
+            }],
+        );
+
+        tick_with(
+            &mut app,
+            [MidiMessage::Control {
+                channel: 2,
+                cc: 3,
+                value: 99,
+            }],
+        );
+
+        let controls = app.world().resource::<MidiControls>();
+        assert_eq!(controls.get(0.0, 1.0), 64, "held across the tick");
+        assert_eq!(controls.get(2.0, 3.0), 99);
     }
 
     #[test]
@@ -276,6 +378,37 @@ mod tests {
             "followed to {} BPM",
             clock.bpm()
         );
+    }
+
+    #[test]
+    fn a_node_added_after_the_message_still_publishes_it() {
+        // `midi`: a new node sees the session's last matching value — the
+        // snapshot is what makes that true, not the node's own state.
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let mut app = plugin_app(rx);
+        tick_with(
+            &mut app,
+            [MidiMessage::Control {
+                channel: 0,
+                cc: 1,
+                value: 127,
+            }],
+        );
+
+        let node = app
+            .world_mut()
+            .resource_mut::<Graph>()
+            .insert(Node::of(crate::MidiCc {
+                inlets: crate::MidiCcIn {
+                    channel: 0.0,
+                    cc: 1.0,
+                },
+                ..Default::default()
+            }));
+        app.update();
+
+        let graph = app.world().resource::<Graph>();
+        assert_eq!(read_field::<f32>(graph, node, Part::Outlets, "out"), 1.0);
     }
 
     #[test]
