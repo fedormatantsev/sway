@@ -110,6 +110,6 @@
 ## 13. End-to-end verification
 
 - [x] 13.1 `cargo test --workspace --all-targets`.
-- [ ] 13.2 Run the app against `crates/sway-app/assets/demo.sway.ron` in editor mode: the graph loads with no diagnostics, nodes are where they were saved, the scene renders, and MIDI-driven motion still runs.
-- [ ] 13.3 Save from the editor and reload; confirm the file round-trips and node placement is preserved.
+- [x] 13.2 Run the app against `crates/sway-app/assets/demo.sway.ron` in editor mode: the graph loads with no diagnostics, nodes are where they were saved, the scene renders, and MIDI-driven motion still runs.
+- [x] 13.3 Save from the editor and reload; confirm the file round-trips and node placement is preserved.
 - [x] 13.4 Confirm the graph golden traces produce the same numbers as before the change.
