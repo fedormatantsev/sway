@@ -95,11 +95,13 @@ pub fn to_document(
                     message: error.to_string(),
                 },
             )?;
-            let annotation = ron::value::RawValue::from_boxed_ron(text.into_boxed_str())
-                .map_err(|error| SaveError::Metadata {
-                    id: id.clone(),
-                    key: key.clone(),
-                    message: error.to_string(),
+            let annotation =
+                ron::value::RawValue::from_boxed_ron(text.into_boxed_str()).map_err(|error| {
+                    SaveError::Metadata {
+                        id: id.clone(),
+                        key: key.clone(),
+                        message: error.to_string(),
+                    }
                 })?;
             metadata.insert(key.clone(), annotation);
         }
@@ -386,12 +388,14 @@ mod tests {
         let mut ids = StableIds::new();
         ids.assign("gainA".to_string(), id);
 
-        let text = to_ron(&to_document(&graph, &registry, &mut ids).expect("serializes"))
-            .expect("emits");
+        let text =
+            to_ron(&to_document(&graph, &registry, &mut ids).expect("serializes")).expect("emits");
         let (reopened, ids2, diagnostics) = load(&parse(&text).expect("parses"), &registry);
         assert!(diagnostics.is_clean(), "{diagnostics:?}");
 
-        let node = reopened.get(ids2.node_of("gainA").expect("assigned")).unwrap();
+        let node = reopened
+            .get(ids2.node_of("gainA").expect("assigned"))
+            .unwrap();
         assert_eq!(
             node.metadata()["pos"].try_downcast_ref::<Vec2>(),
             Some(&Vec2::new(-460.0, 40.0)),
@@ -414,12 +418,14 @@ mod tests {
         let mut ids = StableIds::new();
         ids.assign("gainA".to_string(), id);
 
-        let text = to_ron(&to_document(&graph, &registry, &mut ids).expect("serializes"))
-            .expect("emits");
+        let text =
+            to_ron(&to_document(&graph, &registry, &mut ids).expect("serializes")).expect("emits");
         let (reopened, ids2, diagnostics) = load(&parse(&text).expect("parses"), &registry);
         assert!(diagnostics.is_clean(), "{diagnostics:?}");
 
-        let node = reopened.get(ids2.node_of("gainA").expect("assigned")).unwrap();
+        let node = reopened
+            .get(ids2.node_of("gainA").expect("assigned"))
+            .unwrap();
         assert_eq!(
             node.metadata()["some other surface"].try_downcast_ref::<f32>(),
             Some(&7.5)
@@ -454,11 +460,17 @@ mod tests {
             Some(&3.0),
             "the other annotations still load"
         );
-        assert!(!node.metadata().contains_key("pos"), "and that one is dropped");
+        assert!(
+            !node.metadata().contains_key("pos"),
+            "and that one is dropped"
+        );
 
         assert_eq!(diagnostics.items.len(), 1, "{diagnostics:?}");
         let LoadItemError::BadMetadata { id, key, .. } = &diagnostics.items[0] else {
-            panic!("expected a metadata diagnostic, got {:?}", diagnostics.items[0]);
+            panic!(
+                "expected a metadata diagnostic, got {:?}",
+                diagnostics.items[0]
+            );
         };
         assert_eq!((id.as_str(), key.as_str()), ("gainA", "pos"));
     }
@@ -479,10 +491,10 @@ mod tests {
         let mut ids = StableIds::new();
         ids.assign("gainA".to_string(), id);
 
-        let first = to_ron(&to_document(&graph, &registry, &mut ids).expect("serializes"))
-            .expect("emits");
-        let second = to_ron(&to_document(&graph, &registry, &mut ids).expect("serializes"))
-            .expect("emits");
+        let first =
+            to_ron(&to_document(&graph, &registry, &mut ids).expect("serializes")).expect("emits");
+        let second =
+            to_ron(&to_document(&graph, &registry, &mut ids).expect("serializes")).expect("emits");
         assert_eq!(first, second);
 
         let keys: Vec<&str> = ["alpha", "middle", "pos", "zeta"]

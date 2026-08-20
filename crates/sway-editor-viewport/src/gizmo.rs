@@ -553,9 +553,9 @@ mod tests {
     /// The graph node whose projected entity is `entity`. Inserts a live
     /// `MeshNode` so [`Graph::set_selection`] will accept the id.
     fn bind_entity(app: &mut App, entity: Entity) -> sway_graph::NodeId {
+        use sway_graph::graph::{Graph, Node};
         use sway_runtime::nodes::scene::MeshNode;
         use sway_runtime::project::NodeEntities;
-        use sway_graph::graph::{Graph, Node};
 
         let node = {
             let mut graph = app.world_mut().resource_mut::<Graph>();
@@ -610,9 +610,7 @@ mod tests {
             .add_systems(Update, follow_selection);
         let lfo = app.world_mut().spawn_empty().id();
         let node = bind_entity(&mut app, lfo);
-        app.world_mut()
-            .resource_mut::<Selection>()
-            .set(Some(node));
+        app.world_mut().resource_mut::<Selection>().set(Some(node));
         app.update();
         assert!(app.world().get::<TransformGizmoFocus>(lfo).is_none());
     }
@@ -716,9 +714,7 @@ mod tests {
 
         let (mut app, cube, tx) = app_with_a_cube();
         let node = bind_entity(&mut app, cube);
-        app.world_mut()
-            .resource_mut::<Selection>()
-            .set(Some(node));
+        app.world_mut().resource_mut::<Selection>().set(Some(node));
         app.update();
         assert!(
             app.world().get::<TransformGizmoFocus>(cube).is_some(),
@@ -759,9 +755,8 @@ mod tests {
             (ViewportKey::Scale, TransformGizmoMode::Scale),
             (ViewportKey::Translate, TransformGizmoMode::Translate),
         ] {
-            app.world_mut()
-                .resource_mut::<crate::ViewportEvents>()
-                .0 = vec![ViewportInput::Key { key }];
+            app.world_mut().resource_mut::<crate::ViewportEvents>().0 =
+                vec![ViewportInput::Key { key }];
             app.update();
             assert_eq!(
                 app.world().resource::<TransformGizmoSettings>().mode,

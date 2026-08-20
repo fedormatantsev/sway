@@ -17,10 +17,10 @@ use bevy_reflect::enums::{DynamicEnum, DynamicVariant};
 use bevy_reflect::tuple::DynamicTuple;
 use bevy_reflect::{GetPath, ParsedPath, PartialReflect, ReflectMut, TypeRegistry};
 
+use crate::graph::edge::Compat;
 use crate::graph::id::NodeId;
 use crate::graph::model::{Graph, reflect_equal};
 use crate::graph::node::Part;
-use crate::graph::edge::Compat;
 use crate::graph::order::{GraphStep, PropagateStep};
 use crate::graph::registry::ReflectNodeKind;
 

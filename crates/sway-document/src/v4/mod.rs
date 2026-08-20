@@ -119,7 +119,10 @@ mod tests {
         assert!(diagnostics.is_clean(), "{diagnostics:?}");
         assert_eq!(reopened.len(), 1);
         let (_id, node) = reopened.iter().next().expect("one node");
-        assert_eq!(node.kind(), <Constant as bevy_reflect::TypePath>::type_path());
+        assert_eq!(
+            node.kind(),
+            <Constant as bevy_reflect::TypePath>::type_path()
+        );
     }
 
     #[test]

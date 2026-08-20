@@ -23,11 +23,11 @@ use std::time::{Duration, Instant};
 use bevy::app::App;
 use bevy::math::UVec2;
 use crossbeam_channel::Sender;
+use sway_editor::edit::EditorEdit;
 use sway_editor::{FileRequest, ViewRequest};
 use sway_gpu::{
     Compositor, GpuContext, ReadbackPool, ViewportTexture, VsyncPreference, WindowSurface,
 };
-use sway_editor::edit::EditorEdit;
 use sway_viewport_input::ViewportInput;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;

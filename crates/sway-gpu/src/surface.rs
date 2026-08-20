@@ -225,7 +225,11 @@ mod tests {
         assert_eq!(
             choose_present_mode(
                 VsyncPreference::Wait,
-                &[PresentMode::Mailbox, PresentMode::Immediate, PresentMode::Fifo],
+                &[
+                    PresentMode::Mailbox,
+                    PresentMode::Immediate,
+                    PresentMode::Fifo
+                ],
             ),
             PresentMode::Fifo
         );
@@ -237,7 +241,11 @@ mod tests {
         assert_eq!(
             choose_present_mode(
                 VsyncPreference::DontWait,
-                &[PresentMode::Fifo, PresentMode::Immediate, PresentMode::Mailbox],
+                &[
+                    PresentMode::Fifo,
+                    PresentMode::Immediate,
+                    PresentMode::Mailbox
+                ],
             ),
             PresentMode::Mailbox
         );

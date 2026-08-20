@@ -15,8 +15,8 @@ use sway_graph::graph::{Graph, NodeId};
 use crate::nodes::pbr_material::{PbrMaterial, to_standard_material};
 use crate::nodes::protocol::{self, ReflectImageSequenceNode};
 use crate::nodes::sprite_material::SpriteMaterial;
-use crate::project::{dirty_in_graph_order, source_of};
 use crate::nodes::sprite_material::{SpriteMaterialAsset, SpriteMaterialUniform, layer_index};
+use crate::project::{dirty_in_graph_order, source_of};
 
 /// Marks every node reading `producer`'s outlets dirty, so an attachment can
 /// notice that what it would attach has changed.

@@ -187,7 +187,11 @@ pub fn coerce_field(info: &TypeInfo, text: &str) -> Option<Box<dyn PartialReflec
         // Whole pixels: a fractional or negative component is a typo, and a
         // typo becomes no write rather than a silently rounded resolution.
         let [x, y] = parse_components::<2>(text)?;
-        if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 || x.fract() != 0.0
+        if !x.is_finite()
+            || !y.is_finite()
+            || x < 0.0
+            || y < 0.0
+            || x.fract() != 0.0
             || y.fract() != 0.0
         {
             return None;
@@ -436,7 +440,10 @@ mod tests {
         assert!(has_control(info), "a resolution must be editable");
 
         let parsed = coerce_field(info, " 1280, 720 ").expect("parses");
-        assert_eq!(parsed.try_downcast_ref::<UVec2>(), Some(&UVec2::new(1280, 720)));
+        assert_eq!(
+            parsed.try_downcast_ref::<UVec2>(),
+            Some(&UVec2::new(1280, 720))
+        );
 
         // Round trip: what the inspector shows is what it accepts back.
         assert_eq!(format_value(&UVec2::new(1920, 1080)), "1920, 1080");
@@ -450,9 +457,18 @@ mod tests {
         // A typo is no write rather than a silently mangled resolution: a
         // rounded or wrapped size would change what the camera frames without
         // saying so.
-        assert!(coerce_field(info, "1280").is_none(), "both components or none");
-        assert!(coerce_field(info, "1280.5, 720").is_none(), "not whole pixels");
-        assert!(coerce_field(info, "-16, 9").is_none(), "not a negative count");
+        assert!(
+            coerce_field(info, "1280").is_none(),
+            "both components or none"
+        );
+        assert!(
+            coerce_field(info, "1280.5, 720").is_none(),
+            "not whole pixels"
+        );
+        assert!(
+            coerce_field(info, "-16, 9").is_none(),
+            "not a negative count"
+        );
         assert!(coerce_field(info, "wide, tall").is_none());
     }
 
@@ -477,8 +493,8 @@ mod tests {
     fn a_value_that_is_already_the_fields_type_passes_straight_through() {
         use bevy_reflect::Typed;
 
-        let vec2 = coerce_field(<bevy_math::Vec2 as Typed>::type_info(), "1.5, -2.0")
-            .expect("parses");
+        let vec2 =
+            coerce_field(<bevy_math::Vec2 as Typed>::type_info(), "1.5, -2.0").expect("parses");
         assert_eq!(
             vec2.try_downcast_ref::<bevy_math::Vec2>(),
             Some(&bevy_math::Vec2::new(1.5, -2.0)),

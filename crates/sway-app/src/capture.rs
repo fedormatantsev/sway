@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Sender, TrySendError, bounded};
-use sway_graph::graph::NodeId;
 use sway_gpu::{ReadbackPool, ReadbackRefused};
+use sway_graph::graph::NodeId;
 use sway_runtime::nodes::expand_pattern;
 use sway_runtime::{CameraTargets, CaptureIntents};
 
@@ -126,12 +126,13 @@ pub fn write_png(path: &Path, width: u32, height: u32, pixels: &[u8]) -> std::io
     ));
 
     let result = (|| -> std::io::Result<()> {
-        let image = image::RgbaImage::from_raw(width, height, pixels.to_vec()).ok_or_else(|| {
-            std::io::Error::other(format!(
-                "{} bytes is not a {width}x{height} RGBA image",
-                pixels.len()
-            ))
-        })?;
+        let image =
+            image::RgbaImage::from_raw(width, height, pixels.to_vec()).ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "{} bytes is not a {width}x{height} RGBA image",
+                    pixels.len()
+                ))
+            })?;
         image
             .save_with_format(&temporary, image::ImageFormat::Png)
             .map_err(std::io::Error::other)?;
@@ -264,8 +265,11 @@ impl CaptureDrain {
                 }
             });
 
-            let (slots, next_slot) =
-                slots_crossed(now.saturating_duration_since(run.started), run.next_slot, CAPTURE_RATE);
+            let (slots, next_slot) = slots_crossed(
+                now.saturating_duration_since(run.started),
+                run.next_slot,
+                CAPTURE_RATE,
+            );
             run.next_slot = next_slot;
             if slots.is_empty() {
                 continue;
@@ -466,10 +470,8 @@ mod tests {
 
     #[test]
     fn a_png_is_written_whole_or_not_at_all() {
-        let directory = std::env::temp_dir().join(format!(
-            "sway-capture-test-{}",
-            std::process::id()
-        ));
+        let directory =
+            std::env::temp_dir().join(format!("sway-capture-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
         let path = directory.join("frame_0000.png");
 
@@ -482,8 +484,7 @@ mod tests {
         // A byte count that is not the image's is refused, and leaves no
         // half-written file where a complete one is expected.
         let short = directory.join("frame_0001.png");
-        write_png(&short, 4, 4, &pixels[..8])
-            .expect_err("a truncated buffer is not an image");
+        write_png(&short, 4, 4, &pixels[..8]).expect_err("a truncated buffer is not an image");
         assert!(!short.exists(), "no partial file");
         assert!(
             !short.with_extension("png.partial").exists(),
@@ -608,8 +609,7 @@ mod run_tests {
         /// that behaviour, it only avoids provoking it.
         fn record(&mut self, slots: u64) {
             for slot in 0..slots {
-                let at = self.base
-                    + Duration::from_nanos(slot * 16_666_667 + 8_000_000);
+                let at = self.base + Duration::from_nanos(slot * 16_666_667 + 8_000_000);
                 self.step(at);
                 for _ in 0..500 {
                     if self.drain.outstanding() == 0 {
@@ -703,7 +703,11 @@ mod run_tests {
         let at = f.base + Duration::from_millis(100);
         f.step(at);
         f.step(at);
-        assert_eq!(f.files().len(), 3, "no further files after the flag cleared");
+        assert_eq!(
+            f.files().len(),
+            3,
+            "no further files after the flag cleared"
+        );
 
         // Deleting them makes the overwrite observable: a second run whose
         // first frame is numbered zero recreates exactly that file.

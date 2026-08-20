@@ -569,15 +569,19 @@ mod tests {
             .insert("something the graph has never seen".into(), Box::new(42u32));
 
         assert_eq!(
-            graph.get(b).unwrap().metadata()
-                ["something the graph has never seen"]
+            graph.get(b).unwrap().metadata()["something the graph has never seen"]
                 .try_downcast_ref::<u32>(),
             Some(&42)
         );
-        assert!(!graph.topology_dirty(), "an annotation is not a shape change");
+        assert!(
+            !graph.topology_dirty(),
+            "an annotation is not a shape change"
+        );
         assert_eq!(format!("{:?}", graph.eval_order()), before);
         assert_eq!(
-            graph.connect(Port::new(a, "out"), Port::new(b, "step"), 0).is_ok(),
+            graph
+                .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
+                .is_ok(),
             true,
             "legality is unaffected"
         );
@@ -923,10 +927,7 @@ mod tests {
         let id = graph.insert(Node::of(Nested::default()));
         graph.drain_dirty();
 
-        assert_eq!(
-            graph.set_field(id, "point.y", &4.0f32),
-            FieldWrite::Written
-        );
+        assert_eq!(graph.set_field(id, "point.y", &4.0f32), FieldWrite::Written);
 
         let point = path::resolve(graph.get(id).unwrap(), Part::Inlets, "point").unwrap();
         assert_eq!(point.reflect_partial_eq(&Vec2::new(0.0, 4.0)), Some(true));

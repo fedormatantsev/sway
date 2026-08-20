@@ -46,7 +46,7 @@ impl NodeKind for MakeVec3 {
 
 #[cfg(test)]
 mod tests {
-    
+
     use bevy_reflect::TypeRegistry;
     use sway_graph::graph::registry::register_node_kind;
     use sway_graph::graph::{Graph, Node, Part, Port};
@@ -62,19 +62,27 @@ mod tests {
         let mut graph = Graph::default();
         let node = graph.insert(Node::of(MakeVec3 {
             inlets: MakeVec3In {
-                    x: 1.0,
-                    y: 2.0,
-                    z: 3.0,
-                },
-                ..Default::default()
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
             },
-        ));
+            ..Default::default()
+        }));
 
         testing::tick_once(&mut graph, &world);
 
-        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out.x"), 1.0);
-        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out.y"), 2.0);
-        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out.z"), 3.0);
+        assert_eq!(
+            testing::read_field::<f32>(&graph, node, Part::Outlets, "out.x"),
+            1.0
+        );
+        assert_eq!(
+            testing::read_field::<f32>(&graph, node, Part::Outlets, "out.y"),
+            2.0
+        );
+        assert_eq!(
+            testing::read_field::<f32>(&graph, node, Part::Outlets, "out.z"),
+            3.0
+        );
     }
 
     #[test]
@@ -85,14 +93,13 @@ mod tests {
         let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let source = graph.insert(Node::of(crate::nodes::math::Math {
-                inlets: crate::nodes::math::MathIn {
-                    op: crate::nodes::math::MathOp::Add,
-                    a: 0.75,
-                    b: 0.0,
-                },
-                ..Default::default()
+            inlets: crate::nodes::math::MathIn {
+                op: crate::nodes::math::MathOp::Add,
+                a: 0.75,
+                b: 0.0,
             },
-        ));
+            ..Default::default()
+        }));
         let vector = graph.insert(Node::of(MakeVec3::default()));
         graph
             .connect(Port::new(source, "out"), Port::new(vector, "y"), 0)

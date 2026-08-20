@@ -336,15 +336,31 @@ mod tests {
             release: 0.1,
         };
         assert_eq!(adsr_unscaled(0.0, None, 0.0, params), 0.0, "the very start");
-        assert!((adsr_unscaled(0.0, None, 0.05, params) - 0.5).abs() < 1e-6, "attack");
-        assert!((adsr_unscaled(0.0, None, 0.1, params) - 1.0).abs() < 1e-6, "peak");
-        assert!((adsr_unscaled(0.0, None, 0.15, params) - 0.75).abs() < 1e-6, "decay");
-        assert!((adsr_unscaled(0.0, None, 1.0, params) - 0.5).abs() < 1e-6, "sustain");
+        assert!(
+            (adsr_unscaled(0.0, None, 0.05, params) - 0.5).abs() < 1e-6,
+            "attack"
+        );
+        assert!(
+            (adsr_unscaled(0.0, None, 0.1, params) - 1.0).abs() < 1e-6,
+            "peak"
+        );
+        assert!(
+            (adsr_unscaled(0.0, None, 0.15, params) - 0.75).abs() < 1e-6,
+            "decay"
+        );
+        assert!(
+            (adsr_unscaled(0.0, None, 1.0, params) - 0.5).abs() < 1e-6,
+            "sustain"
+        );
         assert!(
             (adsr_unscaled(0.0, Some(1.0), 1.05, params) - 0.25).abs() < 1e-6,
             "release"
         );
-        assert_eq!(adsr_unscaled(0.0, Some(1.0), 1.1, params), 0.0, "silent after");
+        assert_eq!(
+            adsr_unscaled(0.0, Some(1.0), 1.1, params),
+            0.0,
+            "silent after"
+        );
     }
 
     #[test]

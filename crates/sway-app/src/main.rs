@@ -56,10 +56,10 @@ where
             "--editor" => parsed.editor = true,
             "--no-vsync" => parsed.no_vsync = true,
             "--capture-window" => {
-                parsed.capture_window = Some(PathBuf::from(
-                    it.next()
-                        .ok_or_else(|| "--capture-window needs a path".to_string())?,
-                ));
+                parsed.capture_window =
+                    Some(PathBuf::from(it.next().ok_or_else(|| {
+                        "--capture-window needs a path".to_string()
+                    })?));
             }
             other => return Err(format!("unknown argument: {other}")),
         }

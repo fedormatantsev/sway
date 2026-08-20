@@ -320,8 +320,8 @@ pub fn fit_aspect(pane: UVec2, aspect: UVec2) -> FittedRect {
     // Compare `pane.x / pane.y` against `aspect.x / aspect.y` without
     // dividing: integers here mean the comparison is exact, and the only
     // rounding in the whole function is the one floor below.
-    let pane_is_wider = u64::from(pane.x) * u64::from(aspect.y)
-        > u64::from(pane.y) * u64::from(aspect.x);
+    let pane_is_wider =
+        u64::from(pane.x) * u64::from(aspect.y) > u64::from(pane.y) * u64::from(aspect.x);
 
     let size = if pane_is_wider {
         // Height-bound: use the full height and take the width from it.
@@ -559,7 +559,10 @@ mod fit_tests {
 
     #[test]
     fn a_zero_component_fits_nothing_rather_than_dividing_by_zero() {
-        assert_eq!(fit_aspect(UVec2::ZERO, UVec2::new(16, 9)), FittedRect::default());
+        assert_eq!(
+            fit_aspect(UVec2::ZERO, UVec2::new(16, 9)),
+            FittedRect::default()
+        );
         assert_eq!(
             fit_aspect(UVec2::new(640, 480), UVec2::new(1920, 0)),
             FittedRect::default()
@@ -590,15 +593,16 @@ mod active_camera_tests {
             .id();
 
         let spawn_scene_camera = |app: &mut App, resolution: UVec2| {
-            let node = app.world_mut().resource_mut::<Graph>().insert(Node::of(
-                CameraNode {
+            let node = app
+                .world_mut()
+                .resource_mut::<Graph>()
+                .insert(Node::of(CameraNode {
                     inlets: CameraIn {
                         resolution,
                         ..Default::default()
                     },
                     ..Default::default()
-                },
-            ));
+                }));
             let entity = app.world_mut().spawn(Camera::default()).id();
             app.world_mut()
                 .resource_mut::<NodeEntities>()
@@ -699,7 +703,10 @@ mod active_camera_tests {
             *app.world().resource::<ViewportCamera>(),
             ViewportCamera::Editor
         );
-        assert!(active(&app, editor), "not a blank pane and not a stale image");
+        assert!(
+            active(&app, editor),
+            "not a blank pane and not a stale image"
+        );
         assert!(!active(&app, second_entity));
     }
 
@@ -733,8 +740,8 @@ mod consumed_camera_tests {
     use bevy::asset::AssetPlugin;
     use bevy::render::renderer::RenderDevice;
     use sway_graph::graph::{Node, Port};
-    use sway_runtime::nodes::{Capture, CaptureIn, Output, protocol};
     use sway_runtime::nodes::CameraIn;
+    use sway_runtime::nodes::{Capture, CaptureIn, Output, protocol};
     use sway_runtime::{CameraTargets, ProjectionSet, RuntimePlugin};
 
     fn app() -> App {
@@ -817,7 +824,10 @@ mod consumed_camera_tests {
         app.update();
 
         assert!(
-            app.world().resource::<CameraTargets>().target(camera).is_some(),
+            app.world()
+                .resource::<CameraTargets>()
+                .target(camera)
+                .is_some(),
             "test setup: the capture node should have made the runtime allocate a target"
         );
         assert!(
@@ -853,7 +863,12 @@ mod consumed_camera_tests {
         app.update();
         app.update();
 
-        assert!(app.world().resource::<CameraTargets>().target(camera).is_none());
+        assert!(
+            app.world()
+                .resource::<CameraTargets>()
+                .target(camera)
+                .is_none()
+        );
         assert!(!is_active(&app, camera));
     }
 
@@ -881,7 +896,10 @@ mod consumed_camera_tests {
         *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Node(camera);
         app.update();
         assert!(!app.world().get::<Camera>(editor_entity).unwrap().is_active);
-        assert!(is_active(&app, camera), "and the previewed one still renders");
+        assert!(
+            is_active(&app, camera),
+            "and the previewed one still renders"
+        );
     }
 }
 

@@ -248,7 +248,11 @@ mod tests {
         assert!(graph.is_dirty(source));
 
         let edge = graph.edges()[0].id;
-        apply_editor_edit(&mut graph, &registry, &EditorEdit::SetSlot { edge, slot: 9 });
+        apply_editor_edit(
+            &mut graph,
+            &registry,
+            &EditorEdit::SetSlot { edge, slot: 9 },
+        );
         assert_eq!(graph.edge(edge).unwrap().slot, 9);
 
         apply_editor_edit(&mut graph, &registry, &EditorEdit::Disconnect { edge });
@@ -304,5 +308,4 @@ mod tests {
         );
         assert!(graph.is_empty());
     }
-
 }

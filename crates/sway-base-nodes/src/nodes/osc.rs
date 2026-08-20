@@ -110,14 +110,14 @@ impl NodeKind for Oscillator {
 
 #[cfg(test)]
 mod tests {
-    
+
     use bevy_reflect::TypeRegistry;
     use sway_graph::graph::registry::register_node_kind;
     use sway_graph::graph::{Graph, Node, Part, Port};
 
     use super::*;
-    use sway_graph::graph::testing;
     use crate::nodes::math::{Math, MathIn};
+    use sway_graph::graph::testing;
 
     #[test]
     fn oscillator_at_phase_quarter_is_one_with_no_midi() {
@@ -126,20 +126,22 @@ mod tests {
         let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let node = graph.insert(Node::of(Oscillator {
-                inlets: OscillatorIn {
-                    time: 0.0,
-                    period: 4.0,
-                    shape: Waveform::Sine,
-                    phase: 0.25,
-                    amplitude: 1.0,
-                },
-                ..Default::default()
+            inlets: OscillatorIn {
+                time: 0.0,
+                period: 4.0,
+                shape: Waveform::Sine,
+                phase: 0.25,
+                amplitude: 1.0,
             },
-        ));
+            ..Default::default()
+        }));
 
         testing::tick_once(&mut graph, &world);
 
-        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out"), 1.0);
+        assert_eq!(
+            testing::read_field::<f32>(&graph, node, Part::Outlets, "out"),
+            1.0
+        );
     }
 
     #[test]
@@ -149,20 +151,22 @@ mod tests {
         let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let node = graph.insert(Node::of(Oscillator {
-                inlets: OscillatorIn {
-                    time: 5.0,
-                    period: 0.0,
-                    shape: Waveform::Sine,
-                    phase: 0.25,
-                    amplitude: 1.0,
-                },
-                ..Default::default()
+            inlets: OscillatorIn {
+                time: 5.0,
+                period: 0.0,
+                shape: Waveform::Sine,
+                phase: 0.25,
+                amplitude: 1.0,
             },
-        ));
+            ..Default::default()
+        }));
 
         testing::tick_once(&mut graph, &world);
 
-        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out"), 1.0);
+        assert_eq!(
+            testing::read_field::<f32>(&graph, node, Part::Outlets, "out"),
+            1.0
+        );
     }
 
     /// Verifies the `midiTime -> oscillator` wiring shape: an upstream node's
@@ -179,25 +183,23 @@ mod tests {
         let mut graph = Graph::default();
         // Stands in for `MidiTime`: any node whose `out` reaches `time`.
         let time_source = graph.insert(Node::of(Math {
-                inlets: MathIn {
-                    op: crate::nodes::math::MathOp::Add,
-                    a: 1.0,
-                    b: 0.0,
-                },
-                ..Default::default()
+            inlets: MathIn {
+                op: crate::nodes::math::MathOp::Add,
+                a: 1.0,
+                b: 0.0,
             },
-        ));
+            ..Default::default()
+        }));
         let node = graph.insert(Node::of(Oscillator {
-                inlets: OscillatorIn {
-                    time: 0.0,
-                    period: 4.0,
-                    shape: Waveform::Sine,
-                    phase: 0.0,
-                    amplitude: 1.0,
-                },
-                ..Default::default()
+            inlets: OscillatorIn {
+                time: 0.0,
+                period: 4.0,
+                shape: Waveform::Sine,
+                phase: 0.0,
+                amplitude: 1.0,
             },
-        ));
+            ..Default::default()
+        }));
         graph
             .connect(Port::new(time_source, "out"), Port::new(node, "time"), 0)
             .expect("legal");
@@ -220,32 +222,33 @@ mod tests {
         let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let amplitude = graph.insert(Node::of(Math {
-                inlets: MathIn {
-                    op: crate::nodes::math::MathOp::Add,
-                    a: 0.5,
-                    b: 0.0,
-                },
-                ..Default::default()
+            inlets: MathIn {
+                op: crate::nodes::math::MathOp::Add,
+                a: 0.5,
+                b: 0.0,
             },
-        ));
+            ..Default::default()
+        }));
         let node = graph.insert(Node::of(Oscillator {
-                inlets: OscillatorIn {
-                    time: 0.0,
-                    period: 4.0,
-                    shape: Waveform::Sine,
-                    phase: 0.25,
-                    amplitude: 0.0,
-                },
-                ..Default::default()
+            inlets: OscillatorIn {
+                time: 0.0,
+                period: 4.0,
+                shape: Waveform::Sine,
+                phase: 0.25,
+                amplitude: 0.0,
             },
-        ));
+            ..Default::default()
+        }));
         graph
             .connect(Port::new(amplitude, "out"), Port::new(node, "amplitude"), 0)
             .expect("legal");
 
         testing::tick_once(&mut graph, &world);
 
-        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out"), 0.5);
+        assert_eq!(
+            testing::read_field::<f32>(&graph, node, Part::Outlets, "out"),
+            0.5
+        );
     }
 
     #[test]

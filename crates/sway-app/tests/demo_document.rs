@@ -56,7 +56,10 @@ fn the_demo_document_loads_with_no_diagnostics() {
     );
     assert_eq!(graph.len(), 26, "every node in the file loaded");
     assert!(!graph.edges().is_empty());
-    assert!(ids.node_of("cubeA").is_some(), "ids are keyed by the file's");
+    assert!(
+        ids.node_of("cubeA").is_some(),
+        "ids are keyed by the file's"
+    );
 }
 
 #[test]

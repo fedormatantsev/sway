@@ -42,8 +42,8 @@ use masonry_core::core::{
     CursorIcon, NewWidget, TextEvent, Widget, WidgetTag, WindowEvent as MasonryWindowEvent,
 };
 use masonry_core::kurbo::Axis;
-use sway_viewport_input::ViewportInput;
 use sway_graph::graph::{Graph, NodeId};
+use sway_viewport_input::ViewportInput;
 
 use crate::edit::EditorEdit;
 use sway_selection::Selection;

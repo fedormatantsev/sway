@@ -197,11 +197,7 @@ pub enum TargetError {
     ZeroResolution { width: u32, height: u32 },
     /// Larger than the device's `max_texture_dimension_2d` in at least one
     /// axis. The limit is carried so the diagnostic can name it.
-    TooLarge {
-        width: u32,
-        height: u32,
-        limit: u32,
-    },
+    TooLarge { width: u32, height: u32, limit: u32 },
 }
 
 impl core::fmt::Display for TargetError {

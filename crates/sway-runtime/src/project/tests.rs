@@ -15,9 +15,9 @@ use crate::nodes::mesh::{MeshAsset, MeshAssetIn, PlaneMesh, PlaneMeshIn};
 use crate::nodes::pbr_material::{PbrMaterial, PbrMaterialIn};
 use crate::nodes::protocol;
 use crate::nodes::scene::{Camera, DirectionalLight, Group, MeshNode, PointLight};
+use crate::nodes::sprite_material::SpriteMaterialAsset;
 use crate::nodes::sprite_material::{SpriteMaterial, SpriteMaterialIn};
 use crate::project::{MaterialAttachment, NodeEntities, RuntimePlugin, dirty_in_graph_order};
-use crate::nodes::sprite_material::SpriteMaterialAsset;
 
 // ---------------------------------------------------------------------------
 // Harness

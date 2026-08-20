@@ -150,8 +150,7 @@ macro_rules! shader_path {
 
 fn sprite_material_shader() -> ShaderRef {
     ShaderRef::Path(
-        AssetPath::from_path_buf(embedded_path!(shader_path!()))
-            .with_source("embedded"),
+        AssetPath::from_path_buf(embedded_path!(shader_path!())).with_source("embedded"),
     )
 }
 
@@ -349,7 +348,6 @@ pub fn ensure_sprite_material_pipeline(app: &mut App) {
     app.add_plugins(MaterialPlugin::<SpriteMaterialAsset>::default());
 }
 
-
 // --- the node kind ---------------------------------------------------
 
 use bevy::ecs::system::EntityCommands;
@@ -499,9 +497,7 @@ mod tests {
                 .reader()
                 .read(requested.path())
                 .await
-                .unwrap_or_else(|error| {
-                    panic!("nothing is registered at {requested}: {error}")
-                });
+                .unwrap_or_else(|error| panic!("nothing is registered at {requested}: {error}"));
             let mut buffer = Vec::new();
             bevy::asset::io::Reader::read_to_end(&mut *reader, &mut buffer)
                 .await
@@ -629,6 +625,3 @@ mod tests {
         assert!(descriptor.depth_stencil.is_none());
     }
 }
-
-
-

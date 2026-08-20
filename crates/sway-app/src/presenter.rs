@@ -10,14 +10,14 @@ use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::math::UVec2;
 use crossbeam_channel::Sender;
 use masonry_core::core::CursorIcon;
+use sway_editor::edit::EditorEdit;
 use sway_editor_viewport::{ViewportCamera, fit_aspect};
-use sway_graph::graph::NodeId;
 use sway_gpu::{
     Compositor, GpuContext, Quad, ReadbackPool, UiRenderer, UiTexture, ViewportTexture,
     WindowSurface,
 };
-use sway_editor::edit::EditorEdit;
 use sway_graph::Graph;
+use sway_graph::graph::NodeId;
 use sway_runtime::{CameraTargets, PresentedCamera};
 use sway_selection::Selection;
 use sway_viewport_input::ViewportInput;
@@ -220,15 +220,16 @@ impl EditorPresenter {
         if app.world().get_resource::<Graph>().is_some()
             && app.world().get_resource::<Selection>().is_some()
         {
-            app.world_mut()
-                .resource_scope(|world, mut selection: bevy::ecs::change_detection::Mut<Selection>| {
+            app.world_mut().resource_scope(
+                |world, mut selection: bevy::ecs::change_detection::Mut<Selection>| {
                     let mut graph = world.resource_mut::<Graph>();
                     self.editor.apply_graph(
                         graph.bypass_change_detection(),
                         &mut selection,
                         &type_registry.read(),
                     );
-                });
+                },
+            );
         }
         if let Some(transport) = app.world().get_resource::<sway_midi::Transport>() {
             self.editor.apply_transport(transport);

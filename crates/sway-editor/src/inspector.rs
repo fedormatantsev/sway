@@ -28,7 +28,7 @@ use crate::edit::EditorEdit;
 
 use crate::canvas::reorder_commands;
 use crate::reflect_ui::{
-    enum_variants, format_value, has_control, is_bool, is_variadic, coerce_field, part_fields,
+    coerce_field, enum_variants, format_value, has_control, is_bool, is_variadic, part_fields,
     short_type_name,
 };
 
@@ -901,13 +901,13 @@ impl Widget for Inspector {
 #[cfg(test)]
 mod graph_model_tests {
     use super::Inspector;
+    use crate::edit::EditorEdit;
     use crate::test_kinds::{
         Gate, Memory, Mixer, Source, chained_sources, registry, source_and_gate, variadic_graph,
     };
     use crossbeam_channel::Receiver;
     use masonry::core::{DefaultProperties, PointerButton, Widget};
     use masonry_testing::TestHarness;
-    use crate::edit::EditorEdit;
     use sway_graph::graph::{Graph, Node, NodeId as GraphNodeId, Port};
 
     /// Selection is the editor's own state now, so a test says what is

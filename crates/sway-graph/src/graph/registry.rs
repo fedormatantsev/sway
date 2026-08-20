@@ -165,10 +165,7 @@ mod tests {
         };
 
         assert_eq!(path(Part::Inlets), "sway_graph::graph::testing::Step");
-        assert_eq!(
-            path(Part::State),
-            "sway_graph::graph::testing::Accumulator"
-        );
+        assert_eq!(path(Part::State), "sway_graph::graph::testing::Accumulator");
         assert_eq!(path(Part::Outlets), "sway_graph::graph::testing::Total");
         assert!(!is_empty_part(
             part_type(&registry, TypeId::of::<Counter>(), Part::Inlets).unwrap()

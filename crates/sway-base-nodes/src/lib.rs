@@ -12,14 +12,14 @@ pub mod nodes;
 use bevy_app::{App, Plugin};
 use sway_graph::graph::RegisterNodeKind;
 
+pub use nodes::envelope::{EnvelopeParams, adsr_unscaled};
+pub use nodes::math::{math_value, remap_value};
+pub use nodes::osc::oscillator_value;
 pub use nodes::{
     Envelope, EnvelopeIn, EnvelopeOut, EnvelopeState, MakeVec3, MakeVec3In, MakeVec3Out, Math,
     MathIn, MathOp, MathOut, Oscillator, OscillatorIn, OscillatorOut, Remap, RemapIn, RemapOut,
     Waveform,
 };
-pub use nodes::envelope::{EnvelopeParams, adsr_unscaled};
-pub use nodes::math::{math_value, remap_value};
-pub use nodes::osc::oscillator_value;
 
 /// The whole domain, in one plugin: every base node kind, its part types (so
 /// the editor and the document serializer can reach them by path) and the

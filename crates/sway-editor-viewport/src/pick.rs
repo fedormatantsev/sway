@@ -10,8 +10,8 @@ use bevy::prelude::*;
 use sway_selection::Selection;
 use sway_viewport_input::{ViewportButton, ViewportInput};
 
-use sway_runtime::project::NodeEntities;
 use crate::camera::ActiveViewportCamera;
+use sway_runtime::project::NodeEntities;
 
 /// Builds a world-space ray from a normalized viewport position.
 ///
@@ -168,7 +168,8 @@ mod tests {
         let gpu = sway_gpu::GpuContext::new(None);
         let size = UVec2::new(4, 4);
         let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);
-        let mut app = sway_runtime::headless::build_app(&gpu, &viewport, size, std::env::temp_dir());
+        let mut app =
+            sway_runtime::headless::build_app(&gpu, &viewport, size, std::env::temp_dir());
 
         let transform = Transform::from_xyz(0.0, 0.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y);
         let entity = app.world_mut().spawn((Camera3d::default(), transform)).id();
@@ -227,9 +228,9 @@ mod tests {
 #[cfg(test)]
 pub(crate) mod click_tests {
     use super::*;
+    use sway_graph::graph::{Graph, Node};
     use sway_runtime::nodes::scene::MeshNode;
     use sway_runtime::project::NodeEntities;
-    use sway_graph::graph::{Graph, Node};
     use sway_viewport_input::{ViewportButton, ViewportInput, ViewportModifiers};
 
     /// A cube at the origin, a camera looking at it, in a real render-capable
@@ -249,7 +250,8 @@ pub(crate) mod click_tests {
         let gpu = sway_gpu::GpuContext::new(None);
         let size = UVec2::new(64, 64);
         let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);
-        let mut app = sway_runtime::headless::build_app(&gpu, &viewport, size, std::env::temp_dir());
+        let mut app =
+            sway_runtime::headless::build_app(&gpu, &viewport, size, std::env::temp_dir());
         app.add_plugins(crate::EditorViewportPlugin);
         let (tx, rx) = crossbeam_channel::unbounded();
         app.insert_resource(crate::ViewportInputRx(rx));
@@ -346,9 +348,7 @@ pub(crate) mod click_tests {
     fn clicking_empty_space_clears_the_selection() {
         let (mut app, cube, tx) = app_with_a_cube();
         let node = bind_cube(&mut app, cube);
-        app.world_mut()
-            .resource_mut::<Selection>()
-            .set(Some(node));
+        app.world_mut().resource_mut::<Selection>().set(Some(node));
         click(&mut app, &tx, Vec2::new(0.02, 0.02));
         assert_eq!(app.world().resource::<Selection>().get(), None);
     }

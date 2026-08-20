@@ -75,11 +75,7 @@ impl<'a> Frame<'a> {
     /// This is the only way to reach the surface texture from outside the
     /// crate, which keeps the rule that no caller holds a bare
     /// `wgpu::SurfaceTexture`.
-    pub fn read_back(
-        &mut self,
-        pool: &mut ReadbackPool,
-        tag: u64,
-    ) -> Result<(), ReadbackRefused> {
+    pub fn read_back(&mut self, pool: &mut ReadbackPool, tag: u64) -> Result<(), ReadbackRefused> {
         pool.encode(&mut self.encoder, &self.surface_texture.texture, tag)
     }
 

@@ -173,7 +173,6 @@ mod tests {
         assert_eq!(MathOp::default(), MathOp::Add);
     }
 
-    
     use bevy_reflect::TypeRegistry;
     use sway_graph::graph::registry::register_node_kind;
     use sway_graph::graph::{Graph, Node, Part, Port};
@@ -189,31 +188,32 @@ mod tests {
         let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let source = graph.insert(Node::of(Math {
-                inlets: MathIn {
-                    op: MathOp::Add,
-                    a: 0.0,
-                    b: 0.0,
-                },
-                ..Default::default()
+            inlets: MathIn {
+                op: MathOp::Add,
+                a: 0.0,
+                b: 0.0,
             },
-        ));
+            ..Default::default()
+        }));
         testing::set_field(&mut graph, source, "a", &3.0f32);
         let node = graph.insert(Node::of(Math {
-                inlets: MathIn {
-                    op: MathOp::Mul,
-                    a: 0.0,
-                    b: 2.0,
-                },
-                ..Default::default()
+            inlets: MathIn {
+                op: MathOp::Mul,
+                a: 0.0,
+                b: 2.0,
             },
-        ));
+            ..Default::default()
+        }));
         graph
             .connect(Port::new(source, "out"), Port::new(node, "a"), 0)
             .expect("legal");
 
         testing::tick_once(&mut graph, &world);
 
-        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out"), 6.0);
+        assert_eq!(
+            testing::read_field::<f32>(&graph, node, Part::Outlets, "out"),
+            6.0
+        );
     }
 
     #[test]
@@ -224,33 +224,34 @@ mod tests {
         let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let source = graph.insert(Node::of(Math {
-                inlets: MathIn {
-                    op: MathOp::Add,
-                    a: 0.5,
-                    b: 0.0,
-                },
-                ..Default::default()
+            inlets: MathIn {
+                op: MathOp::Add,
+                a: 0.5,
+                b: 0.0,
             },
-        ));
+            ..Default::default()
+        }));
         let node = graph.insert(Node::of(Remap {
-                inlets: RemapIn {
-                    input: 0.0,
-                    in_min: 0.0,
-                    in_max: 1.0,
-                    out_min: 0.0,
-                    out_max: 10.0,
-                    clamp: true,
-                },
-                ..Default::default()
+            inlets: RemapIn {
+                input: 0.0,
+                in_min: 0.0,
+                in_max: 1.0,
+                out_min: 0.0,
+                out_max: 10.0,
+                clamp: true,
             },
-        ));
+            ..Default::default()
+        }));
         graph
             .connect(Port::new(source, "out"), Port::new(node, "input"), 0)
             .expect("legal");
 
         testing::tick_once(&mut graph, &world);
 
-        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out"), 5.0);
+        assert_eq!(
+            testing::read_field::<f32>(&graph, node, Part::Outlets, "out"),
+            5.0
+        );
     }
 
     #[test]
@@ -270,37 +271,34 @@ mod tests {
         let mut graph = Graph::default();
 
         let osc = graph.insert(Node::of(Oscillator {
-                inlets: OscillatorIn {
-                    time: 0.0,
-                    period: 1.0,
-                    shape: Waveform::Sine,
-                    phase: 0.0,
-                    amplitude: 1.0,
-                },
-                ..Default::default()
+            inlets: OscillatorIn {
+                time: 0.0,
+                period: 1.0,
+                shape: Waveform::Sine,
+                phase: 0.0,
+                amplitude: 1.0,
             },
-        ));
+            ..Default::default()
+        }));
         let math = graph.insert(Node::of(Math {
-                inlets: MathIn {
-                    op: MathOp::Add,
-                    a: 0.0,
-                    b: 1.0,
-                },
-                ..Default::default()
+            inlets: MathIn {
+                op: MathOp::Add,
+                a: 0.0,
+                b: 1.0,
             },
-        ));
+            ..Default::default()
+        }));
         let remap = graph.insert(Node::of(Remap {
-                inlets: RemapIn {
-                    input: 0.0,
-                    in_min: 0.0,
-                    in_max: 2.0,
-                    out_min: -1.0,
-                    out_max: 1.0,
-                    clamp: true,
-                },
-                ..Default::default()
+            inlets: RemapIn {
+                input: 0.0,
+                in_min: 0.0,
+                in_max: 2.0,
+                out_min: -1.0,
+                out_max: 1.0,
+                clamp: true,
             },
-        ));
+            ..Default::default()
+        }));
         graph
             .connect(Port::new(osc, "out"), Port::new(math, "a"), 0)
             .expect("legal");

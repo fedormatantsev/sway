@@ -31,8 +31,8 @@ use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::renderer::RenderDevice;
 use bevy::render::texture::{ManualTextureView, ManualTextureViews};
-use sway_graph::graph::{Graph, NodeId};
 use sway_gpu::textures::{CameraTarget, TargetError};
+use sway_graph::graph::{Graph, NodeId};
 
 use crate::headless::VIEWPORT_HANDLE;
 use crate::nodes::capture::{Capture, expand_pattern};
@@ -594,7 +594,10 @@ mod tests {
         let edge = graph.edges()[0].id;
         assert!(graph.disconnect(edge));
         assert!(desired_sizes(&graph, None).is_empty());
-        assert_eq!(authored_resolution(&graph, cam), Some(UVec2::new(1280, 720)));
+        assert_eq!(
+            authored_resolution(&graph, cam),
+            Some(UVec2::new(1280, 720))
+        );
     }
 
     #[test]
@@ -652,7 +655,9 @@ mod device_tests {
     }
 
     fn insert<T: Reflect + TypePath>(app: &mut App, value: T) -> NodeId {
-        app.world_mut().resource_mut::<Graph>().insert(Node::of(value))
+        app.world_mut()
+            .resource_mut::<Graph>()
+            .insert(Node::of(value))
     }
 
     fn connect(app: &mut App, from: NodeId, to: NodeId) {
@@ -741,7 +746,11 @@ mod device_tests {
         assert_eq!(targets.handle(steady), steady_handle);
 
         // The reader sees the new size without the project being reopened.
-        let presented = app.world().resource::<PresentedCamera>().0.expect("presented");
+        let presented = app
+            .world()
+            .resource::<PresentedCamera>()
+            .0
+            .expect("presented");
         assert_eq!(presented.resolution, UVec2::new(1280, 720));
 
         // The old registration went with the old texture rather than being
@@ -766,7 +775,10 @@ mod device_tests {
         app.update();
 
         let targets = app.world().resource::<CameraTargets>();
-        assert!(targets.target(broken).is_none(), "no target of some other size");
+        assert!(
+            targets.target(broken).is_none(),
+            "no target of some other size"
+        );
         assert!(targets.target(fine).is_some(), "the others still render");
     }
 
@@ -795,7 +807,10 @@ mod device_tests {
 
         let targets = app.world().resource::<CameraTargets>();
         assert!(targets.target(impossible).is_none(), "it renders nothing");
-        assert!(targets.target(fine).is_some(), "every other camera still renders");
+        assert!(
+            targets.target(fine).is_some(),
+            "every other camera still renders"
+        );
         assert_eq!(
             app.world().resource::<PresentedCamera>().0,
             None,
@@ -830,7 +845,10 @@ mod device_tests {
 
         assert!(app.world().resource::<CameraTargets>().is_empty());
         assert!(
-            app.world().resource::<ManualTextureViews>().get(&handle).is_none(),
+            app.world()
+                .resource::<ManualTextureViews>()
+                .get(&handle)
+                .is_none(),
             "a released handle must not still name a destroyed texture"
         );
 
@@ -875,7 +893,10 @@ mod device_tests {
             "the output node holds one connection"
         );
         assert!(
-            app.world().resource::<CameraTargets>().target(first).is_none(),
+            app.world()
+                .resource::<CameraTargets>()
+                .target(first)
+                .is_none(),
             "the camera nothing consumes any more gave its target back"
         );
     }
@@ -925,7 +946,11 @@ mod device_tests {
         let target = targets.target(cam).expect("allocated");
         assert_eq!((target.width, target.height), (1920, 1080));
 
-        let presented = app.world().resource::<PresentedCamera>().0.expect("presented");
+        let presented = app
+            .world()
+            .resource::<PresentedCamera>()
+            .0
+            .expect("presented");
         assert_eq!(presented.resolution, UVec2::new(1920, 1080));
         let intents = &app.world().resource::<CaptureIntents>().0;
         assert_eq!(intents.len(), 2);

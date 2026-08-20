@@ -1992,6 +1992,7 @@ fn normalised(edge: &EdgeSlot) -> Option<f32> {
 #[cfg(test)]
 mod graph_model_tests {
     use super::{ConnectFeedback, GraphCanvas, GraphSocketKind, GraphSocketRef};
+    use crate::edit::EditorEdit;
     use crate::test_kinds::{
         Gate, Memory, Mixer, Placer, Source, registry, source_and_gate, variadic_graph,
     };
@@ -2000,7 +2001,6 @@ mod graph_model_tests {
     use masonry::core::{DefaultProperties, PointerButton, Widget};
     use masonry_core::kurbo::Point;
     use masonry_testing::TestHarness;
-    use crate::edit::EditorEdit;
     use sway_graph::graph::{ConnectError, Graph, Node, NodeId as GraphNodeId, Port};
 
     fn harness(graph: &Graph) -> (TestHarness<GraphCanvas>, Receiver<EditorEdit>) {
@@ -2653,14 +2653,10 @@ mod graph_model_tests {
         let (mut graph, source, _gate) = source_and_gate();
         let (mut harness, _rx) = harness(&graph);
 
-        graph
-            .get_mut(source)
-            .unwrap()
-            .metadata_mut()
-            .insert(
-                super::CANVAS_POS_KEY.to_string(),
-                Box::new(WorldVec2::new(500.0, 250.0)),
-            );
+        graph.get_mut(source).unwrap().metadata_mut().insert(
+            super::CANVAS_POS_KEY.to_string(),
+            Box::new(WorldVec2::new(500.0, 250.0)),
+        );
         repopulate(&mut harness, &graph);
 
         assert_eq!(

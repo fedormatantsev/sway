@@ -262,11 +262,7 @@ impl ReadbackPool {
     ///
     /// Never waits for one to come free — that is the whole point.
     fn take_buffer(&mut self, size: u64) -> Option<Buffer> {
-        if let Some(index) = self
-            .free
-            .iter()
-            .position(|buffer| buffer.size() >= size)
-        {
+        if let Some(index) = self.free.iter().position(|buffer| buffer.size() >= size) {
             return Some(self.free.swap_remove(index));
         }
         if self.free.len() + self.encoded.len() + self.in_flight.len() < self.capacity {
@@ -310,7 +306,10 @@ impl ReadbackPool {
                 Ok(Ok(())) => {
                     let shape = request.shape;
                     let pixels = {
-                        let data = request.buffer.slice(..shape.buffer_size()).get_mapped_range();
+                        let data = request
+                            .buffer
+                            .slice(..shape.buffer_size())
+                            .get_mapped_range();
                         unpad_rows(&data, shape.width, shape.height, shape.bgra)
                     };
                     request.buffer.unmap();

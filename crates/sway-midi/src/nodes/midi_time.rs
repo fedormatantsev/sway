@@ -36,7 +36,7 @@ impl NodeKind for MidiTime {
 
 #[cfg(test)]
 mod tests {
-    
+
     use bevy_reflect::TypeRegistry;
     use sway_graph::graph::registry::register_node_kind;
     use sway_graph::graph::testing::{tick_once as tick, trace_world};
