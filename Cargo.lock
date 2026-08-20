@@ -5626,6 +5626,7 @@ dependencies = [
  "sway-base-nodes",
  "sway-document",
  "sway-editor",
+ "sway-editor-viewport",
  "sway-geo",
  "sway-gpu",
  "sway-graph",
@@ -5683,6 +5684,19 @@ dependencies = [
  "sway-viewport-input",
  "ui-events-winit",
  "winit",
+]
+
+[[package]]
+name = "sway-editor-viewport"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "crossbeam-channel",
+ "sway-gpu",
+ "sway-graph",
+ "sway-runtime",
+ "sway-selection",
+ "sway-viewport-input",
 ]
 
 [[package]]

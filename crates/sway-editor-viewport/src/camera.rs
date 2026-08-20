@@ -99,7 +99,7 @@ pub fn spawn_editor_camera(mut commands: Commands) {
 
 /// Turns this frame's viewport events into camera motion.
 pub fn navigate_editor_camera(
-    events: Res<crate::viewport::ViewportEvents>,
+    events: Res<crate::ViewportEvents>,
     mut drag: Local<NavigationDrag>,
     mut cameras: Query<(&mut EditorCamera, &mut Transform)>,
 ) {
@@ -455,7 +455,7 @@ mod tag_scene_cameras_tests {
 #[cfg(test)]
 mod nav_tests {
     use super::*;
-    use crate::viewport::ViewportEvents;
+    use crate::ViewportEvents;
     use sway_viewport_input::{ViewportButton, ViewportInput, ViewportModifiers};
 
     fn alt() -> ViewportModifiers {

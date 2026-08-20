@@ -1,4 +1,10 @@
-//! Viewport interaction: the world half. Spec M7.
+//! The editor's viewport: camera orbit, the transform gizmo and picking.
+//!
+//! Editor-only interaction. Nothing on stage runs it, which is why it is a
+//! crate of its own rather than part of `sway-runtime`: a show build never
+//! links it. The dependency runs surface -> runtime — it reads `NodeEntities`
+//! to resolve a picked entity back to the node that produced it — which is
+//! the same direction the host runs, so `sway-runtime` must not depend on it.
 
 pub mod camera;
 pub mod gizmo;
@@ -63,7 +69,7 @@ impl Plugin for EditorViewportPlugin {
             // editor, not the graph, so an editor build has to insert it.
             .init_resource::<sway_selection::Selection>()
             .init_resource::<sway_graph::graph::Graph>()
-            .init_resource::<crate::project::NodeEntities>()
+            .init_resource::<sway_runtime::project::NodeEntities>()
             // Switches `TransformGizmoRenderPlugin`'s systems on; both must
             // exist before `Startup`, when `spawn_gizmo_meshes` runs.
             .init_resource::<TransformGizmoState>()

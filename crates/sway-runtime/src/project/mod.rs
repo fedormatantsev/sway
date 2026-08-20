@@ -138,14 +138,22 @@ pub fn clear_dirty(mut graph: ResMut<Graph>) {
     graph.drain_dirty();
 }
 
-/// Schedules the projectors.
+/// The whole runtime domain, in one plugin: this crate's node kinds, the
+/// pipelines they need, and the projectors that put them in the world.
 ///
-/// They run in `Update`, after `FixedUpdate`'s tick, so a node's inlets have
-/// already been propagated and evaluated when they are read.
-pub struct ProjectionPlugin;
+/// The projectors run in `Update`, after `FixedUpdate`'s tick, so a node's
+/// inlets have already been propagated and evaluated when they are read.
+///
+/// A host adds this and nothing else from this crate — except
+/// `EditorViewportPlugin`, which is an editor surface rather than part of the
+/// domain, and is added only in editor builds.
+pub struct RuntimePlugin;
 
-impl Plugin for ProjectionPlugin {
+impl Plugin for RuntimePlugin {
     fn build(&self, app: &mut App) {
+        crate::sprite_material::ensure_sprite_material_pipeline(app);
+        crate::nodes::register_runtime_node_kinds(app);
+
         app.init_resource::<Graph>()
             .init_resource::<NodeEntities>()
             .add_systems(

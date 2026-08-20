@@ -5,7 +5,7 @@
 //!
 //! Every kind is one `#[derive(Reflect)]` struct with exactly the fields
 //! `inlets`, `state`, `outlets` (design D3), registered with
-//! [`sway_graph::graph::RegisterNodeKind`] by [`RuntimeNodesPlugin`].
+//! [`sway_graph::graph::RegisterNodeKind`] by [`RuntimePlugin`](crate::RuntimePlugin).
 //!
 //! ## Why these live in `sway-runtime` and not `sway-nodes`
 //!
@@ -41,7 +41,8 @@ pub use sprite_material::{SpriteMaterial, SpriteMaterialIn, SpriteMaterialState}
 /// Registers every render-coupled node kind, its part types, and the protocol
 /// markers a document or the inspector may address by path.
 ///
-/// Separate from [`RuntimeNodesPlugin`] so a test — or anything that only
+/// Separate from [`RuntimePlugin`](crate::RuntimePlugin) so a test — or
+/// anything that only
 /// needs the *schema* — can have the kinds without the render pipeline the
 /// sprite material brings with it.
 pub fn register_runtime_node_kinds(app: &mut App) {
@@ -92,18 +93,6 @@ pub fn register_runtime_node_kinds(app: &mut App) {
 /// shader and render pipeline.
 ///
 /// The pipeline half is skipped when
-/// [`SpriteMaterialPlugin`](crate::sprite_material::SpriteMaterialPlugin)
-/// already added it: the two node models land beside each other until group
-/// 9, and adding one Bevy plugin twice panics.
-pub struct RuntimeNodesPlugin;
-
-impl Plugin for RuntimeNodesPlugin {
-    fn build(&self, app: &mut App) {
-        crate::sprite_material::ensure_sprite_material_pipeline(app);
-        register_runtime_node_kinds(app);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

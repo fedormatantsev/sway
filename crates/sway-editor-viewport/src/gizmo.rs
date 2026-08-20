@@ -56,7 +56,7 @@ use sway_graph::graph::Graph;
 use sway_selection::Selection;
 use sway_viewport_input::{ViewportButton, ViewportInput, ViewportKey};
 
-use crate::project::NodeEntities;
+use sway_runtime::project::NodeEntities;
 
 /// Keeps `TransformGizmoFocus` on the selection, and only there.
 pub fn follow_selection(
@@ -93,19 +93,19 @@ pub fn follow_selection(
 /// document's scene camera, and the gizmo renderer's own overlay camera.
 pub fn mark_gizmo_camera(
     mut commands: Commands,
-    active: Res<crate::viewport::ViewportCamera>,
-    cameras: Query<(Entity, &crate::viewport::ViewportCameraRole)>,
+    active: Res<crate::ViewportCamera>,
+    cameras: Query<(Entity, &crate::ViewportCameraRole)>,
     marked: Query<Entity, With<TransformGizmoCamera>>,
 ) {
     let wanted = cameras.iter().find_map(|(entity, role)| {
         matches!(
             (*active, role),
             (
-                crate::viewport::ViewportCamera::Editor,
-                crate::viewport::ViewportCameraRole::Editor
+                crate::ViewportCamera::Editor,
+                crate::ViewportCameraRole::Editor
             ) | (
-                crate::viewport::ViewportCamera::Scene,
-                crate::viewport::ViewportCameraRole::Scene
+                crate::ViewportCamera::Scene,
+                crate::ViewportCameraRole::Scene
             )
         )
         .then_some(entity)
@@ -169,7 +169,7 @@ fn cursor_in_viewport_pixels(camera: &Camera, pos: Vec2) -> Option<Vec2> {
 /// `bevy::gizmos::transform_gizmo` — so there is nothing upstream to reuse
 /// here, only the mapping.
 pub fn set_gizmo_mode(
-    events: Res<crate::viewport::ViewportEvents>,
+    events: Res<crate::ViewportEvents>,
     mut settings: ResMut<TransformGizmoSettings>,
 ) {
     for event in &events.0 {
@@ -193,7 +193,7 @@ pub fn set_gizmo_mode(
 /// handles, `point_to_ring_screen_dist` for rotate rings and the view
 /// handle — is Bevy's own, unchanged.
 pub fn viewport_gizmo_hover(
-    events: Res<crate::viewport::ViewportEvents>,
+    events: Res<crate::ViewportEvents>,
     focus: Query<&GlobalTransform, With<TransformGizmoFocus>>,
     cameras: Query<(&Camera, &GlobalTransform), With<TransformGizmoCamera>>,
     settings: Res<TransformGizmoSettings>,
@@ -324,7 +324,7 @@ const MIN_SCALE: f32 = 0.01;
 /// Bevy's private `transform_gizmo_drag`; everything else below is that
 /// function's own math, called or copied unchanged.
 pub fn viewport_gizmo_drag(
-    events: Res<crate::viewport::ViewportEvents>,
+    events: Res<crate::ViewportEvents>,
     mut focus_query: Query<(Entity, &GlobalTransform, &mut Transform), With<TransformGizmoFocus>>,
     cameras: Query<(&Camera, &GlobalTransform), With<TransformGizmoCamera>>,
     settings: Res<TransformGizmoSettings>,
@@ -563,8 +563,8 @@ mod tests {
     /// The graph node whose projected entity is `entity`. Inserts a live
     /// `MeshNode` so [`Graph::set_selection`] will accept the id.
     fn bind_entity(app: &mut App, entity: Entity) -> sway_graph::NodeId {
-        use crate::nodes::scene::MeshNode;
-        use crate::project::NodeEntities;
+        use sway_runtime::nodes::scene::MeshNode;
+        use sway_runtime::project::NodeEntities;
         use sway_graph::graph::{Graph, Node};
 
         let node = {
@@ -630,7 +630,7 @@ mod tests {
     #[test]
     fn the_plugin_initialises_what_the_renderer_needs() {
         let mut app = App::new();
-        app.add_plugins(crate::viewport::EditorViewportPlugin);
+        app.add_plugins(crate::EditorViewportPlugin);
         assert!(
             app.world()
                 .get_resource::<TransformGizmoSettings>()
@@ -677,7 +677,7 @@ mod tests {
 
     #[test]
     fn the_active_viewport_camera_carries_the_gizmo_camera_marker() {
-        use crate::viewport::{ViewportCamera, ViewportCameraRole};
+        use crate::{ViewportCamera, ViewportCameraRole};
 
         let mut app = App::new();
         app.init_resource::<ViewportCamera>()
@@ -720,8 +720,8 @@ mod tests {
     /// screen-up — a deterministic, camera-aligned layout to hover-test
     /// against.
     fn app_with_a_focused_gizmo() -> (App, Entity) {
-        use crate::viewport::ViewportCamera;
-        use crate::viewport::pick::click_tests::app_with_a_cube;
+        use crate::ViewportCamera;
+        use crate::pick::click_tests::app_with_a_cube;
 
         let (mut app, cube, tx) = app_with_a_cube();
         *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
@@ -760,7 +760,7 @@ mod tests {
     #[test]
     fn the_mode_keys_switch_modes() {
         let mut app = App::new();
-        app.init_resource::<crate::viewport::ViewportEvents>()
+        app.init_resource::<crate::ViewportEvents>()
             .init_resource::<TransformGizmoSettings>()
             .add_systems(Update, set_gizmo_mode);
 
@@ -770,7 +770,7 @@ mod tests {
             (ViewportKey::Translate, TransformGizmoMode::Translate),
         ] {
             app.world_mut()
-                .resource_mut::<crate::viewport::ViewportEvents>()
+                .resource_mut::<crate::ViewportEvents>()
                 .0 = vec![ViewportInput::Key { key }];
             app.update();
             assert_eq!(

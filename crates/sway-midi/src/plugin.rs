@@ -5,6 +5,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Res, ResMut};
 use crossbeam_channel::Receiver;
+use sway_graph::graph::RegisterNodeKind;
 
 use crate::{MidiMessage, PulseClock, TimedMidi, Transport, host_time_now, host_time_to_secs};
 
@@ -42,7 +43,11 @@ pub struct MidiPlugin {
 
 impl Plugin for MidiPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(MidiRx(self.rx.clone()))
+        // The whole domain: the transport's resources and systems *and* the
+        // node kinds that read them. A host adds this and nothing else.
+        app.register_node_kind::<crate::nodes::MidiTime>()
+            .register_type::<crate::nodes::MidiTimeOut>()
+            .insert_resource(MidiRx(self.rx.clone()))
             .init_resource::<MidiInbox>()
             .init_resource::<TickMidi>()
             .init_resource::<MidiClock>()
@@ -137,6 +142,7 @@ mod tests {
     use bevy_app::App;
     use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
     use crossbeam_channel::Receiver;
+use sway_graph::graph::RegisterNodeKind;
     use sway_graph::GraphPlugin;
 
     use super::{

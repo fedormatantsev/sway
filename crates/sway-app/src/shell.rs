@@ -167,14 +167,14 @@ impl Running {
                 ViewRequest::ToggleCamera => {
                     let world = self.app.world_mut();
                     if let Some(mut active) =
-                        world.get_resource_mut::<sway_runtime::viewport::camera::ViewportCamera>()
+                        world.get_resource_mut::<sway_editor_viewport::camera::ViewportCamera>()
                     {
                         *active = match *active {
-                            sway_runtime::viewport::camera::ViewportCamera::Editor => {
-                                sway_runtime::viewport::camera::ViewportCamera::Scene
+                            sway_editor_viewport::camera::ViewportCamera::Editor => {
+                                sway_editor_viewport::camera::ViewportCamera::Scene
                             }
-                            sway_runtime::viewport::camera::ViewportCamera::Scene => {
-                                sway_runtime::viewport::camera::ViewportCamera::Editor
+                            sway_editor_viewport::camera::ViewportCamera::Scene => {
+                                sway_editor_viewport::camera::ViewportCamera::Editor
                             }
                         };
                     }

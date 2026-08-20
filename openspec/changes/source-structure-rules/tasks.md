@@ -64,18 +64,18 @@
 
 ## 7. One plugin per domain
 
-- [ ] 7.1 `sway-midi`: fold `MidiGraphNodesPlugin` into `MidiPlugin`; delete the separate export.
-- [ ] 7.2 `sway-runtime`: fold `RuntimeNodesPlugin` and `ProjectionPlugin` into one `RuntimePlugin`, keeping `register_runtime_node_kinds` public for schema-only tests.
-- [ ] 7.3 `sway-app`: collapse the plugin list accordingly.
-- [ ] 7.4 `cargo test -p sway-midi -p sway-runtime`.
+- [x] 7.1 `sway-midi`: fold `MidiGraphNodesPlugin` into `MidiPlugin`; delete the separate export.
+- [x] 7.2 `sway-runtime`: fold `RuntimeNodesPlugin` and `ProjectionPlugin` into one `RuntimePlugin`, keeping `register_runtime_node_kinds` public for schema-only tests.
+- [x] 7.3 `sway-app`: collapse the plugin list accordingly.
+- [x] 7.4 `cargo test -p sway-midi -p sway-runtime`.
 
 ## 8. `sway-editor-viewport` (extracted from `sway-runtime`)
 
-- [ ] 8.1 Create `crates/sway-editor-viewport` (deps: `bevy`, `sway-graph`, `sway-viewport-input`, `sway-runtime`, `crossbeam-channel`) and register it in the workspace.
-- [ ] 8.2 Move `sway-runtime/src/viewport/{mod,camera,gizmo,pick}.rs` into it, along with `ViewportInputRx` and `EditorViewportPlugin`.
-- [ ] 8.3 Point the gizmo's field writes at the new reflected `SetField`.
-- [ ] 8.4 `sway-app`: depend on the new crate and add `EditorViewportPlugin` from it in editor builds.
-- [ ] 8.5 `cargo test -p sway-editor-viewport -p sway-runtime`.
+- [x] 8.1 Create `crates/sway-editor-viewport` (deps: `bevy`, `sway-graph`, `sway-viewport-input`, `sway-runtime`, `crossbeam-channel`) and register it in the workspace.
+- [x] 8.2 Move `sway-runtime/src/viewport/{mod,camera,gizmo,pick}.rs` into it, along with `ViewportInputRx` and `EditorViewportPlugin`.
+- [x] 8.3 Point the gizmo's field writes at the new reflected `SetField`.
+- [x] 8.4 `sway-app`: depend on the new crate and add `EditorViewportPlugin` from it in editor builds.
+- [x] 8.5 `cargo test -p sway-editor-viewport -p sway-runtime`.
 
 ## 9. `sway-runtime` internal layout and dead code
 

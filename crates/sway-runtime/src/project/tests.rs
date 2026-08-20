@@ -1,6 +1,6 @@
 //! Projection, end to end (task 5.8).
 //!
-//! Every test drives a real [`Graph`] through the real [`ProjectionPlugin`]
+//! Every test drives a real [`Graph`] through the real [`RuntimePlugin`]
 //! chain in a device-free `App`: `AssetPlugin` plus the asset types the
 //! projectors touch, no renderer, following `frame_sequence.rs`'s and
 //! `sprite_material.rs`'s existing pattern.
@@ -16,7 +16,7 @@ use crate::nodes::pbr_material::{PbrMaterial, PbrMaterialIn};
 use crate::nodes::protocol;
 use crate::nodes::scene::{Camera, DirectionalLight, Group, MeshNode, PointLight};
 use crate::nodes::sprite_material::{SpriteMaterial, SpriteMaterialIn};
-use crate::project::{MaterialAttachment, NodeEntities, ProjectionPlugin, dirty_in_graph_order};
+use crate::project::{MaterialAttachment, NodeEntities, RuntimePlugin, dirty_in_graph_order};
 use crate::sprite_material::SpriteMaterialAsset;
 
 // ---------------------------------------------------------------------------
@@ -49,8 +49,7 @@ fn projection_app() -> App {
         .resource_mut::<Assets<StandardMaterial>>()
         .insert(&Handle::default(), StandardMaterial::default())
         .expect("seeding the default handle succeeds");
-    crate::nodes::register_runtime_node_kinds(&mut app);
-    app.add_plugins(ProjectionPlugin);
+    app.add_plugins(RuntimePlugin);
     app
 }
 

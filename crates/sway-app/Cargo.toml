@@ -18,6 +18,7 @@ sway-document.workspace = true
 sway-midi.workspace = true
 sway-base-nodes.workspace = true
 sway-runtime.workspace = true
+sway-editor-viewport.workspace = true
 sway-gpu.workspace = true
 sway-editor.workspace = true
 winit.workspace = true

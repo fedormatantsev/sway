@@ -327,7 +327,7 @@ pub struct SpriteMaterialPlugin;
 /// once.
 ///
 /// Split out of [`SpriteMaterialPlugin`] so the new graph model's
-/// [`RuntimeNodesPlugin`](crate::nodes::RuntimeNodesPlugin) can ask for the
+/// [`RuntimePlugin`](crate::RuntimePlugin) can ask for the
 /// same pipeline while the two node models sit side by side: adding one Bevy
 /// plugin twice panics, and `embedded_asset!` keys the shader by the *source
 /// file* it is invoked from, so the call has to stay in this module for

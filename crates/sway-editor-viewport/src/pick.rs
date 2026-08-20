@@ -10,8 +10,8 @@ use bevy::prelude::*;
 use sway_selection::Selection;
 use sway_viewport_input::{ViewportButton, ViewportInput};
 
-use crate::project::NodeEntities;
-use crate::viewport::{ViewportCamera, ViewportCameraRole};
+use sway_runtime::project::NodeEntities;
+use crate::{ViewportCamera, ViewportCameraRole};
 
 /// Builds a world-space ray from a normalized viewport position.
 ///
@@ -71,7 +71,7 @@ fn is_gizmo_mesh(entity: Entity, gizmo_meshes: &HashSet<Entity>) -> bool {
 /// which that plugin initialises (spec M7-6).
 #[allow(clippy::type_complexity)] // an ECS query filter tuple, not a type to simplify
 pub fn pick_on_click(
-    events: Res<crate::viewport::ViewportEvents>,
+    events: Res<crate::ViewportEvents>,
     active: Res<ViewportCamera>,
     cameras: Query<(&Camera, &GlobalTransform, &ViewportCameraRole)>,
     gizmo_state: Option<Res<bevy::gizmos::transform_gizmo::TransformGizmoState>>,
@@ -166,7 +166,7 @@ mod tests {
         let gpu = sway_gpu::GpuContext::new(None);
         let size = UVec2::new(4, 4);
         let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);
-        let mut app = crate::headless::build_app(&gpu, &viewport, size, std::env::temp_dir());
+        let mut app = sway_runtime::headless::build_app(&gpu, &viewport, size, std::env::temp_dir());
 
         let transform = Transform::from_xyz(0.0, 0.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y);
         let entity = app.world_mut().spawn((Camera3d::default(), transform)).id();
@@ -225,9 +225,9 @@ mod tests {
 #[cfg(test)]
 pub(crate) mod click_tests {
     use super::*;
-    use crate::nodes::scene::MeshNode;
-    use crate::project::NodeEntities;
-    use crate::viewport::{ViewportCamera, ViewportCameraRole};
+    use sway_runtime::nodes::scene::MeshNode;
+    use sway_runtime::project::NodeEntities;
+    use crate::{ViewportCamera, ViewportCameraRole};
     use sway_graph::graph::{Graph, Node};
     use sway_viewport_input::{ViewportButton, ViewportInput, ViewportModifiers};
 
@@ -248,10 +248,10 @@ pub(crate) mod click_tests {
         let gpu = sway_gpu::GpuContext::new(None);
         let size = UVec2::new(64, 64);
         let viewport = sway_gpu::ViewportTexture::new(&gpu.device, size.x, size.y);
-        let mut app = crate::headless::build_app(&gpu, &viewport, size, std::env::temp_dir());
-        app.add_plugins(crate::viewport::EditorViewportPlugin);
+        let mut app = sway_runtime::headless::build_app(&gpu, &viewport, size, std::env::temp_dir());
+        app.add_plugins(crate::EditorViewportPlugin);
         let (tx, rx) = crossbeam_channel::unbounded();
-        app.insert_resource(crate::viewport::ViewportInputRx(rx));
+        app.insert_resource(crate::ViewportInputRx(rx));
         app.finish();
         app.cleanup();
 

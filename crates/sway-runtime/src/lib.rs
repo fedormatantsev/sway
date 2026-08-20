@@ -11,7 +11,6 @@ pub mod scatter;
 pub mod shader_validation;
 pub mod sprite_layer;
 pub mod sprite_material;
-pub mod viewport;
 
 pub use frame_sequence::{ColorSpace, SequenceError, assemble_layers, sort_frames_by_name};
 pub use point_cloud::PointCloudPlugin;
@@ -21,7 +20,6 @@ pub use sprite_material::{
     SpriteMaterialAsset, SpriteMaterialPlugin, SpriteMaterialUniform, SpriteMeshBounds,
     inflate_local_aabb, layer_index, max_displacement, sync_sprite_material_bounds,
 };
-pub use viewport::EditorViewportPlugin;
 
-pub use nodes::RuntimeNodesPlugin;
-pub use project::{NodeEntities, ProducerSet, ProjectionPlugin, ProjectionSet};
+pub use nodes::register_runtime_node_kinds;
+pub use project::{NodeEntities, ProducerSet, ProjectionSet, RuntimePlugin};

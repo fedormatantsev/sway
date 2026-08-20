@@ -1,0 +1,19 @@
+[package]
+name = "sway-editor-viewport"
+version.workspace = true
+edition.workspace = true
+
+# The editor's viewport interaction: camera orbit, the transform gizmo,
+# picking. Depends on `sway-runtime` for `NodeEntities` — picking resolves an
+# entity back to the node that produced it — so `sway-runtime` must not depend
+# on this. `sway-app` adds it in editor builds only.
+[dependencies]
+bevy.workspace = true
+sway-graph.workspace = true
+sway-runtime.workspace = true
+sway-selection.workspace = true
+sway-viewport-input.workspace = true
+crossbeam-channel.workspace = true
+
+[dev-dependencies]
+sway-gpu.workspace = true
