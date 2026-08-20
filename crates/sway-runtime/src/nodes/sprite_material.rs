@@ -134,9 +134,23 @@ pub fn enable_depth_write(descriptor: &mut RenderPipelineDescriptor) {
     }
 }
 
+/// Where the shader sits, relative to **this source file**.
+///
+/// A macro rather than a `const` because both users need a literal token:
+/// `embedded_asset!` expands to `include_bytes!`, and `embedded_path!` builds
+/// the asset key from `file!()`. Naming it once is what keeps registration and
+/// lookup in step — they are computed the same way, so a path that is right
+/// for one is right for the other, and moving this module breaks the build
+/// instead of silently emptying the scene.
+macro_rules! shader_path {
+    () => {
+        "../../assets/shaders/sprite_material.wgsl"
+    };
+}
+
 fn sprite_material_shader() -> ShaderRef {
     ShaderRef::Path(
-        AssetPath::from_path_buf(embedded_path!("../assets/shaders/sprite_material.wgsl"))
+        AssetPath::from_path_buf(embedded_path!(shader_path!()))
             .with_source("embedded"),
     )
 }
@@ -331,7 +345,7 @@ pub fn sync_sprite_material_bounds(
 /// the shader by the *source file* it is invoked from, so this has to stay in
 /// this module for [`sprite_material_shader`]'s `embedded_path!` to find it.
 pub fn ensure_sprite_material_pipeline(app: &mut App) {
-    embedded_asset!(app, "../../assets/shaders/sprite_material.wgsl");
+    embedded_asset!(app, shader_path!());
     app.add_plugins(MaterialPlugin::<SpriteMaterialAsset>::default());
 }
 
@@ -450,6 +464,58 @@ impl protocol::MaterialNode for SpriteMaterial {
 
 #[cfg(test)]
 mod tests {
+    /// The shader the material asks for must be a shader something registered.
+    ///
+    /// `ensure_sprite_material_pipeline` *registers* it and
+    /// `sprite_material_shader` *looks it up*, and both build their key from
+    /// `file!()`. Only the registering half is compiler-checked
+    /// (`embedded_asset!` expands to `include_bytes!`, which fails the build
+    /// on a wrong path); the lookup half was a plain string. Folding this
+    /// module one directory deeper therefore left the lookup pointing at a key
+    /// nothing had registered — the material got no shader and every sprite
+    /// mesh vanished, while its nodes, entities and every test in this suite
+    /// stayed perfectly green.
+    ///
+    /// Registers through the same macro, from the same file, as production
+    /// does, then reads the bytes back out at the path the material names.
+    #[test]
+    fn the_shader_is_readable_at_the_path_the_material_asks_for() {
+        let mut app = App::new();
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        // The registering half, verbatim — `file!()` here is this same file,
+        // so the key is the one production computes.
+        embedded_asset!(app, shader_path!());
+
+        let ShaderRef::Path(requested) = sprite_material_shader() else {
+            panic!("the sprite material names its shader by path");
+        };
+
+        let server = app.world().resource::<AssetServer>();
+        let source = server
+            .get_source(requested.source())
+            .expect("the `embedded` asset source exists");
+        let bytes = bevy::tasks::block_on(async {
+            let mut reader = source
+                .reader()
+                .read(requested.path())
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("nothing is registered at {requested}: {error}")
+                });
+            let mut buffer = Vec::new();
+            bevy::asset::io::Reader::read_to_end(&mut *reader, &mut buffer)
+                .await
+                .expect("the registered bytes are readable");
+            buffer
+        });
+
+        let source_text = String::from_utf8(bytes).expect("the shader is UTF-8");
+        assert!(
+            source_text.contains("@vertex") && source_text.contains("@fragment"),
+            "and it really is the sprite material's shader",
+        );
+    }
+
     use super::*;
     use bevy::render::render_resource::{
         CompareFunction, DepthBiasState, DepthStencilState, RenderPipelineDescriptor, StencilState,
@@ -563,5 +629,6 @@ mod tests {
         assert!(descriptor.depth_stencil.is_none());
     }
 }
+
 
 
