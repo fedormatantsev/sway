@@ -1,15 +1,59 @@
-//! `Math` and `Remap`, the new-model replacements for the wire-model types of
-//! the same name in `crate::value`. The arithmetic itself is shared, unported
-//! code: `crate::math::{math_value, remap_value}`.
+//! `Math` and `Remap`: binary arithmetic and range rescaling, each a pure
+//! function of its own inlets.
 //!
-//! `MathAFrom` / `RemapInputFrom` do not port — an edge now names `"a"` /
-//! `"input"` directly on `inlets`.
+//! An edge names `"a"` / `"input"` directly on `inlets`; there are no
+//! per-field wire types.
 
 use bevy_ecs::world::World;
 use bevy_reflect::Reflect;
 use sway_graph::graph::{NodeKind, ReflectNodeKind};
 
-use crate::math::{MathOp, math_value, remap_value};
+/// Which operation [`Math`] applies.
+#[derive(Reflect, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MathOp {
+    #[default]
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Min,
+    Max,
+}
+
+/// The arithmetic itself. Division by zero yields `0.0` rather than an
+/// infinity: a node's outlet feeds a transform, and a NaN there propagates
+/// through the whole scene.
+pub fn math_value(op: MathOp, a: f32, b: f32) -> f32 {
+    match op {
+        MathOp::Add => a + b,
+        MathOp::Sub => a - b,
+        MathOp::Mul => a * b,
+        MathOp::Div if b == 0.0 => 0.0,
+        MathOp::Div => a / b,
+        MathOp::Min => a.min(b),
+        MathOp::Max => a.max(b),
+    }
+}
+
+/// Rescales `value` from one range to another, extrapolating unless clamped.
+/// A degenerate input range yields `out_min` rather than a division by zero.
+pub fn remap_value(
+    mut value: f32,
+    in_min: f32,
+    in_max: f32,
+    out_min: f32,
+    out_max: f32,
+    clamp: bool,
+) -> f32 {
+    if clamp {
+        value = value.clamp(in_min.min(in_max), in_min.max(in_max));
+    }
+    if in_min == in_max {
+        out_min
+    } else {
+        out_min + (value - in_min) / (in_max - in_min) * (out_max - out_min)
+    }
+}
 
 /// [`Math`]'s inlets. `b` is authorable and a wire may still override it —
 /// "LFO x 2" is one `Math` with `b: 2.0` left unwired, which is why there is
@@ -97,6 +141,38 @@ impl NodeKind for Remap {
 
 #[cfg(test)]
 mod tests {
+    // --- the arithmetic, directly -----------------------------------------
+
+    #[test]
+    fn math_supports_every_operation_and_zero_division() {
+        use super::{MathOp, math_value};
+        for (op, expected) in [
+            (MathOp::Add, 8.0),
+            (MathOp::Sub, 4.0),
+            (MathOp::Mul, 12.0),
+            (MathOp::Div, 3.0),
+            (MathOp::Min, 2.0),
+            (MathOp::Max, 6.0),
+        ] {
+            assert_eq!(math_value(op, 6.0, 2.0), expected);
+        }
+        assert_eq!(math_value(MathOp::Div, 6.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn remap_can_extrapolate_clamp_and_handle_degenerate_ranges() {
+        use super::remap_value;
+        assert_eq!(remap_value(15.0, 0.0, 10.0, -1.0, 1.0, false), 2.0);
+        assert_eq!(remap_value(15.0, 0.0, 10.0, -1.0, 1.0, true), 1.0);
+        assert_eq!(remap_value(4.0, 2.0, 2.0, 7.0, 9.0, false), 7.0);
+    }
+
+    #[test]
+    fn the_math_enum_defaults_to_its_first_variant() {
+        use super::MathOp;
+        assert_eq!(MathOp::default(), MathOp::Add);
+    }
+
     
     use bevy_reflect::TypeRegistry;
     use sway_graph::graph::registry::register_node_kind;

@@ -230,7 +230,7 @@ fn main() {
             LiveGraphPlugin {
                 graph_file: project.graph_file.clone(),
             },
-            sway_nodes::GraphNodesPlugin,
+            sway_base_nodes::BaseNodesPlugin,
             sway_midi::MidiGraphNodesPlugin,
             RuntimeNodesPlugin,
             ProjectionPlugin,

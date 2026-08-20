@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn short_type_name_strips_module_paths() {
-        assert_eq!(short_type_name("sway_nodes::lfo::Lfo"), "Lfo");
+        assert_eq!(short_type_name("sway_base_nodes::lfo::Lfo"), "Lfo");
         assert_eq!(short_type_name("bevy::asset::Handle<Mesh>"), "Handle<Mesh>");
     }
 

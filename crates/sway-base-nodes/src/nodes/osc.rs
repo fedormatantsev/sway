@@ -180,7 +180,7 @@ mod tests {
         // Stands in for `MidiTime`: any node whose `out` reaches `time`.
         let time_source = graph.insert(Node::of(Math {
                 inlets: MathIn {
-                    op: crate::math::MathOp::Add,
+                    op: crate::nodes::math::MathOp::Add,
                     a: 1.0,
                     b: 0.0,
                 },
@@ -221,7 +221,7 @@ mod tests {
         let mut graph = Graph::default();
         let amplitude = graph.insert(Node::of(Math {
                 inlets: MathIn {
-                    op: crate::math::MathOp::Add,
+                    op: crate::nodes::math::MathOp::Add,
                     a: 0.5,
                     b: 0.0,
                 },

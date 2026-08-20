@@ -168,7 +168,7 @@ pub enum ViewportCamera {
 
 /// Tags a camera as one of the two the toggle switches between.
 ///
-/// A marker rather than a query over `EditorCamera` and `sway_nodes::SceneCamera`
+/// A marker rather than a query over `EditorCamera` and the scene camera
 /// because `sway-runtime` does not depend on `sway-nodes` — `sway-app` composes
 /// the two. It is also what keeps the gizmo renderer's own overlay camera out
 /// of this system's reach.
@@ -212,7 +212,7 @@ pub fn apply_active_camera(
 
 /// Attaches `ViewportCameraRole::Scene` to any camera the document authored
 /// (i.e. any camera `sway-app` didn't already tag itself, such as
-/// `sway_nodes::SceneCamera`). Runs every `Update` because a camera can
+/// the scene camera). Runs every `Update` because a camera can
 /// arrive with a reload.
 ///
 /// Excludes the gizmo renderer's own overlay camera, which must stay active

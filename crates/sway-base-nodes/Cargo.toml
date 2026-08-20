@@ -1,17 +1,16 @@
 [package]
-name = "sway-midi"
-edition.workspace = true
+name = "sway-base-nodes"
 version.workspace = true
+edition.workspace = true
 
+# The base value/signal nodes: every one is a pure function of its inlets and
+# state, so this crate reads nothing outside the graph and needs no clock.
 [dependencies]
-sway-midi-core.workspace = true
 sway-graph.workspace = true
-bevy.workspace = true
 bevy_app.workspace = true
 bevy_ecs.workspace = true
+bevy_math.workspace = true
 bevy_reflect.workspace = true
-bevy_time.workspace = true
-crossbeam-channel.workspace = true
 
 [dev-dependencies]
 # The tick harness, rather than a copy of it in this crate.

@@ -52,15 +52,15 @@
 
 ## 6. `sway-base-nodes` (renamed from `sway-nodes`)
 
-- [ ] 6.1 Rename the crate directory, package and workspace entry to `sway-base-nodes`; update every dependent manifest and `use`.
-- [ ] 6.2 Fold `math.rs` into the `math` node module and `envelope.rs` into the `envelope` node module; delete `beat.rs`, `NoteField` and the crate-root `pub use *` re-exports.
-- [ ] 6.3 Rename the `Vec3` node kind to `MakeVec3` (`Vec3In`/`Vec3Out` → `MakeVec3In`/`MakeVec3Out`, `value.rs` → `make_vec3.rs`) and drop the now-unnecessary `use bevy::math::Vec3 as MathVec3` alias. Behaviour is unchanged.
-- [ ] 6.4 Reshape `Envelope`: `inlets.time: f32`, gate timestamps against that base, `state.now` removed, `&World` unused. Update its tests.
-- [ ] 6.5 Delete `tests/traces.rs`; check the arithmetic it covered is covered by the node kinds' own tests and add what is missing.
-- [ ] 6.6 Replace the module's `GraphNodesPlugin` with a crate-root `BaseNodesPlugin` registering `Oscillator`, `Envelope`, `Math`, `Remap`, `MakeVec3` and their part types; keep the unique-short-name test.
-- [ ] 6.7 Delete the crate's copied test harness and depend on `sway-graph`'s `test-support` feature instead.
-- [ ] 6.8 Drop `bevy_time` from the manifest; confirm the crate no longer reads anything outside the graph.
-- [ ] 6.9 `cargo test -p sway-base-nodes`.
+- [x] 6.1 Rename the crate directory, package and workspace entry to `sway-base-nodes`; update every dependent manifest and `use`.
+- [x] 6.2 Fold `math.rs` into the `math` node module and `envelope.rs` into the `envelope` node module; delete `beat.rs`, `NoteField` and the crate-root `pub use *` re-exports.
+- [x] 6.3 Rename the `Vec3` node kind to `MakeVec3` (`Vec3In`/`Vec3Out` → `MakeVec3In`/`MakeVec3Out`, `value.rs` → `make_vec3.rs`) and drop the now-unnecessary `use bevy::math::Vec3 as MathVec3` alias. Behaviour is unchanged.
+- [x] 6.4 Reshape `Envelope`: `inlets.time: f32`, gate timestamps against that base, `state.now` removed, `&World` unused. Update its tests.
+- [x] 6.5 Delete `tests/traces.rs`; check the arithmetic it covered is covered by the node kinds' own tests and add what is missing.
+- [x] 6.6 Replace the module's `GraphNodesPlugin` with a crate-root `BaseNodesPlugin` registering `Oscillator`, `Envelope`, `Math`, `Remap`, `MakeVec3` and their part types; keep the unique-short-name test.
+- [x] 6.7 Delete the crate's copied test harness and depend on `sway-graph`'s `test-support` feature instead.
+- [x] 6.8 Drop `bevy_time` from the manifest; confirm the crate no longer reads anything outside the graph.
+- [x] 6.9 `cargo test -p sway-base-nodes`.
 
 ## 7. One plugin per domain
 
@@ -87,7 +87,7 @@
 
 ## 10. Manifest hygiene
 
-- [ ] 10.1 Remove unused dependency edges: `sway-midi → sway-nodes`, `sway-geo → sway-graph`, `sway-runtime → sway-base-nodes`, `sway-editor → sway-base-nodes` (dev).
+- [x] 10.1 Remove unused dependency edges: `sway-midi → sway-nodes`, `sway-geo → sway-graph`, `sway-runtime → sway-base-nodes`, `sway-editor → sway-base-nodes` (dev).
 - [ ] 10.2 Delete the stale manifest comments that justified them.
 - [ ] 10.3 Re-check every crate's manifest against its `use` statements and remove anything else unreferenced.
 - [ ] 10.4 `cargo check --workspace --all-targets`.

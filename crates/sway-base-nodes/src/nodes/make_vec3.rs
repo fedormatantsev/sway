@@ -1,41 +1,46 @@
-//! `Vec3`, the new-model replacement for the wire-model `Vec3Value`
-//! (`crate::value::Vec3Value`). See `crates/sway-nodes/src/value.rs`.
+//! `MakeVec3`: three scalar inlets in, one vector outlet out.
 //!
-//! The per-axis wires `Vec3XFrom` / `Vec3YFrom` / `Vec3ZFrom` do not port —
-//! an edge now names `"x"` / `"y"` / `"z"` directly on `inlets`.
+//! Named for the assembling rather than for the type it produces — a node
+//! kind called `Vec3`, in a crate where `bevy_math::Vec3` is what its own
+//! outlet is made of, had to be aliased around at every use.
+//!
+//! An edge names `"x"` / `"y"` / `"z"` directly on `inlets`, so a single
+//! component is driveable without a wire type of its own. That is a different
+//! tool from reaching into one consumer's vector inlet: this produces a
+//! vector that fans out to many.
 
-use bevy::math::Vec3 as MathVec3;
 use bevy_ecs::world::World;
+use bevy_math::Vec3;
 use bevy_reflect::Reflect;
 use sway_graph::graph::{NodeKind, ReflectNodeKind};
 
-/// [`Vec3`]'s inlets.
+/// [`MakeVec3`]'s inlets.
 #[derive(Reflect, Default, Debug, Clone, Copy, PartialEq)]
-pub struct Vec3In {
+pub struct MakeVec3In {
     pub x: f32,
     pub y: f32,
     pub z: f32,
 }
 
-/// [`Vec3`]'s outlets.
+/// [`MakeVec3`]'s outlets.
 #[derive(Reflect, Default, Debug, Clone, Copy, PartialEq)]
-pub struct Vec3Out {
-    pub out: MathVec3,
+pub struct MakeVec3Out {
+    pub out: Vec3,
 }
 
-/// A vector literal whose components are driveable. Registered under the
-/// short kind name `"Vec3"`.
+/// Assembles a vector from three driveable components. Registered under the
+/// short kind name `"MakeVec3"`.
 #[derive(Reflect, Default, Debug)]
 #[reflect(NodeKind)]
-pub struct Vec3 {
-    pub inlets: Vec3In,
+pub struct MakeVec3 {
+    pub inlets: MakeVec3In,
     pub state: (),
-    pub outlets: Vec3Out,
+    pub outlets: MakeVec3Out,
 }
 
-impl NodeKind for Vec3 {
+impl NodeKind for MakeVec3 {
     fn evaluate(&mut self, _world: &World) {
-        self.outlets.out = MathVec3::new(self.inlets.x, self.inlets.y, self.inlets.z);
+        self.outlets.out = Vec3::new(self.inlets.x, self.inlets.y, self.inlets.z);
     }
 }
 
@@ -50,13 +55,13 @@ mod tests {
     use sway_graph::graph::testing;
 
     #[test]
-    fn a_vec3_node_publishes_its_three_fields() {
+    fn a_make_vec3_node_publishes_its_three_components() {
         let mut registry = TypeRegistry::new();
-        register_node_kind::<Vec3>(&mut registry);
+        register_node_kind::<MakeVec3>(&mut registry);
         let world = testing::trace_world(registry);
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(Vec3 {
-                inlets: Vec3In {
+        let node = graph.insert(Node::of(MakeVec3 {
+            inlets: MakeVec3In {
                     x: 1.0,
                     y: 2.0,
                     z: 3.0,
@@ -73,22 +78,22 @@ mod tests {
     }
 
     #[test]
-    fn a_float_reaches_a_vec3_axis_in_one_tick() {
+    fn a_float_reaches_one_component_in_one_tick() {
         let mut registry = TypeRegistry::new();
-        register_node_kind::<Vec3>(&mut registry);
+        register_node_kind::<MakeVec3>(&mut registry);
         register_node_kind::<crate::nodes::math::Math>(&mut registry);
         let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let source = graph.insert(Node::of(crate::nodes::math::Math {
                 inlets: crate::nodes::math::MathIn {
-                    op: crate::math::MathOp::Add,
+                    op: crate::nodes::math::MathOp::Add,
                     a: 0.75,
                     b: 0.0,
                 },
                 ..Default::default()
             },
         ));
-        let vector = graph.insert(Node::of(Vec3::default()));
+        let vector = graph.insert(Node::of(MakeVec3::default()));
         graph
             .connect(Port::new(source, "out"), Port::new(vector, "y"), 0)
             .expect("legal");
@@ -122,10 +127,10 @@ mod tests {
     #[test]
     fn an_equal_write_does_not_dirty_the_node() {
         let mut registry = TypeRegistry::new();
-        register_node_kind::<Vec3>(&mut registry);
+        register_node_kind::<MakeVec3>(&mut registry);
         let world = testing::trace_world(registry);
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(Vec3::default()));
+        let node = graph.insert(Node::of(MakeVec3::default()));
 
         testing::tick_once(&mut graph, &world);
         graph.drain_dirty();
