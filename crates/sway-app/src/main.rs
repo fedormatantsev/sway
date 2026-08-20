@@ -8,10 +8,10 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::math::UVec2;
 use bevy::prelude::*;
 use bevy::window::Monitor;
-use sway_document::v3::{GraphInitialized, LiveGraphPlugin, ProjectDirectory};
+use sway_document::v4::{GraphInitialized, LiveGraphPlugin, ProjectDirectory};
 use sway_graph::graph::Graph;
 use sway_runtime::nodes::{FrameSequence, MeshAsset};
-use sway_runtime::{ProducerSet, ProjectionPlugin, ProjectionSet, RuntimeNodesPlugin};
+use sway_runtime::{ProducerSet, ProjectionSet, RuntimePlugin};
 
 /// Provisional graph tick rate pending the measurements specified in spec §11.
 const TICK_HZ: f64 = 120.0;
@@ -210,9 +210,11 @@ fn main() {
         let mut app = sway_runtime::headless::build_app(gpu, viewport, size, &project.directory);
 
         if editor {
-            app.insert_resource(sway_graph::GraphRx(graph_rx.clone()))
-                .insert_resource(sway_graph::ViewportInputRx(viewport_rx.clone()))
-                .add_plugins(sway_runtime::EditorViewportPlugin);
+            app.insert_resource(sway_editor_viewport::ViewportInputRx(viewport_rx.clone()))
+                .add_plugins((
+                    sway_editor::edit::GraphEditPlugin::new(graph_rx.clone()),
+                    sway_editor_viewport::EditorViewportPlugin,
+                ));
         }
 
         app.insert_resource(ProjectDirectory(project.directory.clone()))
@@ -228,10 +230,8 @@ fn main() {
             LiveGraphPlugin {
                 graph_file: project.graph_file.clone(),
             },
-            sway_nodes::GraphNodesPlugin,
-            sway_midi::MidiGraphNodesPlugin,
-            RuntimeNodesPlugin,
-            ProjectionPlugin,
+            sway_base_nodes::BaseNodesPlugin,
+            RuntimePlugin,
         ))
         .configure_sets(FixedUpdate, sway_graph::GraphTickSet.run_if(assets_ready))
         .configure_sets(

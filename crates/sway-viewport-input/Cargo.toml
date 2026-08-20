@@ -1,0 +1,12 @@
+[package]
+name = "sway-viewport-input"
+version.workspace = true
+edition.workspace = true
+
+# The pointer/key/scroll vocabulary shared by the editor that produces these
+# events and the viewport that consumes them. Neither may depend on the other
+# (`sway-editor` links no `bevy` facade, `sway-editor-viewport` does), so the
+# vocabulary lives here rather than being parked in the engine. `bevy_math`
+# only — for `Vec2`.
+[dependencies]
+bevy_math.workspace = true

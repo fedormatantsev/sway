@@ -2,7 +2,7 @@ pub mod nodes;
 mod plugin;
 mod transport;
 
-pub use nodes::{MidiGraphNodesPlugin, MidiTime, MidiTimeOut};
+pub use nodes::{MidiTime, MidiTimeOut};
 pub use plugin::{MidiClock, MidiInbox, MidiPlugin, MidiRx, TickMidi};
 pub use sway_midi_core::{
     MidiInput, MidiMessage, PulseClock, TimedMidi, VIRTUAL_DESTINATION_NAME, host_time_now,

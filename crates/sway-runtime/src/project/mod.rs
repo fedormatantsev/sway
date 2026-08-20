@@ -80,7 +80,7 @@ pub struct ProjectionSet;
 /// rebuilt yet) sorts last, by ascending id, so the pass is still total and
 /// still deterministic.
 pub fn dirty_in_graph_order(graph: &Graph) -> Vec<NodeId> {
-    let order = &graph.order().order;
+    let order = graph.eval_order();
     let mut dirty: Vec<NodeId> = graph.dirty().collect();
     dirty.sort_by_key(|node| {
         (
@@ -97,7 +97,7 @@ pub fn dirty_in_graph_order(graph: &Graph) -> Vec<NodeId> {
 /// Every node, in evaluation order, whether dirty or not.
 pub fn nodes_in_graph_order(graph: &Graph) -> Vec<NodeId> {
     let mut nodes = graph.node_ids();
-    let order = &graph.order().order;
+    let order = graph.eval_order();
     nodes.sort_by_key(|node| {
         (
             order
@@ -138,14 +138,22 @@ pub fn clear_dirty(mut graph: ResMut<Graph>) {
     graph.drain_dirty();
 }
 
-/// Schedules the projectors.
+/// The whole runtime domain, in one plugin: this crate's node kinds, the
+/// pipelines they need, and the projectors that put them in the world.
 ///
-/// They run in `Update`, after `FixedUpdate`'s tick, so a node's inlets have
-/// already been propagated and evaluated when they are read.
-pub struct ProjectionPlugin;
+/// The projectors run in `Update`, after `FixedUpdate`'s tick, so a node's
+/// inlets have already been propagated and evaluated when they are read.
+///
+/// A host adds this and nothing else from this crate — except
+/// `EditorViewportPlugin`, which is an editor surface rather than part of the
+/// domain, and is added only in editor builds.
+pub struct RuntimePlugin;
 
-impl Plugin for ProjectionPlugin {
+impl Plugin for RuntimePlugin {
     fn build(&self, app: &mut App) {
+        crate::nodes::sprite_material::ensure_sprite_material_pipeline(app);
+        crate::nodes::register_runtime_node_kinds(app);
+
         app.init_resource::<Graph>()
             .init_resource::<NodeEntities>()
             .add_systems(
@@ -169,7 +177,7 @@ impl Plugin for ProjectionPlugin {
                     despawn_removed_nodes,
                     project_pbr_materials.run_if(resource_exists::<Assets<StandardMaterial>>),
                     project_sprite_materials.run_if(
-                        resource_exists::<Assets<crate::sprite_material::SpriteMaterialAsset>>,
+                        resource_exists::<Assets<crate::nodes::sprite_material::SpriteMaterialAsset>>,
                     ),
                     spawn_scene_entities,
                     project_scene_entities,
@@ -185,7 +193,7 @@ impl Plugin for ProjectionPlugin {
         // The displacement-aware bounds for sprite materials.
         app.add_systems(
             Update,
-            crate::sprite_material::sync_sprite_material_bounds
+            crate::nodes::sprite_material::sync_sprite_material_bounds
                 .after(ProjectionSet)
                 .run_if(resource_exists::<Assets<Mesh>>),
         );

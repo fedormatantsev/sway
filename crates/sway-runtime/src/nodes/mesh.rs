@@ -1,7 +1,7 @@
 //! `MeshAsset` and `PlaneMesh` — the two mesh producers, as graph nodes.
 //!
-//! Ports of `sway_nodes::mesh_asset::MeshAsset` and
-//! `sway_nodes::plane_mesh::PlaneMesh`, which stay where they are until group
+//! Ports of `sway_base_nodes::mesh_asset::MeshAsset` and
+//! `sway_base_nodes::plane_mesh::PlaneMesh`, which stay where they are until group
 //! 9. They land in `sway-runtime` rather than `sway-nodes` because every
 //! render-coupled node kind belongs in the crate that already owns the full
 //! `bevy` facade, leaving `sway-nodes` as the pure value-node crate.
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn independent_subdivision_counts_tessellate_the_two_axes_independently() {
-        // Carried over from `sway_nodes::plane_mesh`: catches a
+        // Carried over from the old `plane_mesh` module: catches a
         // horizontal/vertical mix-up, which would swap the two densities and
         // still look plausible.
         let mesh = build_plane(&PlaneMeshIn {

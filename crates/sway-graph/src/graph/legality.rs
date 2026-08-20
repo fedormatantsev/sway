@@ -65,17 +65,6 @@ pub fn compatibility(src: &TypeInfo, dst: &TypeInfo) -> Option<Compat> {
     None
 }
 
-/// Applies the rule to two resolved values, which is what `connect` has in
-/// hand. `None` when either value has no static type, or the pair is illegal.
-pub fn compatibility_of_values(
-    src: &dyn PartialReflect,
-    dst: &dyn PartialReflect,
-) -> Option<Compat> {
-    let src = src.get_represented_type_info()?;
-    let dst = dst.get_represented_type_info()?;
-    compatibility(src, dst)
-}
-
 /// Whether a value carries nothing — a marker/protocol source (design D6).
 ///
 /// Measured with `size_of_val` through the vtable rather than by naming marker

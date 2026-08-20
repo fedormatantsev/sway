@@ -5,15 +5,8 @@ version.workspace = true
 
 [dependencies]
 bevy.workspace = true
-bytemuck.workspace = true
 sway-gpu.workspace = true
 sway-graph.workspace = true
-# The sprite material is a node as well as a pipeline: it needs its own shader
-# (this crate owns those) *and* `FloatOut`/`Vec3Out` for its inlets. Mirrors
-# `sway-midi`, which depends on `sway-nodes` for exactly the same reason.
-# Acyclic — `sway-nodes` has no runtime dependency (design D6).
-sway-nodes.workspace = true
 
 [dev-dependencies]
 naga.workspace = true
-crossbeam-channel.workspace = true

@@ -10,17 +10,17 @@ path = "src/main.rs"
 [dependencies]
 bevy = { workspace = true, features = ["file_watcher"] }
 crossbeam-channel.workspace = true
-sway-geo.workspace = true
 sway-graph.workspace = true
+sway-viewport-input.workspace = true
+sway-selection.workspace = true
 sway-document.workspace = true
 sway-midi.workspace = true
-sway-nodes.workspace = true
+sway-base-nodes.workspace = true
 sway-runtime.workspace = true
+sway-editor-viewport.workspace = true
 sway-gpu.workspace = true
 sway-editor.workspace = true
 winit.workspace = true
 kurbo.workspace = true
-peniko.workspace = true
-imaging.workspace = true
 masonry_core.workspace = true
 rfd = "0.15"

@@ -9,7 +9,6 @@ pollster.workspace = true
 imaging.workspace = true
 imaging_vello.workspace = true
 kurbo.workspace = true
-peniko.workspace = true
 bytemuck.workspace = true
 winit.workspace = true
 

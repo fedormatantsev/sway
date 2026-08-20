@@ -10,6 +10,7 @@
 //! draws with it.
 
 pub mod canvas;
+pub mod edit;
 pub mod inspector;
 pub mod node_box;
 pub mod palette;
@@ -41,8 +42,11 @@ use masonry_core::core::{
     CursorIcon, NewWidget, TextEvent, Widget, WidgetTag, WindowEvent as MasonryWindowEvent,
 };
 use masonry_core::kurbo::Axis;
-use sway_graph::ViewportInput;
-use sway_graph::graph::{Graph, GraphCommand};
+use sway_viewport_input::ViewportInput;
+use sway_graph::graph::{Graph, NodeId};
+
+use crate::edit::EditorEdit;
+use sway_selection::Selection;
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use winit::dpi::PhysicalSize;
 
@@ -117,7 +121,7 @@ pub enum ViewRequest {
 /// the graph to change its selection. Only the transport bar is read-only
 /// and does not get it.
 fn graph_root(
-    commands: Sender<GraphCommand>,
+    commands: Sender<EditorEdit>,
     viewport_input: Sender<ViewportInput>,
 ) -> NewWidget<dyn Widget> {
     let tree = Portal::new(
@@ -198,7 +202,7 @@ impl EditorUi {
     pub fn new(
         size: PhysicalSize<u32>,
         scale_factor: f64,
-        commands: Sender<GraphCommand>,
+        commands: Sender<EditorEdit>,
         viewport_input: Sender<ViewportInput>,
     ) -> Self {
         let signals: Rc<RefCell<Vec<RenderRootSignal>>> = Rc::new(RefCell::new(Vec::new()));
@@ -356,7 +360,7 @@ impl EditorUi {
     /// The world side owns the other end:
     /// `app.insert_resource(GraphRx(rx))`, drained by
     /// `sway_graph::graph::apply_graph_commands` (scheduled by `GraphPlugin`).
-    pub fn set_graph_commands(&mut self, commands: Sender<GraphCommand>) {
+    pub fn set_graph_commands(&mut self, commands: Sender<EditorEdit>) {
         self.root
             .edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
                 GraphCanvas::set_graph_commands(&mut canvas, commands.clone());
@@ -378,17 +382,56 @@ impl EditorUi {
     /// borrow of `&Graph` only has to survive this call -- there is no `Arc`,
     /// no mutex, no copy of the graph, and no view layer between the graph and
     /// the widgets.
-    pub fn apply_graph(&mut self, graph: &Graph, registry: &TypeRegistry) {
+    pub fn apply_graph(
+        &mut self,
+        graph: &mut Graph,
+        selection: &mut Selection,
+        registry: &TypeRegistry,
+    ) {
+        // Canvas placement and selection first, and written straight onto the
+        // node and the resource rather than sent as edits: both are the
+        // editor's own state, and this is the moment the editor holds them.
+        // An annotation write is not a node change, so nothing re-evaluates
+        // because a node was dragged or clicked.
+        let placements = self
+            .root
+            .edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
+                GraphCanvas::take_placements(&mut canvas)
+            });
+        for (id, pos) in placements {
+            if let Some(node) = graph.get_mut(id) {
+                node.metadata_mut()
+                    .insert(crate::canvas::CANVAS_POS_KEY.to_string(), Box::new(pos));
+            }
+        }
+
+        let asked = self
+            .root
+            .edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
+                GraphCanvas::take_selection(&mut canvas)
+            })
+            .or_else(|| {
+                self.root.edit_widget_with_tag(SCENE_TREE_TAG, |mut tree| {
+                    SceneTree::take_selection(&mut tree)
+                })
+            });
+        if let Some(wanted) = asked {
+            // A stale id selects nothing rather than nothing at all: the node
+            // may have been deleted between the click and this call.
+            selection.set(wanted.filter(|id| graph.contains(*id)));
+        }
+        let selected: Option<NodeId> = selection.get();
+
         self.root.edit_widget_with_tag(SCENE_TREE_TAG, |mut tree| {
-            SceneTree::populate_from_graph(&mut tree, graph);
+            SceneTree::populate_from_graph(&mut tree, graph, selected);
         });
         self.root
             .edit_widget_with_tag(GRAPH_CANVAS_TAG, |mut canvas| {
-                GraphCanvas::populate_from_graph(&mut canvas, graph, registry);
+                GraphCanvas::populate_from_graph(&mut canvas, graph, selected, registry);
             });
         self.root
             .edit_widget_with_tag(INSPECTOR_TAG, |mut inspector| {
-                Inspector::populate_from_graph(&mut inspector, graph, registry);
+                Inspector::populate_from_graph(&mut inspector, graph, selected, registry);
             });
     }
 
@@ -699,10 +742,10 @@ mod tests {
         ui.set_graph_commands(graph_tx);
 
         let (mut graph, source, gate) = source_and_gate();
-        graph.set_selection(Some(gate));
+        let mut selection = sway_selection::Selection(Some(gate));
         let registry = registry();
 
-        ui.apply_graph(&graph, &registry);
+        ui.apply_graph(&mut graph, &mut selection, &registry);
         ui.redraw();
 
         let sockets = ui
@@ -731,7 +774,7 @@ mod tests {
         assert_eq!(tree_rows, vec![None, Some(source), Some(gate)]);
 
         // Reading it twice with an unchanged graph is cheap and idempotent.
-        ui.apply_graph(&graph, &registry);
+        ui.apply_graph(&mut graph, &mut selection, &registry);
         ui.redraw();
         assert!(
             graph_rx.try_iter().next().is_none(),

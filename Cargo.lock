@@ -5618,20 +5618,31 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "crossbeam-channel",
- "imaging",
  "kurbo",
  "masonry_core",
- "peniko",
  "rfd",
+ "sway-base-nodes",
  "sway-document",
  "sway-editor",
- "sway-geo",
+ "sway-editor-viewport",
  "sway-gpu",
  "sway-graph",
  "sway-midi",
- "sway-nodes",
  "sway-runtime",
+ "sway-selection",
+ "sway-viewport-input",
  "winit",
+]
+
+[[package]]
+name = "sway-base-nodes"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "bevy_math",
+ "bevy_reflect",
+ "sway-graph",
 ]
 
 [[package]]
@@ -5666,20 +5677,32 @@ dependencies = [
  "peniko",
  "sway-graph",
  "sway-midi",
- "sway-nodes",
+ "sway-selection",
+ "sway-viewport-input",
  "ui-events-winit",
  "winit",
+]
+
+[[package]]
+name = "sway-editor-viewport"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "crossbeam-channel",
+ "sway-gpu",
+ "sway-graph",
+ "sway-runtime",
+ "sway-selection",
+ "sway-viewport-input",
 ]
 
 [[package]]
 name = "sway-geo"
 version = "0.1.0"
 dependencies = [
- "bevy_app",
  "bevy_ecs",
  "bevy_math",
  "bevy_reflect",
- "sway-graph",
 ]
 
 [[package]]
@@ -5692,7 +5715,6 @@ dependencies = [
  "imaging_vello",
  "kurbo",
  "naga",
- "peniko",
  "pollster",
  "wgpu",
  "winit",
@@ -5707,15 +5729,12 @@ dependencies = [
  "bevy_math",
  "bevy_reflect",
  "bevy_time",
- "bevy_transform",
- "crossbeam-channel",
 ]
 
 [[package]]
 name = "sway-midi"
 version = "0.1.0"
 dependencies = [
- "bevy",
  "bevy_app",
  "bevy_ecs",
  "bevy_reflect",
@@ -5723,7 +5742,6 @@ dependencies = [
  "crossbeam-channel",
  "sway-graph",
  "sway-midi-core",
- "sway-nodes",
 ]
 
 [[package]]
@@ -5734,30 +5752,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "sway-nodes"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "bevy_app",
- "bevy_ecs",
- "bevy_reflect",
- "bevy_time",
- "ron",
- "serde",
- "sway-graph",
-]
-
-[[package]]
 name = "sway-runtime"
 version = "0.1.0"
 dependencies = [
  "bevy",
- "bytemuck",
- "crossbeam-channel",
  "naga",
  "sway-gpu",
  "sway-graph",
- "sway-nodes",
+]
+
+[[package]]
+name = "sway-selection"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "bevy_reflect",
+ "sway-graph",
+]
+
+[[package]]
+name = "sway-viewport-input"
+version = "0.1.0"
+dependencies = [
+ "bevy_math",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 //! `PbrMaterial` — Bevy's `StandardMaterial` as a material node.
 //!
-//! A port of `sway_nodes::pbr_material::PbrMaterial`, which stays where it is
+//! A port of the old `pbr_material::PbrMaterial`, which stays where it is
 //! until group 9. It lands here rather than in `sway-nodes` so that every
 //! render-coupled node kind sits in one crate.
 //!

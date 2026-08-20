@@ -3,12 +3,11 @@ name = "sway-geo"
 version.workspace = true
 edition.workspace = true
 
-# Headless at M2b. The parent spec's §3 puts this crate on the render side,
-# but every cook here is CPU-side, so bevy_render has no consumer yet and
-# joins at M5 (design §2).
+# Dormant: CPU-side geometry cooks, no node kinds and no plugin yet. It
+# depends on nothing of this project's — whether it is the landing site for
+# the post-MVP geometry work or should be deleted is a roadmap question
+# (§10), not a structure one.
 [dependencies]
-bevy_app.workspace = true
 bevy_ecs.workspace = true
 bevy_math.workspace = true
 bevy_reflect.workspace = true
-sway-graph.workspace = true

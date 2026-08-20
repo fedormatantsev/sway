@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use bevy_reflect::{ParsedPath, PartialReflect, ReflectRef};
 
 use crate::graph::edge::Compat;
-use crate::graph::id::{EdgeId, NodeId};
+use crate::graph::id::NodeId;
 use crate::graph::model::Graph;
 use crate::graph::node::Part;
 use crate::graph::path;
@@ -30,7 +30,7 @@ use crate::graph::path;
 /// a `Link` exactly like a value edge — that is what makes a marker connection
 /// order its two nodes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Link {
+pub(crate) struct Link {
     /// The producing node.
     pub src: NodeId,
     /// The consuming node.
@@ -39,7 +39,7 @@ pub struct Link {
 
 /// The result of the topological sort.
 #[derive(Clone, Debug, Default)]
-pub struct Sorted {
+pub(crate) struct Sorted {
     /// Evaluation order: the acyclic part first, then any cycle members in
     /// ascending `NodeId` order.
     pub order: Vec<NodeId>,
@@ -51,7 +51,7 @@ pub struct Sorted {
 ///
 /// Ties are broken by ascending [`NodeId`] so the order is deterministic — the
 /// editor shows it and the golden traces assert on it.
-pub fn topological_order(vertices: &[NodeId], links: &[Link]) -> Sorted {
+pub(crate) fn topological_order(vertices: &[NodeId], links: &[Link]) -> Sorted {
     let mut indegree: HashMap<NodeId, usize> = vertices.iter().map(|&id| (id, 0)).collect();
     let mut successors: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
 
@@ -95,23 +95,9 @@ pub fn topological_order(vertices: &[NodeId], links: &[Link]) -> Sorted {
     Sorted { order, cycles }
 }
 
-/// Where a propagate step writes on the destination side.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Target {
-    /// `D == S`: write the field.
-    Direct,
-    /// `D == Option<S>`: write `Some(value)`.
-    Optional,
-    /// `D == Vec<S>`: write element `n`, growing the list when it is short.
-    /// The index comes from the slot sort, not from the slot itself.
-    Index(usize),
-}
-
 /// One value-carrying edge, resolved for the tick.
 #[derive(Clone, Debug)]
-pub struct PropagateStep {
-    /// The edge this step came from.
-    pub edge: EdgeId,
+pub(crate) struct PropagateStep {
     /// The producing node.
     pub src: NodeId,
     /// `outlets.<path>`, pre-parsed.
@@ -119,15 +105,21 @@ pub struct PropagateStep {
     /// The consuming node.
     pub dst: NodeId,
     /// `inlets.<path>`, pre-parsed.
-    pub dst_path: ParsedPath,
-    /// How the destination accepts the value.
-    pub target: Target,
+    pub(crate) dst_path: ParsedPath,
+    /// How the destination accepts the value — the edge's connect-time
+    /// verdict, carried through unchanged.
+    pub(crate) compat: Compat,
+    /// Which element of a variadic inlet this step writes. Derived from the
+    /// slot sort at rebuild, and meaningless for the other two compats — which
+    /// is why it is a plain index rather than a variant that only one of them
+    /// can carry.
+    pub(crate) index: usize,
 }
 
 /// One unit of work. Data, not a closure — the editor shows the order and the
 /// tests assert on it.
 #[derive(Clone, Debug)]
-pub enum GraphStep {
+pub(crate) enum GraphStep {
     /// Shrink a list-shaped inlet to the number of value edges landing on it,
     /// so the `Vec` really is derived from the edge set (design D5). Growth
     /// happens in [`GraphStep::Propagate`], which pushes the value it is about
@@ -151,7 +143,7 @@ pub enum GraphStep {
 
 /// The rebuilt plan for one graph shape.
 #[derive(Clone, Debug, Default)]
-pub struct EvalOrder {
+pub(crate) struct EvalOrder {
     /// Every step, in the order the tick walks them.
     pub steps: Vec<GraphStep>,
     /// The node order the steps were derived from.
@@ -202,7 +194,7 @@ fn collect_list_paths(value: &dyn PartialReflect, prefix: &str, out: &mut Vec<St
 /// Rebuilds the evaluation plan from the graph's current shape.
 ///
 /// Authoring-time only: the tick reads the plan and never rebuilds it.
-pub fn rebuild(graph: &Graph) -> EvalOrder {
+pub(crate) fn rebuild(graph: &Graph) -> EvalOrder {
     let vertices: Vec<NodeId> = graph.iter().map(|(id, _)| id).collect();
     let links: Vec<Link> = graph
         .edges()
@@ -281,16 +273,12 @@ pub fn rebuild(graph: &Graph) -> EvalOrder {
                     continue;
                 };
                 steps.push(GraphStep::Propagate(PropagateStep {
-                    edge: edge.id,
                     src: edge.src.node,
                     src_path,
                     dst: edge.dst.node,
                     dst_path,
-                    target: match edge.compat {
-                        Compat::Direct => Target::Direct,
-                        Compat::Optional => Target::Optional,
-                        Compat::Variadic => Target::Index(index),
-                    },
+                    compat: edge.compat,
+                    index,
                 }));
             }
         }
@@ -311,7 +299,6 @@ mod tests {
     use crate::graph::edge::Port;
     use crate::graph::node::Node;
     use crate::graph::testing::{Counter, Fan, Sink, Source};
-    use bevy_math::Vec2;
 
     fn n(index: u32) -> NodeId {
         NodeId::new(index, 0)
@@ -361,8 +348,8 @@ mod tests {
     #[test]
     fn rebuilding_twice_without_a_change_gives_the_same_order() {
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Counter::default()));
         graph
             .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
             .expect("legal");
@@ -380,7 +367,10 @@ mod tests {
             .map(|step| match step {
                 GraphStep::TruncateList { node, len, .. } => format!("truncate {node} -> {len}"),
                 GraphStep::Propagate(step) => {
-                    format!("propagate {} -> {} {:?}", step.src, step.dst, step.target)
+                    format!(
+                        "propagate {} -> {} {:?}[{}]",
+                        step.src, step.dst, step.compat, step.index
+                    )
                 }
                 GraphStep::Evaluate { node } => format!("evaluate {node}"),
             })
@@ -390,8 +380,8 @@ mod tests {
     #[test]
     fn a_propagate_step_comes_before_the_node_that_consumes_it() {
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Counter::default()));
         graph
             .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
             .expect("legal");
@@ -400,7 +390,7 @@ mod tests {
             shapes(&rebuild(&graph)),
             vec![
                 format!("evaluate {a}"),
-                format!("propagate {a} -> {b} Direct"),
+                format!("propagate {a} -> {b} Direct[0]"),
                 format!("evaluate {b}"),
             ]
         );
@@ -410,8 +400,8 @@ mod tests {
     fn a_valueless_edge_emits_no_propagate_step_but_still_orders() {
         let mut graph = Graph::default();
         // `Sink` is downstream of `Source` through a marker outlet.
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Sink::default()));
         graph
             .connect(Port::new(a, "marker"), Port::new(b, "marker"), 0)
             .expect("legal");
@@ -426,10 +416,10 @@ mod tests {
     #[test]
     fn variadic_edges_are_indexed_in_slot_order_not_slot_value() {
         let mut graph = Graph::default();
-        let fan = graph.insert(Node::of(Vec2::ZERO, Fan::default()));
+        let fan = graph.insert(Node::of(Fan::default()));
         let mut sources = Vec::new();
         for _ in 0..3 {
-            sources.push(graph.insert(Node::of(Vec2::ZERO, Source::default())));
+            sources.push(graph.insert(Node::of(Source::default())));
         }
         // Sparse, out-of-order slots.
         for (source, slot) in sources.iter().zip([30, 10, 20]) {
@@ -439,29 +429,28 @@ mod tests {
         }
 
         let order = rebuild(&graph);
-        let indices: Vec<(NodeId, Target)> = order
+        let indices: Vec<(NodeId, usize)> = order
             .steps
             .iter()
             .filter_map(|step| match step {
-                GraphStep::Propagate(step) => Some((step.src, step.target)),
+                GraphStep::Propagate(step) => {
+                    assert_eq!(step.compat, Compat::Variadic);
+                    Some((step.src, step.index))
+                }
                 _ => None,
             })
             .collect();
         assert_eq!(
             indices,
-            vec![
-                (sources[1], Target::Index(0)),
-                (sources[2], Target::Index(1)),
-                (sources[0], Target::Index(2)),
-            ]
+            vec![(sources[1], 0), (sources[2], 1), (sources[0], 2)]
         );
     }
 
     #[test]
     fn a_list_inlet_is_truncated_to_its_edge_count() {
         let mut graph = Graph::default();
-        let fan = graph.insert(Node::of(Vec2::ZERO, Fan::default()));
-        let source = graph.insert(Node::of(Vec2::ZERO, Source::default()));
+        let fan = graph.insert(Node::of(Fan::default()));
+        let source = graph.insert(Node::of(Source::default()));
         graph
             .connect(Port::new(source, "out"), Port::new(fan, "values"), 0)
             .expect("legal");

@@ -6,10 +6,12 @@ version.workspace = true
 [dependencies]
 sway-midi-core.workspace = true
 sway-graph.workspace = true
-sway-nodes.workspace = true
-bevy.workspace = true
 bevy_app.workspace = true
 bevy_ecs.workspace = true
 bevy_reflect.workspace = true
 bevy_time.workspace = true
 crossbeam-channel.workspace = true
+
+[dev-dependencies]
+# The tick harness, rather than a copy of it in this crate.
+sway-graph = { workspace = true, features = ["test-support"] }

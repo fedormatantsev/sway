@@ -25,7 +25,9 @@ use masonry::layout::{LenReq, Length};
 use masonry::widgets::Label;
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
-use sway_graph::graph::{Graph, GraphCommand, NodeId as GraphNodeId};
+use sway_graph::graph::{Graph, NodeId as GraphNodeId};
+
+use crate::edit::EditorEdit;
 
 use crate::reflect_ui::short_type_name;
 use crate::views::NodeId;
@@ -70,14 +72,17 @@ pub struct SceneTree {
     selected: Option<Entity>,
 
     // --- the graph model (design D11).
-    /// Where a row press sends `GraphCommand::Select` once set.
-    graph_commands: Option<Sender<GraphCommand>>,
+    /// Where graph edits go. A row press does not send one: selection is
+    /// editor state, recorded in `pending_selection` for the editor to apply.
+    graph_commands: Option<Sender<EditorEdit>>,
     graph_selected: Option<GraphNodeId>,
     graph_signature: Vec<String>,
+    /// A selection the user asked for that the editor has not applied yet.
+    pending_selection: Option<Option<GraphNodeId>>,
 }
 
 impl SceneTree {
-    pub fn new(commands: Sender<GraphCommand>) -> Self {
+    pub fn new(commands: Sender<EditorEdit>) -> Self {
         Self {
             rows: Vec::new(),
             generation: 0,
@@ -85,13 +90,19 @@ impl SceneTree {
             graph_commands: Some(commands),
             graph_selected: None,
             graph_signature: Vec::new(),
+            pending_selection: None,
         }
+    }
+
+    /// Takes the selection the user asked for, if they asked for one.
+    pub fn take_selection(this: &mut WidgetMut<'_, Self>) -> Option<Option<GraphNodeId>> {
+        this.widget.pending_selection.take()
     }
 
     /// Points this pane at the graph command set. Once set,
     /// [`populate_from_graph`](Self::populate_from_graph) is the read path and
     /// a row press asks the graph to move its selection.
-    pub fn set_graph_commands(this: &mut WidgetMut<'_, Self>, commands: Sender<GraphCommand>) {
+    pub fn set_graph_commands(this: &mut WidgetMut<'_, Self>, commands: Sender<EditorEdit>) {
         this.widget.graph_commands = Some(commands);
     }
 
@@ -144,9 +155,13 @@ impl SceneTree {
     /// type path -- there is no `Name` component and no entity hierarchy in
     /// the graph model, so the tree is a flat list in `NodeId` order, which is
     /// the same order the graph iterates and evaluates in.
-    pub fn populate_from_graph(this: &mut WidgetMut<'_, Self>, graph: &Graph) {
-        if this.widget.graph_selected != graph.selection() {
-            this.widget.graph_selected = graph.selection();
+    pub fn populate_from_graph(
+        this: &mut WidgetMut<'_, Self>,
+        graph: &Graph,
+        selection: Option<GraphNodeId>,
+    ) {
+        if this.widget.graph_selected != selection {
+            this.widget.graph_selected = selection;
             this.ctx.request_paint_only();
         }
 
@@ -279,13 +294,12 @@ impl Widget for SceneTree {
         else {
             return;
         };
-        // A graph row asks the graph to select; there is no `Entity` in the
-        // new model, and selection lives on `Graph` (graph API §8).
+        // A graph row records a selection for the editor to apply; there is
+        // no `Entity` in the new model, and selection is the editor's own
+        // state rather than something the graph holds.
         if self.graph_commands.is_some() {
-            if let Some(node) = row.graph_node
-                && let Some(commands) = &self.graph_commands
-            {
-                let _ = commands.send(GraphCommand::Select { node: Some(node) });
+            if let Some(node) = row.graph_node {
+                self.pending_selection = Some(Some(node));
             }
             ctx.set_handled();
             return;
@@ -333,16 +347,29 @@ impl Widget for SceneTree {
 #[cfg(test)]
 mod graph_model_tests {
     use super::SceneTree;
+    use crate::edit::EditorEdit;
     use crate::test_kinds::source_and_gate;
     use masonry::core::{DefaultProperties, PointerButton, Widget};
     use masonry_testing::TestHarness;
-    use sway_graph::graph::{Graph, GraphCommand};
+    use sway_graph::graph::{Graph, NodeId as GraphNodeId};
 
     fn harness(
         graph: &Graph,
     ) -> (
         TestHarness<SceneTree>,
-        crossbeam_channel::Receiver<GraphCommand>,
+        crossbeam_channel::Receiver<EditorEdit>,
+    ) {
+        harness_with(graph, None)
+    }
+
+    /// Selection is the editor's own state now, so a test says what is
+    /// selected rather than writing it into the graph first.
+    fn harness_with(
+        graph: &Graph,
+        selection: Option<GraphNodeId>,
+    ) -> (
+        TestHarness<SceneTree>,
+        crossbeam_channel::Receiver<EditorEdit>,
     ) {
         let (tx, rx) = crossbeam_channel::unbounded();
         let (legacy_tx, _legacy_rx) = crossbeam_channel::unbounded();
@@ -352,7 +379,7 @@ mod graph_model_tests {
         );
         harness.edit_root_widget(|mut tree| {
             SceneTree::set_graph_commands(&mut tree, tx);
-            SceneTree::populate_from_graph(&mut tree, graph);
+            SceneTree::populate_from_graph(&mut tree, graph, selection);
         });
         (harness, rx)
     }
@@ -369,7 +396,7 @@ mod graph_model_tests {
     }
 
     #[test]
-    fn pressing_a_row_asks_the_graph_to_select_it() {
+    fn pressing_a_row_records_a_selection_rather_than_an_edit() {
         let (graph, source, _gate) = source_and_gate();
         let (mut harness, rx) = harness(&graph);
 
@@ -380,22 +407,25 @@ mod graph_model_tests {
         ));
         harness.mouse_button_press(Some(PointerButton::Primary));
 
+        assert!(
+            rx.try_iter().next().is_none(),
+            "selecting a node is not a scene edit",
+        );
         assert_eq!(
-            rx.try_iter().collect::<Vec<_>>(),
-            vec![GraphCommand::Select { node: Some(source) }],
+            harness.edit_root_widget(|mut tree| SceneTree::take_selection(&mut tree)),
+            Some(Some(source)),
         );
         assert_eq!(
             harness.root_widget().graph_selected(),
             None,
-            "the pane only asks -- the graph's answer is what highlights",
+            "the pane only asks -- the editor's answer is what highlights",
         );
     }
 
     #[test]
-    fn the_graphs_answer_is_what_highlights_a_row() {
-        let (mut graph, _source, gate) = source_and_gate();
-        graph.set_selection(Some(gate));
-        let (harness, _rx) = harness(&graph);
+    fn the_editors_answer_is_what_highlights_a_row() {
+        let (graph, _source, gate) = source_and_gate();
+        let (harness, _rx) = harness_with(&graph, Some(gate));
 
         assert_eq!(harness.root_widget().graph_selected(), Some(gate));
     }
@@ -407,7 +437,7 @@ mod graph_model_tests {
         let first = harness.root_widget().generation();
 
         harness.edit_root_widget(|mut tree| {
-            SceneTree::populate_from_graph(&mut tree, &graph);
+            SceneTree::populate_from_graph(&mut tree, &graph, None);
         });
 
         assert_eq!(harness.root_widget().generation(), first);

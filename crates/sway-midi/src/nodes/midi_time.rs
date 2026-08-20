@@ -36,10 +36,10 @@ impl NodeKind for MidiTime {
 
 #[cfg(test)]
 mod tests {
-    use bevy::math::Vec2;
-    use bevy_ecs::reflect::AppTypeRegistry;
-    use bevy_reflect::{TypeRegistry, TypeRegistryArc};
+    
+    use bevy_reflect::TypeRegistry;
     use sway_graph::graph::registry::register_node_kind;
+    use sway_graph::graph::testing::{tick_once as tick, trace_world};
     use sway_graph::graph::{Graph, Node, Part, path};
 
     use super::*;
@@ -47,20 +47,9 @@ mod tests {
     fn world_with_transport(transport: Transport) -> World {
         let mut registry = TypeRegistry::new();
         register_node_kind::<MidiTime>(&mut registry);
-        let mut world = World::new();
-        world.insert_resource(AppTypeRegistry(TypeRegistryArc::default()));
-        {
-            let installed = world.resource::<AppTypeRegistry>().clone();
-            *installed.write() = registry;
-        }
+        let mut world = trace_world(registry);
         world.insert_resource(transport);
         world
-    }
-
-    fn tick(graph: &mut Graph, world: &World) {
-        let registry = world.resource::<AppTypeRegistry>().clone();
-        graph.rebuild_order_if_dirty();
-        sway_graph::graph::tick::run(graph, world, &registry.read());
     }
 
     #[test]
@@ -70,7 +59,7 @@ mod tests {
             ..Default::default()
         });
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(Vec2::ZERO, MidiTime::default()));
+        let node = graph.insert(Node::of(MidiTime::default()));
 
         tick(&mut graph, &world);
 
@@ -84,14 +73,10 @@ mod tests {
     fn a_missing_transport_resource_reads_as_zero() {
         let mut registry = TypeRegistry::new();
         register_node_kind::<MidiTime>(&mut registry);
-        let mut world = World::new();
-        world.insert_resource(AppTypeRegistry(TypeRegistryArc::default()));
-        {
-            let installed = world.resource::<AppTypeRegistry>().clone();
-            *installed.write() = registry;
-        }
+        // Deliberately no `Transport`.
+        let world = trace_world(registry);
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(Vec2::ZERO, MidiTime::default()));
+        let node = graph.insert(Node::of(MidiTime::default()));
 
         tick(&mut graph, &world);
 

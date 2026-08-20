@@ -1,7 +1,0 @@
-(
-    tick_hz: 120.0,
-    ticks: 8,
-    events: [
-        (0.0008, (status: 176, data1: 74, data2: 96)),
-    ],
-)
