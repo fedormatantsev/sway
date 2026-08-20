@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use bevy_reflect::{ParsedPath, PartialReflect, ReflectRef};
 
 use crate::graph::edge::Compat;
-use crate::graph::id::{EdgeId, NodeId};
+use crate::graph::id::NodeId;
 use crate::graph::model::Graph;
 use crate::graph::node::Part;
 use crate::graph::path;
@@ -98,8 +98,6 @@ pub(crate) fn topological_order(vertices: &[NodeId], links: &[Link]) -> Sorted {
 /// One value-carrying edge, resolved for the tick.
 #[derive(Clone, Debug)]
 pub(crate) struct PropagateStep {
-    /// The edge this step came from.
-    pub edge: EdgeId,
     /// The producing node.
     pub src: NodeId,
     /// `outlets.<path>`, pre-parsed.
@@ -275,7 +273,6 @@ pub(crate) fn rebuild(graph: &Graph) -> EvalOrder {
                     continue;
                 };
                 steps.push(GraphStep::Propagate(PropagateStep {
-                    edge: edge.id,
                     src: edge.src.node,
                     src_path,
                     dst: edge.dst.node,

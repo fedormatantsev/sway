@@ -66,7 +66,7 @@ pub fn register_runtime_node_kinds(app: &mut App) {
         .register_node_kind::<FrameSequence>()
         .register_type::<FrameSequenceIn>()
         .register_type::<FrameSequenceState>()
-        .register_type::<crate::frame_sequence::ColorSpace>()
+        .register_type::<crate::nodes::frame_sequence::ColorSpace>()
         // --- materials -------------------------------------------------
         .register_node_kind::<PbrMaterial>()
         .register_type::<PbrMaterialIn>()
@@ -111,7 +111,7 @@ mod tests {
         app.init_asset::<Mesh>();
         app.init_asset::<Image>();
         app.init_asset::<StandardMaterial>();
-        app.init_asset::<crate::sprite_material::SpriteMaterialAsset>();
+        app.init_asset::<crate::nodes::sprite_material::SpriteMaterialAsset>();
         register_runtime_node_kinds(&mut app);
 
         let registry = app.world().resource::<AppTypeRegistry>().clone();

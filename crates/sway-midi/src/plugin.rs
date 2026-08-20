@@ -142,7 +142,6 @@ mod tests {
     use bevy_app::App;
     use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
     use crossbeam_channel::Receiver;
-use sway_graph::graph::RegisterNodeKind;
     use sway_graph::GraphPlugin;
 
     use super::{

@@ -151,7 +151,7 @@ pub struct RuntimePlugin;
 
 impl Plugin for RuntimePlugin {
     fn build(&self, app: &mut App) {
-        crate::sprite_material::ensure_sprite_material_pipeline(app);
+        crate::nodes::sprite_material::ensure_sprite_material_pipeline(app);
         crate::nodes::register_runtime_node_kinds(app);
 
         app.init_resource::<Graph>()
@@ -177,7 +177,7 @@ impl Plugin for RuntimePlugin {
                     despawn_removed_nodes,
                     project_pbr_materials.run_if(resource_exists::<Assets<StandardMaterial>>),
                     project_sprite_materials.run_if(
-                        resource_exists::<Assets<crate::sprite_material::SpriteMaterialAsset>>,
+                        resource_exists::<Assets<crate::nodes::sprite_material::SpriteMaterialAsset>>,
                     ),
                     spawn_scene_entities,
                     project_scene_entities,
@@ -193,7 +193,7 @@ impl Plugin for RuntimePlugin {
         // The displacement-aware bounds for sprite materials.
         app.add_systems(
             Update,
-            crate::sprite_material::sync_sprite_material_bounds
+            crate::nodes::sprite_material::sync_sprite_material_bounds
                 .after(ProjectionSet)
                 .run_if(resource_exists::<Assets<Mesh>>),
         );

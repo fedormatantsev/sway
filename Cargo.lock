@@ -5618,16 +5618,13 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "crossbeam-channel",
- "imaging",
  "kurbo",
  "masonry_core",
- "peniko",
  "rfd",
  "sway-base-nodes",
  "sway-document",
  "sway-editor",
  "sway-editor-viewport",
- "sway-geo",
  "sway-gpu",
  "sway-graph",
  "sway-midi",
@@ -5703,11 +5700,9 @@ dependencies = [
 name = "sway-geo"
 version = "0.1.0"
 dependencies = [
- "bevy_app",
  "bevy_ecs",
  "bevy_math",
  "bevy_reflect",
- "sway-graph",
 ]
 
 [[package]]
@@ -5720,7 +5715,6 @@ dependencies = [
  "imaging_vello",
  "kurbo",
  "naga",
- "peniko",
  "pollster",
  "wgpu",
  "winit",
@@ -5741,7 +5735,6 @@ dependencies = [
 name = "sway-midi"
 version = "0.1.0"
 dependencies = [
- "bevy",
  "bevy_app",
  "bevy_ecs",
  "bevy_reflect",
@@ -5763,13 +5756,9 @@ name = "sway-runtime"
 version = "0.1.0"
 dependencies = [
  "bevy",
- "bytemuck",
- "crossbeam-channel",
  "naga",
  "sway-gpu",
  "sway-graph",
- "sway-selection",
- "sway-viewport-input",
 ]
 
 [[package]]

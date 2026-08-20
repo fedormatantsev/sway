@@ -358,7 +358,7 @@ mod tests {
 
         tick(&mut graph, &world);
 
-        let mut cycles = graph.order().cycles.clone();
+        let mut cycles = graph.cycles().to_vec();
         cycles.sort();
         assert_eq!(cycles, vec![a, b], "diagnostics name both nodes");
         assert_eq!(
@@ -559,7 +559,7 @@ mod tests {
         tick(&mut graph, &world);
 
         assert_eq!(
-            graph.order().order,
+            graph.eval_order(),
             vec![source, sink],
             "the marker edge is a sort constraint"
         );

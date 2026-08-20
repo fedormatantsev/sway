@@ -13,7 +13,7 @@ use bevy::render::renderer::RenderDevice;
 use bevy::render::settings::WgpuLimits;
 use sway_graph::graph::{Graph, NodeId};
 
-use crate::frame_sequence::{assemble_layers, changed_id, sort_frames_by_name};
+use crate::nodes::frame_sequence::{assemble_layers, changed_id, sort_frames_by_name};
 use crate::nodes::frame_sequence::FrameSequence;
 use crate::nodes::mesh::{MeshAsset, PlaneMesh, build_plane};
 use crate::project::{dirty_in_graph_order, nodes_in_graph_order};

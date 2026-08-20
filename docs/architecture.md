@@ -480,6 +480,10 @@ need a separate schema crate.
   to restore from).
 - Geometry operators and the geometry cook path (§6).
 - GPU-resident geometry operators / compute cook path.
+- The point-cloud, scatter-compute and sprite-layer render pipelines. They were
+  written for the pre-graph model, no application or test reached them, and
+  they were deleted rather than left exported (§11). When the roadmap reaches
+  point clouds and GPU scatter, they are written against the node model.
 
 **Open**
 

@@ -79,18 +79,18 @@
 
 ## 9. `sway-runtime` internal layout and dead code
 
-- [ ] 9.1 Fold `sprite_material.rs` and `nodes/sprite_material.rs` into one module; remove `ensure_sprite_material_pipeline`'s double-add guard if the collapse makes it unnecessary.
-- [ ] 9.2 Fold `frame_sequence.rs` and `nodes/frame_sequence.rs` into one module.
-- [ ] 9.3 Delete `point_cloud.rs`, `scatter.rs`, `sprite_layer.rs` and their exports; note the removal in the roadmap section of `docs/architecture.md` §10.
-- [ ] 9.4 Delete the crate's copied test harness in favour of `sway-graph`'s `test-support` feature.
-- [ ] 9.5 `cargo test -p sway-runtime`.
+- [x] 9.1 Fold `sprite_material.rs` and `nodes/sprite_material.rs` into one module; remove `ensure_sprite_material_pipeline`'s double-add guard if the collapse makes it unnecessary.
+- [x] 9.2 Fold `frame_sequence.rs` and `nodes/frame_sequence.rs` into one module.
+- [x] 9.3 Delete `point_cloud.rs`, `scatter.rs`, `sprite_layer.rs` and their exports; note the removal in the roadmap section of `docs/architecture.md` §10.
+- [x] 9.4 Delete the crate's copied test harness in favour of `sway-graph`'s `test-support` feature.
+- [x] 9.5 `cargo test -p sway-runtime`.
 
 ## 10. Manifest hygiene
 
 - [x] 10.1 Remove unused dependency edges: `sway-midi → sway-nodes`, `sway-geo → sway-graph`, `sway-runtime → sway-base-nodes`, `sway-editor → sway-base-nodes` (dev).
-- [ ] 10.2 Delete the stale manifest comments that justified them.
-- [ ] 10.3 Re-check every crate's manifest against its `use` statements and remove anything else unreferenced.
-- [ ] 10.4 `cargo check --workspace --all-targets`.
+- [x] 10.2 Delete the stale manifest comments that justified them.
+- [x] 10.3 Re-check every crate's manifest against its `use` statements and remove anything else unreferenced.
+- [x] 10.4 `cargo check --workspace --all-targets`.
 
 ## 11. Demo asset
 

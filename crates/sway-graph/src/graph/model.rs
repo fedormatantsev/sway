@@ -442,7 +442,13 @@ impl Graph {
         &self.order.cycles
     }
 
-    /// The current evaluation plan.
+    /// The whole evaluation plan, step list included.
+    ///
+    /// Crate-private and test-only: what a consumer needs is
+    /// [`Graph::eval_order`], and the step list is the tick's own business.
+    /// The tick reaches its plan through `take_order` / `put_order`; this is
+    /// how a test asserts on what rebuild produced.
+    #[cfg(test)]
     pub(crate) fn order(&self) -> &EvalOrder {
         &self.order
     }
@@ -554,7 +560,7 @@ mod tests {
             .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
             .expect("legal");
         graph.rebuild_order();
-        let before = format!("{:?}", graph.order().steps);
+        let before = format!("{:?}", graph.eval_order());
 
         graph
             .get_mut(b)
@@ -569,7 +575,7 @@ mod tests {
             Some(&42)
         );
         assert!(!graph.topology_dirty(), "an annotation is not a shape change");
-        assert_eq!(format!("{:?}", graph.order().steps), before);
+        assert_eq!(format!("{:?}", graph.eval_order()), before);
         assert_eq!(
             graph.connect(Port::new(a, "out"), Port::new(b, "step"), 0).is_ok(),
             true,
@@ -654,7 +660,7 @@ mod tests {
             .expect_err("f32 does not fit bool");
         assert!(matches!(error, ConnectError::IncompatibleTypes { .. }));
         assert!(graph.edges().is_empty());
-        assert!(graph.order().steps.is_empty(), "nothing was evaluated");
+        assert!(graph.eval_order().is_empty(), "nothing was evaluated");
     }
 
     #[test]
