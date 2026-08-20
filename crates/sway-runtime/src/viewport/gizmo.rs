@@ -52,25 +52,26 @@ use bevy::gizmos::transform_gizmo::{
     point_to_ring_screen_dist, point_to_segment_dist, translation_plane_normal,
 };
 use bevy::prelude::*;
-use sway_graph::graph::{FieldValue, Graph, GraphCommand, apply_graph_command};
-use sway_graph::{ViewportButton, ViewportInput, ViewportKey};
+use sway_graph::graph::Graph;
+use sway_selection::Selection;
+use sway_viewport_input::{ViewportButton, ViewportInput, ViewportKey};
 
 use crate::project::NodeEntities;
 
 /// Keeps `TransformGizmoFocus` on the selection, and only there.
 pub fn follow_selection(
     mut commands: Commands,
-    graph: Res<Graph>,
+    selection: Res<Selection>,
     nodes: Res<NodeEntities>,
     focused: Query<Entity, With<TransformGizmoFocus>>,
     transforms: Query<(), With<Transform>>,
 ) {
     // Only an entity with a `Transform` can carry a gizmo: selecting a
     // non-scene node (e.g. a pure value node) must leave the viewport alone.
-    // Identity is `Entity -> NodeId` via the projector map; the graph is the
+    // Identity is `Entity -> NodeId` via the projector map; the editor is the
     // owner of selection.
-    let wanted = graph
-        .selection()
+    let wanted = selection
+        .get()
         .and_then(|node| nodes.entity(node))
         .filter(|entity| transforms.get(*entity).is_ok());
     for entity in &focused {
@@ -330,7 +331,6 @@ pub fn viewport_gizmo_drag(
     mut state: ResMut<TransformGizmoState>,
     mut graph: ResMut<Graph>,
     nodes: Res<NodeEntities>,
-    type_registry: Res<AppTypeRegistry>,
 ) {
     // End drag. Checked first and unconditionally, *before* the camera
     // lookup below: a `Cancel` or `Up` must win over anything else this frame
@@ -533,7 +533,7 @@ pub fn viewport_gizmo_drag(
         }
     }
 
-    write_gizmo_fields(&mut graph, &type_registry, &nodes, drag_entity, *transform);
+    write_gizmo_fields(&mut graph, &nodes, drag_entity, *transform);
 }
 
 /// Mirrors a gizmo write into the graph. The entity `Transform` is already
@@ -541,7 +541,6 @@ pub fn viewport_gizmo_drag(
 /// (`architecture`: Authoring writes reach the world only through the graph).
 fn write_gizmo_fields(
     graph: &mut Graph,
-    type_registry: &AppTypeRegistry,
     nodes: &NodeEntities,
     entity: Entity,
     transform: Transform,
@@ -549,34 +548,12 @@ fn write_gizmo_fields(
     let Some(node) = nodes.node(entity) else {
         return;
     };
-    let registry = type_registry.read();
-    apply_graph_command(
-        graph,
-        &registry,
-        &GraphCommand::SetField {
-            node,
-            path: "translation".into(),
-            value: FieldValue::Vec3(transform.translation),
-        },
-    );
-    apply_graph_command(
-        graph,
-        &registry,
-        &GraphCommand::SetField {
-            node,
-            path: "rotation".into(),
-            value: FieldValue::Quat(transform.rotation),
-        },
-    );
-    apply_graph_command(
-        graph,
-        &registry,
-        &GraphCommand::SetField {
-            node,
-            path: "scale".into(),
-            value: FieldValue::Vec3(transform.scale),
-        },
-    );
+    // Straight onto the graph this system already holds mutably: a surface
+    // that can reach the graph at the moment of the gesture applies it, and
+    // does not describe it first.
+    graph.set_field(node, "translation", &transform.translation);
+    graph.set_field(node, "rotation", &transform.rotation);
+    graph.set_field(node, "scale", &transform.scale);
 }
 
 #[cfg(test)]
@@ -592,7 +569,7 @@ mod tests {
 
         let node = {
             let mut graph = app.world_mut().resource_mut::<Graph>();
-            graph.insert(Node::of(Vec2::ZERO, MeshNode::default()))
+            graph.insert(Node::of(MeshNode::default()))
         };
         app.world_mut()
             .resource_mut::<NodeEntities>()
@@ -604,6 +581,7 @@ mod tests {
     fn the_selection_carries_the_gizmo_focus() {
         let mut app = App::new();
         app.init_resource::<Graph>()
+            .init_resource::<Selection>()
             .init_resource::<NodeEntities>()
             .add_systems(Update, follow_selection);
         let a = app.world_mut().spawn(Transform::default()).id();
@@ -612,14 +590,14 @@ mod tests {
         let node_b = bind_entity(&mut app, b);
 
         app.world_mut()
-            .resource_mut::<Graph>()
-            .set_selection(Some(node_a));
+            .resource_mut::<Selection>()
+            .set(Some(node_a));
         app.update();
         assert!(app.world().get::<TransformGizmoFocus>(a).is_some());
 
         app.world_mut()
-            .resource_mut::<Graph>()
-            .set_selection(Some(node_b));
+            .resource_mut::<Selection>()
+            .set(Some(node_b));
         app.update();
         assert!(
             app.world().get::<TransformGizmoFocus>(a).is_none(),
@@ -627,7 +605,7 @@ mod tests {
         );
         assert!(app.world().get::<TransformGizmoFocus>(b).is_some());
 
-        app.world_mut().resource_mut::<Graph>().set_selection(None);
+        app.world_mut().resource_mut::<Selection>().set(None);
         app.update();
         assert!(app.world().get::<TransformGizmoFocus>(b).is_none());
     }
@@ -637,13 +615,14 @@ mod tests {
         // Selecting a non-scene node must not put a gizmo anywhere.
         let mut app = App::new();
         app.init_resource::<Graph>()
+            .init_resource::<Selection>()
             .init_resource::<NodeEntities>()
             .add_systems(Update, follow_selection);
         let lfo = app.world_mut().spawn_empty().id();
         let node = bind_entity(&mut app, lfo);
         app.world_mut()
-            .resource_mut::<Graph>()
-            .set_selection(Some(node));
+            .resource_mut::<Selection>()
+            .set(Some(node));
         app.update();
         assert!(app.world().get::<TransformGizmoFocus>(lfo).is_none());
     }
@@ -748,8 +727,8 @@ mod tests {
         *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
         let node = bind_entity(&mut app, cube);
         app.world_mut()
-            .resource_mut::<Graph>()
-            .set_selection(Some(node));
+            .resource_mut::<Selection>()
+            .set(Some(node));
         app.update();
         assert!(
             app.world().get::<TransformGizmoFocus>(cube).is_some(),
@@ -772,7 +751,7 @@ mod tests {
             .0
             .send(ViewportInput::Move {
                 pos,
-                modifiers: sway_graph::ViewportModifiers::default(),
+                modifiers: sway_viewport_input::ViewportModifiers::default(),
             })
             .unwrap();
         app.update();
@@ -892,7 +871,7 @@ mod tests {
             vec![ViewportInput::Down {
                 button: ViewportButton::Primary,
                 pos,
-                modifiers: sway_graph::ViewportModifiers::default(),
+                modifiers: sway_viewport_input::ViewportModifiers::default(),
             }],
         );
     }
@@ -1166,7 +1145,7 @@ mod tests {
         let start = cursor_over_axis(&mut app, TransformGizmoAxis::X);
         press_on_axis(&mut app, TransformGizmoAxis::X, start);
         assert!(
-            app.world().resource::<Graph>().selection().is_some(),
+            app.world().resource::<Selection>().get().is_some(),
             "a handle drag must not clear the graph selection"
         );
         let _ = cube;

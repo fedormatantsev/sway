@@ -5,7 +5,7 @@
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
-use sway_graph::{ViewportButton, ViewportInput};
+use sway_viewport_input::{ViewportButton, ViewportInput};
 
 /// How far a full-viewport drag turns the camera. Deltas arrive normalized
 /// to the viewport rect (spec M7-1), so this is radians per viewport width —
@@ -456,7 +456,7 @@ mod tag_scene_cameras_tests {
 mod nav_tests {
     use super::*;
     use crate::viewport::ViewportEvents;
-    use sway_graph::{ViewportButton, ViewportInput, ViewportModifiers};
+    use sway_viewport_input::{ViewportButton, ViewportInput, ViewportModifiers};
 
     fn alt() -> ViewportModifiers {
         ViewportModifiers {

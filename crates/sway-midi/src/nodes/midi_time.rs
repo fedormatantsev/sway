@@ -36,7 +36,7 @@ impl NodeKind for MidiTime {
 
 #[cfg(test)]
 mod tests {
-    use bevy::math::Vec2;
+    
     use bevy_ecs::reflect::AppTypeRegistry;
     use bevy_reflect::{TypeRegistry, TypeRegistryArc};
     use sway_graph::graph::registry::register_node_kind;
@@ -70,7 +70,7 @@ mod tests {
             ..Default::default()
         });
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(Vec2::ZERO, MidiTime::default()));
+        let node = graph.insert(Node::of(MidiTime::default()));
 
         tick(&mut graph, &world);
 
@@ -91,7 +91,7 @@ mod tests {
             *installed.write() = registry;
         }
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(Vec2::ZERO, MidiTime::default()));
+        let node = graph.insert(Node::of(MidiTime::default()));
 
         tick(&mut graph, &world);
 

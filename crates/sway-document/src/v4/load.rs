@@ -12,18 +12,18 @@
 
 use std::collections::HashMap;
 
-use bevy_math::Vec2;
-use bevy_reflect::TypeRegistry;
-use bevy_reflect::serde::TypedReflectDeserializer;
+use bevy_reflect::serde::{ReflectDeserializer, TypedReflectDeserializer};
 use bevy_reflect::std_traits::ReflectDefault;
+use bevy_reflect::{PartialReflect, ReflectFromReflect, TypeRegistry};
+use ron::value::RawValue;
 use serde::de::DeserializeSeed;
 use sway_graph::graph::{
     Graph, Node, NodeParts, Part, Port, node_kind_type_id, registered_node_kinds,
 };
 
-use crate::v3::diagnostics::{LoadDiagnostics, LoadItemError};
-use crate::v3::doc::{EdgeDoc, GraphDoc, NodeDoc};
-use crate::v3::ids::StableIds;
+use crate::v4::diagnostics::{LoadDiagnostics, LoadItemError};
+use crate::v4::doc::{EdgeDoc, GraphDoc, NodeDoc};
+use crate::v4::ids::StableIds;
 
 /// Builds a fresh `Graph` from `doc`, reporting and skipping anything it
 /// could not resolve. Never panics: a document is authored text, and a
@@ -36,7 +36,7 @@ pub fn load(doc: &GraphDoc, registry: &TypeRegistry) -> (Graph, StableIds, LoadD
     let kinds = short_name_index(registry);
 
     for (id, node_doc) in &doc.nodes {
-        match build_node(id, node_doc, &kinds, registry) {
+        match build_node(id, node_doc, &kinds, registry, &mut diagnostics) {
             Ok(node) => {
                 let node_id = graph.insert(node);
                 ids.assign(id.clone(), node_id);
@@ -74,6 +74,7 @@ fn build_node(
     node_doc: &NodeDoc,
     kinds: &HashMap<&'static str, Vec<&'static str>>,
     registry: &TypeRegistry,
+    diagnostics: &mut LoadDiagnostics,
 ) -> Result<Node, LoadItemError> {
     let full_path = match kinds.get(node_doc.kind.as_str()) {
         None => {
@@ -100,11 +101,7 @@ fn build_node(
         .expect("register_node_kind registers ReflectDefault")
         .default();
 
-    let mut node = Node::new(
-        full_path,
-        Vec2::new(node_doc.pos.0, node_doc.pos.1),
-        default_value,
-    );
+    let mut node = Node::new(full_path, default_value);
 
     let inlets_type_id = registry
         .get_type_data::<NodeParts>(type_id)
@@ -141,7 +138,60 @@ fn build_node(
             message: error.to_string(),
         })?;
 
+    // Annotations last, and never fatally: one whose type the registry does
+    // not know is reported and dropped, leaving the rest of the node loaded.
+    // The document declares nothing about what a key holds, so each payload
+    // is read with the *untyped* deserializer and recovers its concrete type
+    // from the type path it carries.
+    for (key, payload) in &node_doc.metadata {
+        match read_annotation(payload, registry) {
+            Ok(value) => {
+                node.metadata_mut().insert(key.clone(), value);
+            }
+            Err(message) => diagnostics.items.push(LoadItemError::BadMetadata {
+                id: id.to_string(),
+                key: key.clone(),
+                message,
+            }),
+        }
+    }
+
     Ok(node)
+}
+
+/// One annotation payload -> a concrete reflected value.
+///
+/// `ReflectDeserializer` yields a *dynamic* value for a type that carries no
+/// `ReflectDeserialize`, which would lose the annotation's type on the way
+/// back out. `ReflectFromReflect` is what turns that back into the concrete
+/// type it was written as — spec: "it is readable as that same type, without
+/// the reader parsing it out of another representation".
+fn read_annotation(
+    payload: &RawValue,
+    registry: &TypeRegistry,
+) -> Result<Box<dyn PartialReflect>, String> {
+    let mut deserializer =
+        ron::de::Deserializer::from_str(payload.get_ron()).map_err(|error| error.to_string())?;
+    let value = ReflectDeserializer::new(registry)
+        .deserialize(&mut deserializer)
+        .map_err(|error| error.to_string())?;
+
+    let Some(info) = value.get_represented_type_info() else {
+        return Ok(value);
+    };
+    let type_id = info.type_id();
+    let type_path = info.type_path().to_string();
+    let Some(from_reflect) = registry.get_type_data::<ReflectFromReflect>(type_id) else {
+        // Registered enough to deserialize but not to reconstruct: keeping the
+        // dynamic value would hand the reader something that is not the type
+        // it was written as, which is exactly what the annotation contract
+        // forbids.
+        return Err(format!("\"{type_path}\" cannot be rebuilt from reflection"));
+    };
+    Ok(from_reflect
+        .from_reflect(value.as_ref())
+        .ok_or_else(|| format!("\"{type_path}\" did not rebuild from its payload"))?
+        .into_partial_reflect())
 }
 
 fn connect_edge(graph: &mut Graph, ids: &StableIds, edge: &EdgeDoc) -> Result<(), LoadItemError> {
@@ -178,7 +228,7 @@ fn connect_edge(graph: &mut Graph, ids: &StableIds, edge: &EdgeDoc) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v3::doc::parse;
+    use crate::v4::doc::parse;
     use bevy_reflect::Reflect;
     use sway_graph::graph::{ReflectNodeKind, register_node_kind};
 
@@ -264,24 +314,27 @@ mod tests {
     fn every_node_loads_with_a_stable_id() {
         let registry = registry();
         let (graph, ids, diagnostics) = load(
-            &doc(r#"Graph(version: 3, nodes: {
-                "a": Node(type: "Boxed", pos: (1.0, 2.0), inlets: (size: 3.0)),
+            &doc(r#"Graph(version: 4, nodes: {
+                "a": Node(type: "Boxed", metadata: {}, inlets: (size: 3.0)),
             })"#),
             &registry,
         );
         assert!(diagnostics.is_clean(), "{diagnostics:?}");
         assert_eq!(graph.len(), 1);
         let node_id = ids.node_of("a").expect("assigned");
-        assert_eq!(graph.get(node_id).unwrap().pos(), Vec2::new(1.0, 2.0));
+        assert_eq!(
+            graph.get(node_id).unwrap().kind(),
+            <Boxed as bevy_reflect::TypePath>::type_path()
+        );
     }
 
     #[test]
     fn an_unknown_node_kind_is_skipped_and_the_rest_loads() {
         let registry = registry();
         let (graph, ids, diagnostics) = load(
-            &doc(r#"Graph(version: 3, nodes: {
-                "bad": Node(type: "Nope", pos: (0.0, 0.0), inlets: ()),
-                "good": Node(type: "Boxed", pos: (0.0, 0.0), inlets: (size: 1.0)),
+            &doc(r#"Graph(version: 4, nodes: {
+                "bad": Node(type: "Nope", metadata: {}, inlets: ()),
+                "good": Node(type: "Boxed", metadata: {}, inlets: (size: 1.0)),
             })"#),
             &registry,
         );
@@ -302,8 +355,8 @@ mod tests {
     fn an_ambiguous_node_kind_is_skipped_and_reported() {
         let registry = ambiguous_registry();
         let (graph, _ids, diagnostics) = load(
-            &doc(r#"Graph(version: 3, nodes: {
-                "a": Node(type: "Dup", pos: (0.0, 0.0), inlets: ()),
+            &doc(r#"Graph(version: 4, nodes: {
+                "a": Node(type: "Dup", metadata: {}, inlets: ()),
             })"#),
             &registry,
         );
@@ -324,8 +377,8 @@ mod tests {
     fn a_node_whose_inlets_do_not_deserialize_is_skipped_whole() {
         let registry = registry();
         let (graph, ids, diagnostics) = load(
-            &doc(r#"Graph(version: 3, nodes: {
-                "a": Node(type: "Boxed", pos: (0.0, 0.0), inlets: (size: "not a number")),
+            &doc(r#"Graph(version: 4, nodes: {
+                "a": Node(type: "Boxed", metadata: {}, inlets: (size: "not a number")),
             })"#),
             &registry,
         );
@@ -347,8 +400,8 @@ mod tests {
     fn an_edge_naming_a_missing_source_is_skipped_and_the_graph_loads_without_it() {
         let registry = registry();
         let (graph, _ids, diagnostics) = load(
-            &doc(r#"Graph(version: 3, nodes: {
-                "b": Node(type: "Boxed", pos: (0.0, 0.0), inlets: (size: 1.0)),
+            &doc(r#"Graph(version: 4, nodes: {
+                "b": Node(type: "Boxed", metadata: {}, inlets: (size: 1.0)),
             }, edges: [
                 Edge(from: ("ghost", "out"), to: ("b", "size"), slot: 0),
             ])"#),
@@ -370,8 +423,8 @@ mod tests {
     fn an_edge_naming_a_missing_destination_is_skipped_and_the_graph_loads_without_it() {
         let registry = registry();
         let (graph, _ids, diagnostics) = load(
-            &doc(r#"Graph(version: 3, nodes: {
-                "a": Node(type: "Boxed", pos: (0.0, 0.0), inlets: (size: 1.0)),
+            &doc(r#"Graph(version: 4, nodes: {
+                "a": Node(type: "Boxed", metadata: {}, inlets: (size: 1.0)),
             }, edges: [
                 Edge(from: ("a", "out"), to: ("ghost", "size"), slot: 0),
             ])"#),
@@ -393,9 +446,9 @@ mod tests {
     fn an_edge_naming_a_missing_path_is_skipped_and_the_graph_loads_without_it() {
         let registry = registry();
         let (graph, _ids, diagnostics) = load(
-            &doc(r#"Graph(version: 3, nodes: {
-                "a": Node(type: "Boxed", pos: (0.0, 0.0), inlets: (size: 1.0)),
-                "b": Node(type: "Boxed", pos: (10.0, 0.0), inlets: (size: 2.0)),
+            &doc(r#"Graph(version: 4, nodes: {
+                "a": Node(type: "Boxed", metadata: {}, inlets: (size: 1.0)),
+                "b": Node(type: "Boxed", metadata: {}, inlets: (size: 2.0)),
             }, edges: [
                 Edge(from: ("a", "nope"), to: ("b", "size"), slot: 0),
             ])"#),
@@ -436,10 +489,10 @@ mod tests {
         registry.register::<FanIn>();
 
         let (graph, ids, diagnostics) = load(
-            &doc(r#"Graph(version: 3, nodes: {
-                "a": Node(type: "Boxed", pos: (0.0, 0.0), inlets: (size: 1.0)),
-                "b": Node(type: "Boxed", pos: (0.0, 10.0), inlets: (size: 2.0)),
-                "fan": Node(type: "Fan", pos: (100.0, 0.0), inlets: (values: [])),
+            &doc(r#"Graph(version: 4, nodes: {
+                "a": Node(type: "Boxed", metadata: {}, inlets: (size: 1.0)),
+                "b": Node(type: "Boxed", metadata: {}, inlets: (size: 2.0)),
+                "fan": Node(type: "Fan", metadata: {}, inlets: (values: [])),
             }, edges: [
                 Edge(from: ("b", "out"), to: ("fan", "values"), slot: 20),
                 Edge(from: ("a", "out"), to: ("fan", "values"), slot: 10),

@@ -1,10 +1,13 @@
 //! Viewport input, editor to world. Spec M7-1.
+//!
+//! A vocabulary of pointer, scroll and key events over the Bevy viewport,
+//! shared by the crate that produces them (the editor's masonry widget) and
+//! the crate that consumes them (the editor viewport's camera, gizmo and
+//! picker). Neither may depend on the other, so it lives on its own.
 
-use bevy_ecs::resource::Resource;
 use bevy_math::Vec2;
-use crossbeam_channel::Receiver;
 
-/// Which pointer button an event carries. `sway-graph` cannot name masonry's
+/// Which pointer button an event carries. This crate cannot name masonry's
 /// `PointerButton`, and the world side has no business knowing masonry
 /// exists, so the widget translates at the boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,10 +75,6 @@ pub enum ViewportInput {
         key: ViewportKey,
     },
 }
-
-/// The receiving half, held by the world. Present only in an editor build.
-#[derive(Resource)]
-pub struct ViewportInputRx(pub Receiver<ViewportInput>);
 
 /// Maps a widget-local position (logical pixels) into `[0,1]²` across the
 /// viewport rect. Deliberately unclamped, and zero-safe.

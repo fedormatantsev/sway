@@ -106,7 +106,7 @@ impl NodeKind for Envelope {
 
 #[cfg(test)]
 mod tests {
-    use bevy::math::Vec2;
+    
     use bevy_reflect::TypeRegistry;
     use sway_graph::graph::registry::register_node_kind;
     use sway_graph::graph::{Graph, Node, Part};
@@ -127,7 +127,7 @@ mod tests {
         register_node_kind::<Envelope>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(Vec2::ZERO, Envelope::default()));
+        let node = graph.insert(Node::of(Envelope::default()));
 
         for _ in 0..5 {
             harness::tick(&mut graph, &world);
@@ -146,9 +146,7 @@ mod tests {
         register_node_kind::<Envelope>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(
-            Vec2::ZERO,
-            Envelope {
+        let node = graph.insert(Node::of(Envelope {
                 inlets: EnvelopeIn {
                     gate: false,
                     ..Default::default()

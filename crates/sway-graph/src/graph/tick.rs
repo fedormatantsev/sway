@@ -7,18 +7,16 @@
 //! through the `&World` it is handed, cannot re-enter the tick, and cannot
 //! read another node's outlet behind the edge list's back.
 
-use bevy_app::{App, FixedUpdate, Plugin, PreUpdate};
+use bevy_app::{App, FixedUpdate, Plugin};
 use bevy_ecs::change_detection::Mut;
 use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::schedule::SystemSet;
-use bevy_ecs::schedule::common_conditions::resource_exists;
 use bevy_ecs::world::World;
 use bevy_reflect::enums::{DynamicEnum, DynamicVariant};
 use bevy_reflect::tuple::DynamicTuple;
 use bevy_reflect::{GetPath, ParsedPath, PartialReflect, ReflectMut, TypeRegistry};
 
-use crate::graph::command::{GraphRx, apply_graph_commands};
 use crate::graph::id::NodeId;
 use crate::graph::model::{Graph, reflect_equal};
 use crate::graph::node::Part;
@@ -220,11 +218,7 @@ impl Plugin for GraphPlugin {
         app.init_resource::<Graph>()
             .register_type::<NodeId>()
             .register_type::<crate::graph::id::EdgeId>()
-            .add_systems(FixedUpdate, tick_graph.in_set(GraphTickSet))
-            .add_systems(
-                PreUpdate,
-                apply_graph_commands.run_if(resource_exists::<GraphRx>),
-            );
+            .add_systems(FixedUpdate, tick_graph.in_set(GraphTickSet));
     }
 }
 
@@ -288,9 +282,9 @@ mod tests {
         // true if the order puts every producer before its consumer.
         let world = trace_world();
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
-        let c = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Counter::default()));
+        let c = graph.insert(Node::of(Sink::default()));
         set(&mut graph, a, "base", 3.0);
         graph
             .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
@@ -314,8 +308,8 @@ mod tests {
     fn a_golden_trace_is_reproducible_at_a_fixed_delta() {
         let world = trace_world();
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Counter::default()));
         set(&mut graph, a, "base", 0.5);
         graph
             .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
@@ -334,8 +328,8 @@ mod tests {
     fn a_cycle_is_reported_and_still_ticks() {
         let world = trace_world();
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
+        let a = graph.insert(Node::of(Counter::default()));
+        let b = graph.insert(Node::of(Counter::default()));
         graph
             .connect(Port::new(a, "total"), Port::new(b, "step"), 0)
             .expect("legal");
@@ -374,7 +368,7 @@ mod tests {
     fn an_external_time_source_is_an_ordinary_node() {
         let world = trace_world();
         let mut graph = Graph::default();
-        let clock = graph.insert(Node::of(Vec2::ZERO, Clock::default()));
+        let clock = graph.insert(Node::of(Clock::default()));
 
         tick(&mut graph, &world);
         tick(&mut graph, &world);
@@ -389,8 +383,8 @@ mod tests {
     fn a_tick_that_writes_only_equal_values_reports_nothing() {
         let world = trace_world();
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Sink::default()));
         graph
             .connect(Port::new(a, "out"), Port::new(b, "value"), 0)
             .expect("legal");
@@ -418,10 +412,7 @@ mod tests {
         // A scalar fixture cannot catch this; `Placer` exists to.
         let world = trace_world();
         let mut graph = Graph::default();
-        let placer = graph.insert(Node::of(
-            Vec2::ZERO,
-            crate::graph::testing::Placer::default(),
-        ));
+        let placer = graph.insert(Node::of(crate::graph::testing::Placer::default()));
 
         tick(&mut graph, &world);
         graph.drain_dirty();
@@ -437,9 +428,9 @@ mod tests {
     fn a_changed_value_dirties_only_the_nodes_it_reaches() {
         let world = trace_world();
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
-        let idle = graph.insert(Node::of(Vec2::ZERO, Source::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Sink::default()));
+        let idle = graph.insert(Node::of(Source::default()));
         graph
             .connect(Port::new(a, "out"), Port::new(b, "value"), 0)
             .expect("legal");
@@ -461,10 +452,10 @@ mod tests {
     fn many_connections_arrive_in_key_order() {
         let world = trace_world();
         let mut graph = Graph::default();
-        let fan = graph.insert(Node::of(Vec2::ZERO, Fan::default()));
+        let fan = graph.insert(Node::of(Fan::default()));
         let mut sources = Vec::new();
         for value in [1.0, 2.0, 3.0] {
-            let id = graph.insert(Node::of(Vec2::ZERO, Source::default()));
+            let id = graph.insert(Node::of(Source::default()));
             set(&mut graph, id, "base", value);
             sources.push(id);
         }
@@ -488,10 +479,10 @@ mod tests {
     fn disconnecting_a_variadic_edge_shrinks_the_list() {
         let world = trace_world();
         let mut graph = Graph::default();
-        let fan = graph.insert(Node::of(Vec2::ZERO, Fan::default()));
+        let fan = graph.insert(Node::of(Fan::default()));
         let mut edges = Vec::new();
         for value in [1.0, 2.0] {
-            let id = graph.insert(Node::of(Vec2::ZERO, Source::default()));
+            let id = graph.insert(Node::of(Source::default()));
             set(&mut graph, id, "base", value);
             edges.push(
                 graph
@@ -516,7 +507,7 @@ mod tests {
     fn an_unconnected_optional_inlet_is_absent_not_defaulted() {
         let world = trace_world();
         let mut graph = Graph::default();
-        let sink = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        let sink = graph.insert(Node::of(Sink::default()));
 
         tick(&mut graph, &world);
 
@@ -530,8 +521,8 @@ mod tests {
     fn a_connected_optional_inlet_arrives_wrapped() {
         let world = trace_world();
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let sink = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let sink = graph.insert(Node::of(Sink::default()));
         set(&mut graph, a, "base", 4.0);
         graph
             .connect(Port::new(a, "out"), Port::new(sink, "maybe"), 0)
@@ -550,8 +541,8 @@ mod tests {
         let world = trace_world();
         let mut graph = Graph::default();
         // `Sink` is ordered after `Source` purely by the marker edge.
-        let sink = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
-        let source = graph.insert(Node::of(Vec2::ZERO, Source::default()));
+        let sink = graph.insert(Node::of(Sink::default()));
+        let source = graph.insert(Node::of(Source::default()));
         graph
             .connect(Port::new(source, "marker"), Port::new(sink, "marker"), 0)
             .expect("legal");
@@ -577,8 +568,8 @@ mod tests {
     fn a_nested_destination_writes_only_that_component() {
         let world = trace_world();
         let mut graph = Graph::default();
-        let source = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let nested = graph.insert(Node::of(Vec2::ZERO, Nested::default()));
+        let source = graph.insert(Node::of(Source::default()));
+        let nested = graph.insert(Node::of(Nested::default()));
         set(&mut graph, source, "base", 7.0);
         {
             let target = graph.get_mut(nested).expect("node");
@@ -622,8 +613,8 @@ mod tests {
 
         let (a, b) = {
             let mut graph = app.world_mut().resource_mut::<Graph>();
-            let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-            let b = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
+            let a = graph.insert(Node::of(Source::default()));
+            let b = graph.insert(Node::of(Counter::default()));
             graph
                 .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
                 .expect("legal");
@@ -656,7 +647,7 @@ mod tests {
         app.update();
         app.world_mut()
             .resource_mut::<Graph>()
-            .insert(Node::of(Vec2::ZERO, Clock::default()));
+            .insert(Node::of(Clock::default()));
 
         app.update();
     }

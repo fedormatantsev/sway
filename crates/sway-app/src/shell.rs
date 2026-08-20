@@ -23,7 +23,8 @@ use bevy::math::UVec2;
 use crossbeam_channel::Sender;
 use sway_editor::{FileRequest, ViewRequest};
 use sway_gpu::{Compositor, GpuContext, ViewportTexture, WindowSurface};
-use sway_graph::{GraphCommand, ViewportInput};
+use sway_editor::edit::EditorEdit;
+use sway_viewport_input::ViewportInput;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
@@ -92,7 +93,7 @@ pub struct ShellConfig {
     /// plain `ShowPresenter` (viewport fullscreen, no masonry).
     pub editor: bool,
     pub build_app: AppBuilder,
-    pub commands: Sender<GraphCommand>,
+    pub commands: Sender<EditorEdit>,
     pub viewport_input: Sender<ViewportInput>,
     pub project: ProjectSpec,
 }
@@ -153,7 +154,7 @@ impl Running {
             }
             match request {
                 FileRequest::Save => {
-                    if let Err(error) = sway_document::v3::save_open_graph(self.app.world_mut()) {
+                    if let Err(error) = sway_document::v4::save_open_graph(self.app.world_mut()) {
                         eprintln!("save failed: {error}");
                     }
                 }

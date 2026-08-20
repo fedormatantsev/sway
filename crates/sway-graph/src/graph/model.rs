@@ -9,7 +9,8 @@
 use std::collections::BTreeSet;
 
 use bevy_ecs::resource::Resource;
-use bevy_reflect::PartialReflect;
+use bevy_reflect::std_traits::ReflectDefault;
+use bevy_reflect::{PartialReflect, TypeRegistry};
 
 use crate::graph::edge::{Compat, Edge, Port};
 use crate::graph::id::{EdgeId, NodeId};
@@ -17,6 +18,7 @@ use crate::graph::legality;
 use crate::graph::node::{Node, Part};
 use crate::graph::order::{self, EvalOrder};
 use crate::graph::path;
+use crate::graph::registry::ReflectNodeKind;
 
 /// Why a connection was refused.
 ///
@@ -46,6 +48,24 @@ pub enum ConnectError {
     UntypedValue,
 }
 
+/// What a field write did.
+///
+/// Three outcomes, not four: each mutation method reports precisely what *it*
+/// can fail at, rather than every caller matching one enum that folds "no such
+/// node", "no such kind", "path did not resolve" and "connection refused"
+/// together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldWrite {
+    /// The field took the new value, and the node is now dirty.
+    Written,
+    /// The value equalled the field's current one. Nothing was written and the
+    /// node is **not** dirty.
+    Unchanged,
+    /// No such node, the path did not resolve within `inlets`, or the value
+    /// does not fit the type at that path. The field keeps its previous value.
+    Rejected,
+}
+
 struct Slot {
     generation: u32,
     node: Option<Node>,
@@ -67,7 +87,6 @@ pub struct Graph {
     /// Nodes deleted since a consumer last drained. Projectors need this to
     /// despawn; the node itself is gone by the time they look.
     removed: Vec<NodeId>,
-    selection: Option<NodeId>,
     topology_dirty: bool,
     order: EvalOrder,
 }
@@ -81,7 +100,6 @@ impl Default for Graph {
             next_edge: 0,
             dirty: BTreeSet::new(),
             removed: Vec::new(),
-            selection: None,
             // Starts dirty so the first tick builds an order.
             topology_dirty: true,
             order: EvalOrder::default(),
@@ -113,6 +131,53 @@ impl Graph {
         self.dirty.insert(id);
         self.topology_dirty = true;
         id
+    }
+
+    /// Adds a node of a registered kind, named by its reflected type path.
+    ///
+    /// `None` when the path names nothing registered, names a type that is not
+    /// a *node kind* (a bare reflected type has no `evaluate` and no declared
+    /// parts), or names one with no `ReflectDefault` to build it from. The
+    /// registry is the only reason this is not `insert`: constructing a node
+    /// from a name needs it, and the graph does not hold one.
+    pub fn create(&mut self, registry: &TypeRegistry, type_path: &str) -> Option<NodeId> {
+        let registration = registry.get_with_type_path(type_path)?;
+        registration.data::<ReflectNodeKind>()?;
+        let value = registration.data::<ReflectDefault>()?.default();
+        let kind = registration.type_info().type_path();
+        Some(self.insert(Node::new(kind, value)))
+    }
+
+    /// Writes one of a node's authored inlet fields.
+    ///
+    /// `path` is relative to `inlets`, exactly as an edge's is: `"frequency"`,
+    /// not `"inlets.frequency"`. The value arrives reflected, so the graph
+    /// enumerates no set of types a write may carry — converting whatever an
+    /// editing control produced into the field's declared type is the
+    /// authoring surface's job, not this one's.
+    ///
+    /// An equal write reports [`FieldWrite::Unchanged`] and does **not** dirty
+    /// the node (architecture §7: never write an equal value).
+    pub fn set_field(
+        &mut self,
+        node: NodeId,
+        path: &str,
+        value: &dyn PartialReflect,
+    ) -> FieldWrite {
+        let Some(target) = self.get_mut(node) else {
+            return FieldWrite::Rejected;
+        };
+        let Some(field) = path::resolve_mut(target, Part::Inlets, path) else {
+            return FieldWrite::Rejected;
+        };
+        if reflect_equal(field, value) {
+            return FieldWrite::Unchanged;
+        }
+        if field.try_apply(value).is_err() {
+            return FieldWrite::Rejected;
+        }
+        self.dirty.insert(node);
+        FieldWrite::Written
     }
 
     /// Removes a node and **every edge naming it, in either direction**, so
@@ -153,9 +218,6 @@ impl Graph {
 
         self.dirty.remove(&id);
         self.removed.push(id);
-        if self.selection == Some(id) {
-            self.selection = None;
-        }
         self.topology_dirty = true;
         node
     }
@@ -353,22 +415,6 @@ impl Graph {
         core::mem::take(&mut self.removed)
     }
 
-    // --- selection -----------------------------------------------------
-
-    /// The node the editor is currently pointed at.
-    pub fn selection(&self) -> Option<NodeId> {
-        self.selection
-    }
-
-    /// Points the editor at a node. Selection is not node content, so it does
-    /// not dirty anything.
-    pub fn set_selection(&mut self, node: Option<NodeId>) {
-        self.selection = match node {
-            Some(id) if !self.contains(id) => None,
-            other => other,
-        };
-    }
-
     // --- order ---------------------------------------------------------
 
     /// Whether the shape changed since the last rebuild.
@@ -460,9 +506,60 @@ mod tests {
 
     fn source_and_counter() -> (Graph, NodeId, NodeId) {
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Counter::default()));
         (graph, a, b)
+    }
+
+    // --- annotations ----------------------------------------------------
+
+    #[test]
+    fn writing_an_annotation_does_not_dirty_the_node() {
+        // An annotation is not a node value: nothing downstream depends on it,
+        // so a surface parking its state there must not cost a re-evaluation.
+        let (mut graph, _, b) = source_and_counter();
+        graph.drain_dirty();
+
+        graph
+            .get_mut(b)
+            .expect("live")
+            .metadata_mut()
+            .insert("pos".into(), Box::new(Vec2::new(7.0, 8.0)));
+
+        assert!(graph.drain_dirty().is_empty());
+        assert!(!graph.is_dirty(b));
+    }
+
+    #[test]
+    fn an_annotation_under_an_unknown_key_is_stored_and_changes_nothing() {
+        // The graph interprets no key: an unfamiliar one is stored, readable,
+        // and invisible to ordering and legality.
+        let (mut graph, a, b) = source_and_counter();
+        graph
+            .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
+            .expect("legal");
+        graph.rebuild_order();
+        let before = format!("{:?}", graph.order().steps);
+
+        graph
+            .get_mut(b)
+            .expect("live")
+            .metadata_mut()
+            .insert("something the graph has never seen".into(), Box::new(42u32));
+
+        assert_eq!(
+            graph.get(b).unwrap().metadata()
+                ["something the graph has never seen"]
+                .try_downcast_ref::<u32>(),
+            Some(&42)
+        );
+        assert!(!graph.topology_dirty(), "an annotation is not a shape change");
+        assert_eq!(format!("{:?}", graph.order().steps), before);
+        assert_eq!(
+            graph.connect(Port::new(a, "out"), Port::new(b, "step"), 0).is_ok(),
+            true,
+            "legality is unaffected"
+        );
     }
 
     // --- 1.1 identity ---------------------------------------------------
@@ -470,9 +567,9 @@ mod tests {
     #[test]
     fn a_deleted_id_never_resolves_to_a_later_node() {
         let mut graph = Graph::default();
-        let first = graph.insert(Node::of(Vec2::ZERO, Source::default()));
+        let first = graph.insert(Node::of(Source::default()));
         graph.remove(first);
-        let second = graph.insert(Node::of(Vec2::ZERO, Source::default()));
+        let second = graph.insert(Node::of(Source::default()));
 
         assert_eq!(
             first.index(),
@@ -497,7 +594,7 @@ mod tests {
     fn creating_a_node_dirties_only_that_node() {
         let (mut graph, a, b) = source_and_counter();
         graph.drain_dirty();
-        let c = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        let c = graph.insert(Node::of(Sink::default()));
         assert_eq!(graph.drain_dirty(), vec![c]);
         assert!(!graph.is_dirty(a) && !graph.is_dirty(b));
     }
@@ -523,7 +620,7 @@ mod tests {
     #[test]
     fn a_self_connection_is_refused() {
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
+        let a = graph.insert(Node::of(Counter::default()));
         assert_eq!(
             graph.connect(Port::new(a, "total"), Port::new(a, "step"), 0),
             Err(ConnectError::SelfConnection)
@@ -534,8 +631,8 @@ mod tests {
     #[test]
     fn an_illegal_connection_is_refused_without_evaluating_anything() {
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Sink::default()));
         // `Source.outlets.out` is f32; `Sink.inlets.flag` is bool.
         let error = graph
             .connect(Port::new(a, "out"), Port::new(b, "flag"), 0)
@@ -571,9 +668,9 @@ mod tests {
     #[test]
     fn a_single_connection_inlet_is_replaced_not_doubled() {
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let c = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Source::default()));
+        let c = graph.insert(Node::of(Counter::default()));
         graph
             .connect(Port::new(a, "out"), Port::new(c, "step"), 0)
             .expect("legal");
@@ -589,9 +686,9 @@ mod tests {
     #[test]
     fn a_variadic_inlet_accumulates() {
         let mut graph = Graph::default();
-        let fan = graph.insert(Node::of(Vec2::ZERO, Fan::default()));
+        let fan = graph.insert(Node::of(Fan::default()));
         for _ in 0..3 {
-            let source = graph.insert(Node::of(Vec2::ZERO, Source::default()));
+            let source = graph.insert(Node::of(Source::default()));
             graph
                 .connect(Port::new(source, "out"), Port::new(fan, "values"), 0)
                 .expect("legal");
@@ -608,8 +705,8 @@ mod tests {
     #[test]
     fn an_optional_inlet_takes_the_bare_source_type() {
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Sink::default()));
         let id = graph
             .connect(Port::new(a, "out"), Port::new(b, "maybe"), 0)
             .expect("f32 -> Option<f32> is legal");
@@ -619,8 +716,8 @@ mod tests {
     #[test]
     fn a_marker_edge_is_recorded_as_valueless() {
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Sink::default()));
         let id = graph
             .connect(Port::new(a, "marker"), Port::new(b, "marker"), 0)
             .expect("legal");
@@ -630,9 +727,9 @@ mod tests {
     #[test]
     fn deleting_a_node_deletes_every_edge_naming_it() {
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
-        let c = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Counter::default()));
+        let c = graph.insert(Node::of(Sink::default()));
         graph
             .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
             .expect("legal");
@@ -658,9 +755,9 @@ mod tests {
         // rendering with it -- the dropped edge is the only trace of that
         // connection, so dropping it is the moment to report both ends.
         let mut graph = Graph::default();
-        let producer = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let consumer = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
-        let downstream = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        let producer = graph.insert(Node::of(Source::default()));
+        let consumer = graph.insert(Node::of(Counter::default()));
+        let downstream = graph.insert(Node::of(Sink::default()));
         graph
             .connect(Port::new(producer, "out"), Port::new(consumer, "step"), 0)
             .expect("legal");
@@ -693,9 +790,9 @@ mod tests {
     #[test]
     fn disconnect_removes_exactly_one_edge() {
         let mut graph = Graph::default();
-        let fan = graph.insert(Node::of(Vec2::ZERO, Fan::default()));
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Source::default()));
+        let fan = graph.insert(Node::of(Fan::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Source::default()));
         let first = graph
             .connect(Port::new(a, "out"), Port::new(fan, "values"), 0)
             .expect("legal");
@@ -711,9 +808,9 @@ mod tests {
     #[test]
     fn reordering_changes_one_edges_key_only() {
         let mut graph = Graph::default();
-        let fan = graph.insert(Node::of(Vec2::ZERO, Fan::default()));
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Source::default()));
+        let fan = graph.insert(Node::of(Fan::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Source::default()));
         let first = graph
             .connect(Port::new(a, "out"), Port::new(fan, "values"), 10)
             .expect("legal");
@@ -731,12 +828,192 @@ mod tests {
         );
     }
 
+    // --- the mutation API -----------------------------------------------
+    //
+    // These were `GraphCommand` tests. The commands were a second vocabulary
+    // restating the methods below as data; the assertions are unchanged, and
+    // each one has lost its wrapper.
+
+    fn two_and_a_registry() -> (Graph, TypeRegistry, NodeId, NodeId) {
+        let registry = crate::graph::testing::test_registry();
+        let mut graph = Graph::default();
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Counter::default()));
+        graph.drain_dirty();
+        (graph, registry, a, b)
+    }
+
     #[test]
-    fn selection_drops_when_the_selected_node_is_deleted() {
-        let (mut graph, a, _) = source_and_counter();
-        graph.set_selection(Some(a));
-        assert_eq!(graph.selection(), Some(a));
+    fn create_adds_a_node_of_the_named_kind() {
+        let registry = crate::graph::testing::test_registry();
+        let mut graph = Graph::default();
+
+        let id = graph
+            .create(&registry, "sway_graph::graph::testing::Counter")
+            .expect("a registered node kind");
+
+        let node = graph.get(id).expect("live");
+        assert_eq!(node.kind(), "sway_graph::graph::testing::Counter");
+        assert!(node.metadata().is_empty(), "the graph annotates nothing");
+        assert_eq!(graph.drain_dirty(), vec![id]);
+    }
+
+    #[test]
+    fn create_refuses_a_type_that_is_not_a_node_kind() {
+        // `Step` is registered, but only as a part type: it has no `evaluate`
+        // and no declared parts.
+        let registry = crate::graph::testing::test_registry();
+        let mut graph = Graph::default();
+
+        assert_eq!(
+            graph.create(&registry, "sway_graph::graph::testing::Step"),
+            None
+        );
+        assert!(graph.is_empty());
+    }
+
+    #[test]
+    fn create_refuses_a_type_path_nothing_is_registered_under() {
+        let registry = crate::graph::testing::test_registry();
+        let mut graph = Graph::default();
+        assert_eq!(graph.create(&registry, "nothing::at::all"), None);
+        assert!(graph.is_empty());
+    }
+
+    #[test]
+    fn set_field_writes_one_inlet_and_dirties_only_that_node() {
+        let (mut graph, _registry, a, b) = two_and_a_registry();
+
+        assert_eq!(graph.set_field(b, "step", &2.5f32), FieldWrite::Written);
+        assert_eq!(graph.drain_dirty(), vec![b], "{a} is untouched");
+    }
+
+    #[test]
+    fn an_equal_set_field_reports_nothing() {
+        let (mut graph, _registry, _, b) = two_and_a_registry();
+        assert_eq!(graph.set_field(b, "step", &0.0f32), FieldWrite::Unchanged);
+        assert!(graph.drain_dirty().is_empty());
+    }
+
+    #[test]
+    fn set_field_addresses_a_nested_path() {
+        use crate::graph::testing::Nested;
+        let mut graph = Graph::default();
+        let id = graph.insert(Node::of(Nested::default()));
+        graph.drain_dirty();
+
+        assert_eq!(
+            graph.set_field(id, "point.y", &4.0f32),
+            FieldWrite::Written
+        );
+
+        let point = path::resolve(graph.get(id).unwrap(), Part::Inlets, "point").unwrap();
+        assert_eq!(point.reflect_partial_eq(&Vec2::new(0.0, 4.0)), Some(true));
+    }
+
+    #[test]
+    fn set_field_refuses_a_path_that_does_not_resolve() {
+        let (mut graph, _registry, _, b) = two_and_a_registry();
+        assert_eq!(
+            graph.set_field(b, "no such field", &1.0f32),
+            FieldWrite::Rejected
+        );
+        assert!(graph.drain_dirty().is_empty());
+    }
+
+    #[test]
+    fn set_field_refuses_a_node_that_does_not_exist() {
+        let (mut graph, _registry, a, _) = two_and_a_registry();
         graph.remove(a);
-        assert_eq!(graph.selection(), None);
+        assert_eq!(graph.set_field(a, "level", &1.0f32), FieldWrite::Rejected);
+    }
+
+    #[test]
+    fn a_mismatched_value_leaves_the_field_as_it_was() {
+        // The graph names no set of types a write may carry, so "does this
+        // fit?" is answered by `try_apply`, not by a match on an enum.
+        let (mut graph, _registry, _, b) = two_and_a_registry();
+
+        assert_eq!(
+            graph.set_field(b, "step", &"not a number".to_string()),
+            FieldWrite::Rejected
+        );
+
+        let step = path::resolve(graph.get(b).unwrap(), Part::Inlets, "step").unwrap();
+        assert_eq!(step.reflect_partial_eq(&0.0f32), Some(true));
+        assert!(graph.drain_dirty().is_empty());
+    }
+
+    #[test]
+    fn a_field_of_a_type_the_graph_has_no_knowledge_of_is_written() {
+        // The point of a reflected write: `Nested::point` is a `Vec2`, and the
+        // graph names no `Vec2` anywhere.
+        use crate::graph::testing::Nested;
+        let mut graph = Graph::default();
+        let id = graph.insert(Node::of(Nested::default()));
+        graph.drain_dirty();
+
+        assert_eq!(
+            graph.set_field(id, "point", &Vec2::new(1.0, 2.0)),
+            FieldWrite::Written
+        );
+
+        let point = path::resolve(graph.get(id).unwrap(), Part::Inlets, "point").unwrap();
+        assert_eq!(point.reflect_partial_eq(&Vec2::new(1.0, 2.0)), Some(true));
+    }
+
+    #[test]
+    fn connect_surfaces_the_reason_it_was_refused() {
+        let (mut graph, _registry, a, b) = two_and_a_registry();
+        assert_eq!(
+            graph.connect(Port::new(a, "out"), Port::new(b, "nope"), 0),
+            Err(ConnectError::MissingDestinationPath)
+        );
+    }
+
+    #[test]
+    fn connect_then_disconnect_round_trips() {
+        let (mut graph, _registry, a, b) = two_and_a_registry();
+        let edge = graph
+            .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
+            .expect("legal");
+        assert!(graph.disconnect(edge));
+        assert!(graph.edges().is_empty());
+    }
+
+    #[test]
+    fn disconnect_reports_an_edge_that_does_not_exist() {
+        let (mut graph, _registry, _, _) = two_and_a_registry();
+        assert!(!graph.disconnect(EdgeId::new(99)));
+    }
+
+    #[test]
+    fn remove_takes_the_node_and_its_edges() {
+        let (mut graph, _registry, a, b) = two_and_a_registry();
+        graph
+            .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
+            .expect("legal");
+
+        assert!(graph.remove(a).is_some());
+        assert!(graph.get(a).is_none());
+        assert!(graph.edges().is_empty());
+        assert_eq!(graph.drain_removed(), vec![a]);
+        assert!(graph.remove(a).is_none(), "and again reports nothing");
+    }
+
+    #[test]
+    fn set_slot_reorders_one_edge() {
+        use crate::graph::testing::Fan;
+        let mut graph = Graph::default();
+        let fan = graph.insert(Node::of(Fan::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let edge = graph
+            .connect(Port::new(a, "out"), Port::new(fan, "values"), 10)
+            .expect("legal");
+
+        assert!(graph.set_slot(edge, 20));
+        assert_eq!(graph.edge(edge).unwrap().slot, 20);
+        assert!(!graph.set_slot(edge, 20), "an equal key reports nothing");
+        assert!(!graph.set_slot(EdgeId::new(99), 1), "and so does no edge");
     }
 }

@@ -110,7 +110,7 @@ impl NodeKind for Oscillator {
 
 #[cfg(test)]
 mod tests {
-    use bevy::math::Vec2;
+    
     use bevy_reflect::TypeRegistry;
     use sway_graph::graph::registry::register_node_kind;
     use sway_graph::graph::{Graph, Node, Part, Port};
@@ -125,9 +125,7 @@ mod tests {
         register_node_kind::<Oscillator>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(
-            Vec2::ZERO,
-            Oscillator {
+        let node = graph.insert(Node::of(Oscillator {
                 inlets: OscillatorIn {
                     time: 0.0,
                     period: 4.0,
@@ -150,9 +148,7 @@ mod tests {
         register_node_kind::<Oscillator>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(
-            Vec2::ZERO,
-            Oscillator {
+        let node = graph.insert(Node::of(Oscillator {
                 inlets: OscillatorIn {
                     time: 5.0,
                     period: 0.0,
@@ -182,9 +178,7 @@ mod tests {
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
         // Stands in for `MidiTime`: any node whose `out` reaches `time`.
-        let time_source = graph.insert(Node::of(
-            Vec2::ZERO,
-            Math {
+        let time_source = graph.insert(Node::of(Math {
                 inlets: MathIn {
                     op: crate::math::MathOp::Add,
                     a: 1.0,
@@ -193,9 +187,7 @@ mod tests {
                 ..Default::default()
             },
         ));
-        let node = graph.insert(Node::of(
-            Vec2::ZERO,
-            Oscillator {
+        let node = graph.insert(Node::of(Oscillator {
                 inlets: OscillatorIn {
                     time: 0.0,
                     period: 4.0,
@@ -227,9 +219,7 @@ mod tests {
         register_node_kind::<Math>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
-        let amplitude = graph.insert(Node::of(
-            Vec2::ZERO,
-            Math {
+        let amplitude = graph.insert(Node::of(Math {
                 inlets: MathIn {
                     op: crate::math::MathOp::Add,
                     a: 0.5,
@@ -238,9 +228,7 @@ mod tests {
                 ..Default::default()
             },
         ));
-        let node = graph.insert(Node::of(
-            Vec2::ZERO,
-            Oscillator {
+        let node = graph.insert(Node::of(Oscillator {
                 inlets: OscillatorIn {
                     time: 0.0,
                     period: 4.0,
@@ -286,7 +274,7 @@ mod tests {
         register_node_kind::<Oscillator>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(Vec2::ZERO, Oscillator::default()));
+        let node = graph.insert(Node::of(Oscillator::default()));
 
         harness::tick(&mut graph, &world);
         graph.drain_dirty();

@@ -41,7 +41,7 @@ impl NodeKind for Vec3 {
 
 #[cfg(test)]
 mod tests {
-    use bevy::math::Vec2;
+    
     use bevy_reflect::TypeRegistry;
     use sway_graph::graph::registry::register_node_kind;
     use sway_graph::graph::{Graph, Node, Part, Port};
@@ -55,9 +55,7 @@ mod tests {
         register_node_kind::<Vec3>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(
-            Vec2::ZERO,
-            Vec3 {
+        let node = graph.insert(Node::of(Vec3 {
                 inlets: Vec3In {
                     x: 1.0,
                     y: 2.0,
@@ -81,9 +79,7 @@ mod tests {
         register_node_kind::<crate::nodes::math::Math>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
-        let source = graph.insert(Node::of(
-            Vec2::ZERO,
-            crate::nodes::math::Math {
+        let source = graph.insert(Node::of(crate::nodes::math::Math {
                 inlets: crate::nodes::math::MathIn {
                     op: crate::math::MathOp::Add,
                     a: 0.75,
@@ -92,7 +88,7 @@ mod tests {
                 ..Default::default()
             },
         ));
-        let vector = graph.insert(Node::of(Vec2::ZERO, Vec3::default()));
+        let vector = graph.insert(Node::of(Vec3::default()));
         graph
             .connect(Port::new(source, "out"), Port::new(vector, "y"), 0)
             .expect("legal");
@@ -129,7 +125,7 @@ mod tests {
         register_node_kind::<Vec3>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(Vec2::ZERO, Vec3::default()));
+        let node = graph.insert(Node::of(Vec3::default()));
 
         harness::tick(&mut graph, &world);
         graph.drain_dirty();

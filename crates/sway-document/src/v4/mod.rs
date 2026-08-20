@@ -36,7 +36,7 @@ use sway_graph::graph::Graph;
 ///
 /// A plain path read, not an asset-pipeline operation — for a caller that
 /// already has a `TypeRegistry` in hand and no `App` running (a test, or a
-/// CLI tool). `crate::v3::asset::GraphAssetPlugin` is the `App`-integrated
+/// CLI tool). `crate::v4::asset::GraphAssetPlugin` is the `App`-integrated
 /// alternative.
 pub fn load_from_path(
     path: &Path,
@@ -68,7 +68,6 @@ pub fn save_to_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy_math::Vec2;
     use bevy_reflect::Reflect;
     use sway_graph::graph::{Node, ReflectNodeKind, register_node_kind};
 
@@ -104,18 +103,15 @@ mod tests {
     #[test]
     fn save_then_load_reproduces_the_graph() {
         let registry = registry();
-        let dir = std::env::temp_dir().join("sway-document-v3-save-load");
+        let dir = std::env::temp_dir().join("sway-document-v4-save-load");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("{}.sway.ron", std::process::id()));
 
         let mut graph = Graph::default();
-        graph.insert(Node::of(
-            Vec2::new(3.0, 4.0),
-            Constant {
-                inlets: ConstIn { value: 1.5 },
-                ..Default::default()
-            },
-        ));
+        graph.insert(Node::of(Constant {
+            inlets: ConstIn { value: 1.5 },
+            ..Default::default()
+        }));
         let mut ids = StableIds::new();
         save_to_path(&graph, &registry, &mut ids, &path).expect("saves");
 
@@ -123,7 +119,7 @@ mod tests {
         assert!(diagnostics.is_clean(), "{diagnostics:?}");
         assert_eq!(reopened.len(), 1);
         let (_id, node) = reopened.iter().next().expect("one node");
-        assert_eq!(node.pos(), Vec2::new(3.0, 4.0));
+        assert_eq!(node.kind(), <Constant as bevy_reflect::TypePath>::type_path());
     }
 
     #[test]

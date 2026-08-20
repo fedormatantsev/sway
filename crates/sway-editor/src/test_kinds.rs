@@ -188,12 +188,23 @@ pub fn registry() -> TypeRegistry {
     registry
 }
 
+/// A node of `value`, annotated with the canvas placement the editor would
+/// have given it. Placement is editor state carried in the node's annotations,
+/// so a fixture that cares where a node sits has to say so the same way the
+/// editor does.
+pub fn placed<T: Reflect + TypePath>(pos: Vec2, value: T) -> Node {
+    let mut node = Node::of(value);
+    node.metadata_mut()
+        .insert(crate::canvas::CANVAS_POS_KEY.to_string(), Box::new(pos));
+    node
+}
+
 /// A `Source` feeding a `Gate`: two nodes, one edge, and an inlet
 /// (`Gate::amount`) with nothing connected to it.
 pub fn source_and_gate() -> (Graph, NodeId, NodeId) {
     let mut graph = Graph::default();
-    let source = graph.insert(Node::of(Vec2::new(0.0, 0.0), Source::default()));
-    let gate = graph.insert(Node::of(Vec2::new(400.0, 0.0), Gate::default()));
+    let source = graph.insert(placed(Vec2::new(0.0, 0.0), Source::default()));
+    let gate = graph.insert(placed(Vec2::new(400.0, 0.0), Gate::default()));
     graph
         .connect(Port::new(source, "out"), Port::new(gate, "gate"), 0)
         .expect("f32 -> Option<f32> is a legal optional connection");
@@ -205,8 +216,8 @@ pub fn source_and_gate() -> (Graph, NodeId, NodeId) {
 /// a test can prove a *connected* inlet stays editable.
 pub fn chained_sources() -> (Graph, NodeId, NodeId) {
     let mut graph = Graph::default();
-    let driver = graph.insert(Node::of(Vec2::new(0.0, 0.0), Source::default()));
-    let driven = graph.insert(Node::of(Vec2::new(400.0, 0.0), Source::default()));
+    let driver = graph.insert(placed(Vec2::new(0.0, 0.0), Source::default()));
+    let driven = graph.insert(placed(Vec2::new(400.0, 0.0), Source::default()));
     graph
         .connect(Port::new(driver, "out"), Port::new(driven, "level"), 0)
         .expect("f32 -> f32 is a direct connection");
@@ -217,10 +228,10 @@ pub fn chained_sources() -> (Graph, NodeId, NodeId) {
 /// slots, deliberately connected out of slot order.
 pub fn variadic_graph() -> (Graph, Vec<NodeId>, NodeId) {
     let mut graph = Graph::default();
-    let mixer = graph.insert(Node::of(Vec2::new(400.0, 0.0), Mixer::default()));
+    let mixer = graph.insert(placed(Vec2::new(400.0, 0.0), Mixer::default()));
     let mut sources = Vec::new();
     for (index, slot) in [30, 10, 20].into_iter().enumerate() {
-        let source = graph.insert(Node::of(
+        let source = graph.insert(placed(
             Vec2::new(0.0, index as f32 * 100.0),
             Source::default(),
         ));

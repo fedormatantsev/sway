@@ -8,9 +8,19 @@ use bevy::gizmos::transform_gizmo::{
     TransformGizmoSettings, TransformGizmoSpace, TransformGizmoState,
 };
 use bevy::prelude::*;
-use sway_graph::{ViewportInput, ViewportInputRx};
+use crossbeam_channel::Receiver;
+use sway_viewport_input::ViewportInput;
 
 pub use camera::{ViewportCamera, ViewportCameraRole};
+
+/// The receiving half of the editor's viewport input channel, held by the
+/// world. Present only in an editor build.
+///
+/// Owned here rather than in the engine: the boundary that drains a channel
+/// owns its plumbing, and `drain_viewport_input` below is the only thing that
+/// reads it.
+#[derive(Resource)]
+pub struct ViewportInputRx(pub Receiver<ViewportInput>);
 
 /// This frame's viewport input, replaced wholesale each `PreUpdate`.
 ///
@@ -49,6 +59,9 @@ impl Plugin for EditorViewportPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ViewportEvents>()
             .init_resource::<camera::ViewportCamera>()
+            // The picker sets it and the gizmo follows it. Owned by the
+            // editor, not the graph, so an editor build has to insert it.
+            .init_resource::<sway_selection::Selection>()
             .init_resource::<sway_graph::graph::Graph>()
             .init_resource::<crate::project::NodeEntities>()
             // Switches `TransformGizmoRenderPlugin`'s systems on; both must

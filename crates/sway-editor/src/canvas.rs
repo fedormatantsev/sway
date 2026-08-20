@@ -35,9 +35,11 @@ use masonry::widgets::Label;
 use masonry_core::kurbo::{Affine, Axis, BezPath, Circle, Point, Size, Stroke, Vec2};
 use peniko::Color;
 use sway_graph::graph::{
-    Compat, ConnectError, EdgeId, Graph, GraphCommand, NodeId as GraphNodeId, Part, Port,
-    compatibility, registered_node_kinds,
+    Compat, ConnectError, EdgeId, Graph, NodeId as GraphNodeId, Part, Port, compatibility,
+    registered_node_kinds,
 };
+
+use crate::edit::EditorEdit;
 
 use crate::node_box::{
     self, GraphSocketPaths, NodeBox, NodeBoxAction, SOCKET_HIT_RADIUS, graph_inlet_local,
@@ -94,7 +96,7 @@ struct IncomingNode {
 /// One owner for the rule, two callers: the canvas exposes it as
 /// [`GraphCanvas::reorder_graph_inlet`], and the inspector's edge-order rows
 /// (task 7.7's input path) call it directly.
-pub fn reorder_commands(order: &[(EdgeId, i32)], from: usize, to: usize) -> Vec<GraphCommand> {
+pub fn reorder_commands(order: &[(EdgeId, i32)], from: usize, to: usize) -> Vec<EditorEdit> {
     if from >= order.len() || to >= order.len() || from == to {
         return Vec::new();
     }
@@ -106,13 +108,31 @@ pub fn reorder_commands(order: &[(EdgeId, i32)], from: usize, to: usize) -> Vec<
         .enumerate()
         .filter_map(|(index, (edge, slot))| {
             let wanted_slot = (index as i32) * SLOT_SPACING;
-            (wanted_slot != slot).then_some(GraphCommand::SetSlot {
+            (wanted_slot != slot).then_some(EditorEdit::SetSlot {
                 edge,
                 slot: wanted_slot,
             })
         })
         .collect()
 }
+
+/// Where the canvas draws a node.
+///
+/// Placement is the editor's own state, parked in the node's annotations under
+/// `"pos"` so that reopening a project restores the canvas the author left.
+/// The graph does not interpret the key, so a node that has never been placed
+/// simply has no annotation and lands at the origin.
+pub(crate) fn canvas_pos(node: &sway_graph::graph::Node) -> Point {
+    let pos = node
+        .metadata()
+        .get(CANVAS_POS_KEY)
+        .and_then(|value| value.try_downcast_ref::<WorldVec2>().copied())
+        .unwrap_or(WorldVec2::ZERO);
+    Point::new(pos.x as f64, pos.y as f64)
+}
+
+/// The annotation key the editor keeps canvas placement under.
+pub(crate) const CANVAS_POS_KEY: &str = "pos";
 
 /// The sockets one node offers on one side, taken from the node kind's
 /// declared schema rather than from the edge list.
@@ -357,7 +377,7 @@ pub struct GraphCanvas {
     /// window-space (logical) pointer position. `None` when not panning.
     panning: Option<Point>,
     /// Where edits go. The canvas produces data; `sway-graph` applies it.
-    commands: Sender<GraphCommand>,
+    commands: Sender<EditorEdit>,
     /// Every authorable component name, from the last snapshot — what the
     /// palette is built from.
     palette: Vec<&'static str>,
@@ -379,7 +399,16 @@ pub struct GraphCanvas {
     /// Every registered node kind's type path, for the palette (task 7.5).
     graph_palette: Vec<&'static str>,
     /// Where graph edits go. `Some` switches this canvas to the graph model.
-    graph_commands: Option<Sender<GraphCommand>>,
+    graph_commands: Option<Sender<EditorEdit>>,
+    /// A selection the user asked for that the editor has not applied yet.
+    /// Selection is editor state, not a scene edit, so it does not travel as
+    /// one: `EditorUi::apply_graph` picks it up alongside the placements.
+    pending_selection: Option<Option<GraphNodeId>>,
+    /// Canvas placements the user has settled that the graph has not been
+    /// told about yet. Placement is the editor's own state, not a scene edit,
+    /// so it does not travel as one: `EditorUi::apply_graph` writes these
+    /// straight onto the nodes' annotations the next time it holds the graph.
+    pending_placements: Vec<(GraphNodeId, WorldVec2)>,
     /// What became of the last completed drag-to-connect (task 7.6).
     feedback: Option<ConnectFeedback>,
     /// The status readout the feedback is shown in.
@@ -390,7 +419,7 @@ pub struct GraphCanvas {
 // --- MARK: BUILDERS
 impl GraphCanvas {
     /// Creates an empty canvas. Content arrives through `apply_snapshot`.
-    pub fn new(commands: Sender<GraphCommand>) -> Self {
+    pub fn new(commands: Sender<EditorEdit>) -> Self {
         Self {
             nodes: Vec::new(),
             slots: HashMap::new(),
@@ -409,6 +438,8 @@ impl GraphCanvas {
             graph_drag: None,
             graph_palette: Vec::new(),
             graph_commands: Some(commands.clone()),
+            pending_placements: Vec::new(),
+            pending_selection: None,
             commands,
             feedback: None,
             status: Label::new(String::new()).prepare().to_pod(),
@@ -422,8 +453,19 @@ impl GraphCanvas {
     /// the read path.
     ///
     /// [`populate_from_graph`]: Self::populate_from_graph
-    pub fn set_graph_commands(this: &mut WidgetMut<'_, Self>, commands: Sender<GraphCommand>) {
+    pub fn set_graph_commands(this: &mut WidgetMut<'_, Self>, commands: Sender<EditorEdit>) {
         this.widget.graph_commands = Some(commands);
+    }
+
+    /// Takes the placements settled since the last call, for the caller to
+    /// write onto the nodes' annotations.
+    pub fn take_placements(this: &mut WidgetMut<'_, Self>) -> Vec<(GraphNodeId, WorldVec2)> {
+        core::mem::take(&mut this.widget.pending_placements)
+    }
+
+    /// Takes the selection the user asked for, if they asked for one.
+    pub fn take_selection(this: &mut WidgetMut<'_, Self>) -> Option<Option<GraphNodeId>> {
+        this.widget.pending_selection.take()
     }
 
     /// Whether this canvas is driven by the graph model.
@@ -431,7 +473,7 @@ impl GraphCanvas {
         self.graph_commands.is_some()
     }
 
-    fn send(&self, command: GraphCommand) {
+    fn send(&self, command: EditorEdit) {
         if let Some(commands) = &self.graph_commands {
             // Send-failure is not an error worth reporting: the only way the
             // receiver is gone is that the app is shutting down.
@@ -1006,17 +1048,17 @@ impl GraphCanvas {
     pub fn populate_from_graph(
         this: &mut WidgetMut<'_, Self>,
         graph: &Graph,
+        selection: Option<GraphNodeId>,
         registry: &bevy_reflect::TypeRegistry,
     ) {
         this.widget.graph_palette = registered_node_kinds(registry);
-        let selection = graph.selection();
 
         let incoming: Vec<IncomingNode> = graph
             .iter()
             .map(|(id, node)| IncomingNode {
                 id,
                 label: short_type_name(node.kind()),
-                pos: Point::new(node.pos().x as f64, node.pos().y as f64),
+                pos: canvas_pos(node),
                 inlets: sockets_of(graph, registry, id, node.kind(), Part::Inlets),
                 outlets: sockets_of(graph, registry, id, node.kind(), Part::Outlets),
             })
@@ -1531,7 +1573,7 @@ impl GraphCanvas {
     fn clear_selection(&mut self) {
         if self.on_graph() {
             if self.graph_selected.is_some() {
-                self.send(GraphCommand::Select { node: None });
+                self.pending_selection = Some(None);
             }
             return;
         }
@@ -1618,7 +1660,7 @@ impl GraphCanvas {
         match action {
             NodeBoxAction::Selected => {
                 if self.graph_selected != Some(id) {
-                    self.send(GraphCommand::Select { node: Some(id) });
+                    self.pending_selection = Some(Some(id));
                 }
             }
             NodeBoxAction::DraggedBy(delta) => {
@@ -1630,10 +1672,8 @@ impl GraphCanvas {
             }
             NodeBoxAction::DragEnded => {
                 if let Some(slot) = self.graph_slots.get(&id) {
-                    self.send(GraphCommand::Move {
-                        node: id,
-                        pos: WorldVec2::new(slot.pos.x as f32, slot.pos.y as f32),
-                    });
+                    self.pending_placements
+                        .push((id, WorldVec2::new(slot.pos.x as f32, slot.pos.y as f32)));
                 }
             }
             NodeBoxAction::GraphSocketPressed(kind) => {
@@ -1709,7 +1749,7 @@ impl GraphCanvas {
                 let Some(edge) = self.graph_inlet_edges(node, &path).pop() else {
                     return;
                 };
-                self.send(GraphCommand::Disconnect { edge: edge.id });
+                self.send(EditorEdit::Disconnect { edge: edge.id });
             }
         }
     }
@@ -1777,7 +1817,7 @@ impl GraphCanvas {
                 .map_or(0, |edge| edge.slot + SLOT_SPACING),
             Compat::Direct | Compat::Optional => 0,
         };
-        self.send(GraphCommand::Connect {
+        self.send(EditorEdit::Connect {
             src: Port::new(src_node, src_path),
             dst: Port::new(dst_node, dst_path),
             slot,
@@ -1836,7 +1876,7 @@ impl GraphCanvas {
     fn delete_selected(&mut self) {
         if self.on_graph() {
             if let Some(node) = self.graph_selected {
-                self.send(GraphCommand::Delete { node });
+                self.send(EditorEdit::Delete { node });
             }
             return;
         }
@@ -1860,7 +1900,7 @@ impl GraphCanvas {
     /// the list happened to place that row.
     pub fn finish_palette_pick(this: &mut WidgetMut<'_, Self>, component: &'static str) {
         if let Some((layer_id, pos)) = this.widget.palette_layer.take() {
-            this.widget.send(GraphCommand::Create {
+            this.widget.send(EditorEdit::Create {
                 kind: component.to_string(),
                 pos: WorldVec2::new(pos.x as f32, pos.y as f32),
             });
@@ -1884,7 +1924,7 @@ impl GraphCanvas {
         component: &'static str,
         pos: Point,
     ) {
-        this.widget.send(GraphCommand::Create {
+        this.widget.send(EditorEdit::Create {
             kind: component.to_string(),
             pos: WorldVec2::new(pos.x as f32, pos.y as f32),
         });
@@ -1959,9 +1999,19 @@ mod graph_model_tests {
     use masonry::core::{DefaultProperties, PointerButton, Widget};
     use masonry_core::kurbo::Point;
     use masonry_testing::TestHarness;
-    use sway_graph::graph::{ConnectError, Graph, GraphCommand, Node, NodeId as GraphNodeId, Port};
+    use crate::edit::EditorEdit;
+    use sway_graph::graph::{ConnectError, Graph, Node, NodeId as GraphNodeId, Port};
 
-    fn harness(graph: &Graph) -> (TestHarness<GraphCanvas>, Receiver<GraphCommand>) {
+    fn harness(graph: &Graph) -> (TestHarness<GraphCanvas>, Receiver<EditorEdit>) {
+        harness_with(graph, None)
+    }
+
+    /// Selection is the editor's own state now, so a test says what is
+    /// selected rather than writing it into the graph first.
+    fn harness_with(
+        graph: &Graph,
+        selection: Option<GraphNodeId>,
+    ) -> (TestHarness<GraphCanvas>, Receiver<EditorEdit>) {
         let (tx, rx) = crossbeam_channel::unbounded();
         // The entity/wire sender the old path still requires. Nothing in these
         // tests sends through it; a graph-driven canvas never touches it.
@@ -1972,14 +2022,22 @@ mod graph_model_tests {
         );
         harness.edit_root_widget(|mut canvas| {
             GraphCanvas::set_graph_commands(&mut canvas, tx);
-            GraphCanvas::populate_from_graph(&mut canvas, graph, &registry());
+            GraphCanvas::populate_from_graph(&mut canvas, graph, selection, &registry());
         });
         (harness, rx)
     }
 
     fn repopulate(harness: &mut TestHarness<GraphCanvas>, graph: &Graph) {
+        repopulate_with(harness, graph, None);
+    }
+
+    fn repopulate_with(
+        harness: &mut TestHarness<GraphCanvas>,
+        graph: &Graph,
+        selection: Option<GraphNodeId>,
+    ) {
         harness.edit_root_widget(|mut canvas| {
-            GraphCanvas::populate_from_graph(&mut canvas, graph, &registry());
+            GraphCanvas::populate_from_graph(&mut canvas, graph, selection, &registry());
         });
     }
 
@@ -2128,7 +2186,7 @@ mod graph_model_tests {
         let slots: Vec<(u64, i32)> = commands
             .iter()
             .map(|command| match command {
-                GraphCommand::SetSlot { edge, slot } => (edge.get(), *slot),
+                EditorEdit::SetSlot { edge, slot } => (edge.get(), *slot),
                 other => panic!("expected SetSlot, got {other:?}"),
             })
             .collect();
@@ -2173,7 +2231,7 @@ mod graph_model_tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![GraphCommand::Connect {
+            vec![EditorEdit::Connect {
                 src: Port::new(source, "out"),
                 dst: Port::new(gate, "amount"),
                 slot: 0,
@@ -2188,8 +2246,11 @@ mod graph_model_tests {
     #[test]
     fn an_illegal_drop_creates_no_edge_and_says_why() {
         let mut graph = Graph::default();
-        let source = graph.insert(Node::of(WorldVec2::ZERO, Source::default()));
-        let placer = graph.insert(Node::of(WorldVec2::new(400.0, 0.0), Placer::default()));
+        let source = graph.insert(Node::of(Source::default()));
+        let placer = graph.insert(crate::test_kinds::placed(
+            WorldVec2::new(400.0, 0.0),
+            Placer::default(),
+        ));
         let (mut harness, rx) = harness(&graph);
         let onto = socket_point(&harness, placer, inlet("position"));
 
@@ -2218,7 +2279,7 @@ mod graph_model_tests {
     #[test]
     fn a_self_connection_is_refused() {
         let mut graph = Graph::default();
-        let source = graph.insert(Node::of(WorldVec2::ZERO, Source::default()));
+        let source = graph.insert(Node::of(Source::default()));
         let (mut harness, rx) = harness(&graph);
         // `out` and `level` are both f32, so only the self-connection rule
         // stands between this drag and an edge.
@@ -2236,7 +2297,10 @@ mod graph_model_tests {
     #[test]
     fn dropping_onto_an_occupied_single_connection_inlet_replaces_rather_than_refusing() {
         let (mut graph, _source, gate) = source_and_gate();
-        let second = graph.insert(Node::of(WorldVec2::new(0.0, 200.0), Source::default()));
+        let second = graph.insert(crate::test_kinds::placed(
+            WorldVec2::new(0.0, 200.0),
+            Source::default(),
+        ));
         let (mut harness, rx) = harness(&graph);
         let onto = socket_point(&harness, gate, inlet("gate"));
 
@@ -2244,7 +2308,7 @@ mod graph_model_tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![GraphCommand::Connect {
+            vec![EditorEdit::Connect {
                 src: Port::new(second, "out"),
                 dst: Port::new(gate, "gate"),
                 slot: 0,
@@ -2261,7 +2325,10 @@ mod graph_model_tests {
     #[test]
     fn a_new_edge_on_a_variadic_inlet_lands_after_the_ones_already_there() {
         let (mut graph, _sources, mixer) = variadic_graph();
-        let extra = graph.insert(Node::of(WorldVec2::new(0.0, 400.0), Source::default()));
+        let extra = graph.insert(crate::test_kinds::placed(
+            WorldVec2::new(0.0, 400.0),
+            Source::default(),
+        ));
         let (mut harness, rx) = harness(&graph);
         let onto = socket_point(&harness, mixer, inlet("terms"));
 
@@ -2269,7 +2336,7 @@ mod graph_model_tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![GraphCommand::Connect {
+            vec![EditorEdit::Connect {
                 src: Port::new(extra, "out"),
                 dst: Port::new(mixer, "terms"),
                 slot: 40,
@@ -2312,7 +2379,7 @@ mod graph_model_tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![GraphCommand::Disconnect { edge }],
+            vec![EditorEdit::Disconnect { edge }],
         );
     }
 
@@ -2355,7 +2422,7 @@ mod graph_model_tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![GraphCommand::Connect {
+            vec![EditorEdit::Connect {
                 src: Port::new(source, "out"),
                 dst: Port::new(gate, "amount"),
                 slot: 0,
@@ -2414,7 +2481,7 @@ mod graph_model_tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![GraphCommand::Create {
+            vec![EditorEdit::Create {
                 kind: Gate::path().to_string(),
                 pos: WorldVec2::new(200.0, 150.0),
             }],
@@ -2422,24 +2489,26 @@ mod graph_model_tests {
     }
 
     #[test]
-    fn a_click_asks_the_graph_to_select_and_delete_removes_the_selection() {
-        let (mut graph, source, _gate) = source_and_gate();
+    fn a_click_records_a_selection_and_delete_removes_the_selected_node() {
+        let (graph, source, _gate) = source_and_gate();
         let (mut harness, rx) = harness(&graph);
 
         // A press on the node body, away from every socket.
         harness.mouse_move(Point::new(80.0, 36.0));
         harness.mouse_button_press(Some(PointerButton::Primary));
         harness.mouse_button_release(Some(PointerButton::Primary));
-        let commands: Vec<_> = rx.try_iter().collect();
-        assert!(
-            commands.contains(&GraphCommand::Select { node: Some(source) }),
-            "the click must ask the graph to select; got {commands:?}",
+
+        // Selecting is not an edit: nothing is sent, and the click records
+        // what the editor should point at.
+        assert!(rx.try_iter().next().is_none());
+        assert_eq!(
+            harness.edit_root_widget(|mut canvas| GraphCanvas::take_selection(&mut canvas)),
+            Some(Some(source)),
         );
 
-        // The graph is the only owner of selection: the highlight moves when
+        // The editor is the only owner of selection: the highlight moves when
         // the next read says so, not when the click happens.
-        graph.set_selection(Some(source));
-        repopulate(&mut harness, &graph);
+        repopulate_with(&mut harness, &graph, Some(source));
         assert_eq!(harness.root_widget().graph_selected(), Some(source));
 
         harness.process_text_event(masonry::core::TextEvent::Keyboard(
@@ -2451,13 +2520,17 @@ mod graph_model_tests {
 
         assert!(
             rx.try_iter()
-                .any(|command| command == GraphCommand::Delete { node: source }),
+                .any(|command| command == EditorEdit::Delete { node: source }),
             "Delete must ask the graph to remove the selected node",
         );
     }
 
     #[test]
-    fn ending_a_drag_reports_the_nodes_new_position() {
+    fn ending_a_drag_records_the_nodes_new_placement_without_a_scene_edit() {
+        // Moving a node on the canvas is not an authoring gesture: it changes
+        // where the editor draws the node and nothing about the scene. The
+        // placement is recorded for `EditorUi::apply_graph` to write onto the
+        // node's annotations, and no edit is sent.
         let (graph, source, _gate) = source_and_gate();
         let (mut harness, rx) = harness(&graph);
 
@@ -2468,13 +2541,55 @@ mod graph_model_tests {
 
         let moved = harness.root_widget().graph_position_of(source).unwrap();
         assert_eq!(moved, Point::new(60.0, 60.0));
+
+        let placements =
+            harness.edit_root_widget(|mut canvas| GraphCanvas::take_placements(&mut canvas));
+        assert_eq!(placements, vec![(source, WorldVec2::new(60.0, 60.0))]);
         assert!(
-            rx.try_iter().any(|command| command
-                == GraphCommand::Move {
-                    node: source,
-                    pos: WorldVec2::new(60.0, 60.0),
-                }),
-            "the released position is what is sent",
+            rx.try_iter().next().is_none(),
+            "neither the selection nor the move is a scene edit, so nothing is sent",
+        );
+    }
+
+    #[test]
+    fn a_settled_placement_lands_on_the_nodes_annotations() {
+        // The editor's half of the round trip: what the canvas recorded is
+        // written where a save will find it, and writing it does not report
+        // the node as changed.
+        let (mut graph, source, _gate) = source_and_gate();
+        let (mut harness, _rx) = harness(&graph);
+        graph.drain_dirty();
+
+        harness.mouse_move(Point::new(80.0, 36.0));
+        harness.mouse_button_press(Some(PointerButton::Primary));
+        harness.mouse_move(Point::new(140.0, 96.0));
+        harness.mouse_button_release(Some(PointerButton::Primary));
+
+        for (id, pos) in
+            harness.edit_root_widget(|mut canvas| GraphCanvas::take_placements(&mut canvas))
+        {
+            graph
+                .get_mut(id)
+                .unwrap()
+                .metadata_mut()
+                .insert(super::CANVAS_POS_KEY.to_string(), Box::new(pos));
+        }
+
+        assert_eq!(
+            graph.get(source).unwrap().metadata()[super::CANVAS_POS_KEY]
+                .try_downcast_ref::<WorldVec2>(),
+            Some(&WorldVec2::new(60.0, 60.0)),
+        );
+        assert!(
+            graph.drain_dirty().is_empty(),
+            "moving a node on the canvas is not a scene edit",
+        );
+
+        // And the read path picks it up again.
+        repopulate(&mut harness, &graph);
+        assert_eq!(
+            harness.root_widget().graph_position_of(source),
+            Some(Point::new(60.0, 60.0)),
         );
     }
 
@@ -2486,7 +2601,10 @@ mod graph_model_tests {
         let (mut harness, _rx) = harness(&graph);
         let before = harness.root_widget().graph_widget_id_of(source).unwrap();
 
-        let extra = graph.insert(Node::of(WorldVec2::new(0.0, 300.0), Source::default()));
+        let extra = graph.insert(crate::test_kinds::placed(
+            WorldVec2::new(0.0, 300.0),
+            Source::default(),
+        ));
         repopulate(&mut harness, &graph);
 
         assert_eq!(
@@ -2537,7 +2655,11 @@ mod graph_model_tests {
         graph
             .get_mut(source)
             .unwrap()
-            .set_pos(WorldVec2::new(500.0, 250.0));
+            .metadata_mut()
+            .insert(
+                super::CANVAS_POS_KEY.to_string(),
+                Box::new(WorldVec2::new(500.0, 250.0)),
+            );
         repopulate(&mut harness, &graph);
 
         assert_eq!(
@@ -2552,10 +2674,9 @@ mod graph_model_tests {
     /// bake the highlight into the box rather than reach for it.
     #[test]
     fn a_first_read_whose_selection_names_a_brand_new_node_highlights_it() {
-        let (mut graph, source, _gate) = source_and_gate();
-        graph.set_selection(Some(source));
+        let (graph, source, _gate) = source_and_gate();
 
-        let (harness, _rx) = harness(&graph);
+        let (harness, _rx) = harness_with(&graph, Some(source));
 
         assert_eq!(harness.root_widget().graph_selected(), Some(source));
     }

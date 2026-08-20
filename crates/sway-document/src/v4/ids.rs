@@ -11,8 +11,8 @@
 //! Three requirements constrain the choice: an id is assigned once and never
 //! changes; deleting one node must not touch any other node's id; ids are
 //! unique within a document. A `StableIds` map that is seeded from the file's
-//! own id text on [`crate::v3::load`] and is asked to mint any missing id
-//! right before [`crate::v3::to_document`] serializes satisfies all three, as
+//! own id text on [`crate::v4::load`] and is asked to mint any missing id
+//! right before [`crate::v4::to_document`] serializes satisfies all three, as
 //! long as the map itself persists for the session — which is the caller's
 //! job (hold one `StableIds` alongside the `Graph` resource, update it on
 //! every load, consult and extend it on every save). This is deliberately
@@ -60,7 +60,7 @@ impl StableIds {
         self.node_to_id.get(&node).map(String::as_str)
     }
 
-    /// Records `id` as `node`'s stable identity. Used by [`crate::v3::load`]
+    /// Records `id` as `node`'s stable identity. Used by [`crate::v4::load`]
     /// once per node entry, for the exact id text the file declared — a
     /// hand-edited id stays put across a reload rather than being replaced by
     /// a freshly minted one.
@@ -81,7 +81,7 @@ impl StableIds {
     }
 
     /// Ensures every live node in `graph` has a stable id, minting for any
-    /// that do not. `crate::v3::to_document` calls this before it reads a
+    /// that do not. `crate::v4::to_document` calls this before it reads a
     /// single node, which is what lets a node created in the running session
     /// — never having gone through [`StableIds::assign`] — still save.
     pub fn mint_missing(&mut self, graph: &Graph) {
@@ -104,7 +104,6 @@ impl StableIds {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy_math::Vec2;
     use sway_graph::graph::Node;
 
     #[derive(bevy_reflect::Reflect, Default)]
@@ -117,7 +116,7 @@ mod tests {
     #[test]
     fn an_assigned_id_round_trips() {
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(Vec2::ZERO, Fixture::default()));
+        let node = graph.insert(Node::of(Fixture::default()));
         let mut ids = StableIds::new();
         ids.assign("lfoA".to_string(), node);
 
@@ -128,7 +127,7 @@ mod tests {
     #[test]
     fn ensure_mints_once_and_never_again() {
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(Vec2::ZERO, Fixture::default()));
+        let node = graph.insert(Node::of(Fixture::default()));
         let mut ids = StableIds::new();
 
         let first = ids.ensure(node).to_string();
@@ -139,8 +138,8 @@ mod tests {
     #[test]
     fn minting_never_collides_with_a_loaded_id() {
         let mut graph = Graph::default();
-        let loaded = graph.insert(Node::of(Vec2::ZERO, Fixture::default()));
-        let fresh = graph.insert(Node::of(Vec2::ZERO, Fixture::default()));
+        let loaded = graph.insert(Node::of(Fixture::default()));
+        let fresh = graph.insert(Node::of(Fixture::default()));
         let mut ids = StableIds::new();
         // A file that happens to use the exact text a fresh mint would pick.
         ids.assign("node0".to_string(), loaded);
@@ -152,8 +151,8 @@ mod tests {
     #[test]
     fn deleting_a_node_leaves_other_ids_untouched() {
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Fixture::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Fixture::default()));
+        let a = graph.insert(Node::of(Fixture::default()));
+        let b = graph.insert(Node::of(Fixture::default()));
         let mut ids = StableIds::new();
         ids.assign("a".to_string(), a);
         ids.assign("b".to_string(), b);

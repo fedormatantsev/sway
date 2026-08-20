@@ -1,22 +1,22 @@
-//! The version 3 document, and the only code that reads its text.
+//! The version 4 document, and the only code that reads its text.
 //!
 //! Design D9's sketch:
 //!
 //! ```ron
 //! Graph(
-//!     version: 3,
+//!     version: 4,
 //!     nodes: {
-//!         "lfoA":  Node(type: "Oscillator", pos: (-460.0, 40.0), inlets: (period: 8.0)),
-//!         "vec3A": Node(type: "Vec3", pos: (-220.0, 40.0), inlets: (x: -0.8)),
+//!         "lfoA":  Node(type: "Oscillator", metadata: {"pos": {"glam::Vec2": (x: -460.0, y: 40.0)}}, inlets: (period: 8.0)),
+//!         "vec3A": Node(type: "MakeVec3", metadata: {}, inlets: (x: -0.8)),
 //!     },
 //!     edges: [ Edge(from: ("lfoA", "out"), to: ("vec3A", "y"), slot: 0) ],
 //! )
 //! ```
 //!
 //! `nodes` is keyed by the document's own stable id, never `NodeId` (that is
-//! runtime-only — see `crate::v3::ids`). A node's `type` is the registered
+//! runtime-only — see `crate::v4::ids`). A node's `type` is the registered
 //! kind's **short name**, the last `::`-segment of its `TypePath`, resolved to
-//! a registered kind by `crate::v3::load`; this crate does not depend on
+//! a registered kind by `crate::v4::load`; this crate does not depend on
 //! `sway-nodes` and does not resolve it here. Edge paths are relative to the
 //! part they address (`"out"`, not `"outlets.out"`) — `sway-graph`'s resolver
 //! prepends `inlets.` / `outlets.`, and `Graph::connect` is what actually
@@ -26,7 +26,11 @@
 //! (`ron::value::RawValue`), exactly as the version 2 document captures
 //! component payloads (see `crate::doc`): `ron::Value` cannot drive
 //! `bevy_reflect`'s `TypedReflectDeserializer` through an enum field, so the
-//! loader re-parses each payload's raw text directly.
+//! loader re-parses each payload's raw text directly. An annotation's payload
+//! is captured the same way, and re-parsed with the *untyped*
+//! `ReflectDeserializer` — which is what the type-path key in the sketch above
+//! is for. The document therefore declares nothing about what any annotation
+//! key holds, and interprets none of them.
 
 use std::collections::BTreeMap;
 
@@ -35,8 +39,8 @@ use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Bumped when the document shape changes incompatibly. An unknown version is
-/// rejected rather than guessed at (spec: "Format version 3").
-pub const FORMAT_VERSION: u32 = 3;
+/// rejected rather than guessed at (spec: "Format version 4").
+pub const FORMAT_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "Graph")]
@@ -55,16 +59,23 @@ pub struct GraphDoc {
 #[serde(rename = "Node")]
 pub struct NodeDoc {
     /// The node kind's short name — the last segment of its registered
-    /// `TypePath`. Never a full module path (`crate::v3::load` resolves it
+    /// `TypePath`. Never a full module path (`crate::v4::load` resolves it
     /// against the registry), so a file move in the node-defining crate
     /// cannot break a saved document.
     #[serde(rename = "type")]
     pub kind: String,
-    /// Where the editor draws this node, in graph-canvas space.
-    pub pos: (f32, f32),
+    /// The node's annotations, keyed by name, each payload left unparsed here.
+    /// No key has a field of its own and none is interpreted: a payload
+    /// carries its own type path (`crate::v4::load` re-parses it with the
+    /// untyped `ReflectDeserializer`), so the document declares nothing about
+    /// what any key holds. A `BTreeMap` because the order they are written in
+    /// has to be stable — saving an unchanged document twice must produce the
+    /// same bytes.
+    #[serde(default)]
+    pub metadata: BTreeMap<String, Box<RawValue>>,
     /// The node's `inlets` part, and nothing else — never `state` or
     /// `outlets` (spec: "A document stores inlets only"). Left unparsed here;
-    /// `crate::v3::load` re-parses it against the node kind's registered
+    /// `crate::v4::load` re-parses it against the node kind's registered
     /// `inlets` type.
     pub inlets: Box<RawValue>,
 }
@@ -108,7 +119,7 @@ impl core::error::Error for ParseError {}
 /// Sentinel wrapped around a duplicate-id message by [`deserialize_nodes`] so
 /// [`parse`] can recover [`ParseError::DuplicateId`] from serde's stringly
 /// typed error channel rather than reporting it as a generic syntax error.
-const DUPLICATE_MARKER: &str = "\u{0}sway-document-v3-duplicate-node-id\u{0}";
+const DUPLICATE_MARKER: &str = "\u{0}sway-document-v4-duplicate-node-id\u{0}";
 
 /// A `nodes` map's `Deserialize`, hand-written instead of derived so a
 /// duplicate key can be caught here: the derived `BTreeMap<String, NodeDoc>`
@@ -160,6 +171,10 @@ pub fn parse(text: &str) -> Result<GraphDoc, ParseError> {
         .into_iter()
         .map(|(id, mut node)| {
             node.inlets = node.inlets.trim_boxed();
+            node.metadata = std::mem::take(&mut node.metadata)
+                .into_iter()
+                .map(|(key, value)| (key, value.trim_boxed()))
+                .collect();
             (id, node)
         })
         .collect();
@@ -185,10 +200,10 @@ mod tests {
 
     const MINIMAL: &str = r#"
 Graph(
-    version: 3,
+    version: 4,
     nodes: {
-        "lfoA": Node(type: "Oscillator", pos: (-460.0, 40.0), inlets: (period: 8.0, amplitude: 0.5)),
-        "vec3A": Node(type: "Vec3", pos: (-220.0, 40.0), inlets: (x: -0.8, y: 0.0, z: 0.0)),
+        "lfoA": Node(type: "Oscillator", metadata: {"pos": {"glam::Vec2": (x: -460.0, y: 40.0)}}, inlets: (period: 8.0, amplitude: 0.5)),
+        "vec3A": Node(type: "MakeVec3", metadata: {}, inlets: (x: -0.8, y: 0.0, z: 0.0)),
     },
     edges: [
         Edge(from: ("lfoA", "out"), to: ("vec3A", "y"), slot: 0),
@@ -200,10 +215,11 @@ Graph(
     fn a_document_parses_into_nodes_and_edges() {
         let doc = parse(MINIMAL).expect("parses");
 
-        assert_eq!(doc.version, 3);
+        assert_eq!(doc.version, 4);
         assert_eq!(doc.nodes.len(), 2);
         assert_eq!(doc.nodes["lfoA"].kind, "Oscillator");
-        assert_eq!(doc.nodes["lfoA"].pos, (-460.0, 40.0));
+        assert_eq!(doc.nodes["lfoA"].metadata.len(), 1);
+        assert!(doc.nodes["vec3A"].metadata.is_empty());
         assert_eq!(doc.edges.len(), 1);
         assert_eq!(doc.edges[0].from, ("lfoA".to_string(), "out".to_string()));
         assert_eq!(doc.edges[0].to, ("vec3A".to_string(), "y".to_string()));
@@ -220,16 +236,59 @@ Graph(
     #[test]
     fn missing_edges_defaults_to_empty() {
         let doc = parse(
-            r#"Graph(version: 3, nodes: { "a": Node(type: "K", pos: (0.0, 0.0), inlets: ()) })"#,
+            r#"Graph(version: 4, nodes: { "a": Node(type: "K", metadata: {}, inlets: ()) })"#,
         )
         .expect("parses");
         assert!(doc.edges.is_empty());
     }
 
     #[test]
+    fn an_entry_with_no_metadata_field_parses() {
+        // Annotations are not required to be present: a node nothing has
+        // annotated is written and read by the same rule as one that is.
+        let doc = parse(r#"Graph(version: 4, nodes: { "a": Node(type: "K", inlets: ()) })"#)
+            .expect("parses");
+        assert!(doc.nodes["a"].metadata.is_empty());
+    }
+
+    #[test]
+    fn an_unrecognised_annotation_key_is_carried_not_rejected() {
+        // The document interprets no key, so one it has never seen is data
+        // like any other.
+        let doc = parse(
+            r#"Graph(version: 4, nodes: {
+                "a": Node(type: "K", metadata: {"who knows": {"f32": 1.5}}, inlets: ()),
+            })"#,
+        )
+        .expect("parses");
+        assert_eq!(doc.nodes["a"].metadata.len(), 1);
+        assert!(doc.nodes["a"].metadata.contains_key("who knows"));
+    }
+
+    #[test]
     fn a_syntax_error_is_reported_not_panicked() {
-        let error = parse("Graph(version: 3, nodes: {").expect_err("must fail");
+        let error = parse("Graph(version: 4, nodes: {").expect_err("must fail");
         assert!(matches!(error, ParseError::Ron(_)), "got {error:?}");
+    }
+
+    #[test]
+    fn a_version_three_document_is_refused_by_version() {
+        // Version 3 carried a dedicated `pos` field. The whole-file version
+        // check has to be what refuses it, naming both versions — failing on
+        // whichever field happens to be missing would be a far worse message.
+        let text = r#"Graph(
+    version: 3,
+    nodes: {
+        "a": Node(type: "K", pos: (1.0, 2.0), inlets: ()),
+    },
+    edges: [],
+)"#;
+        let error = parse(text).expect_err("must fail");
+        assert_eq!(error, ParseError::UnsupportedVersion(3));
+        assert_eq!(
+            error.to_string(),
+            "graph document version 3 is not supported (this build reads 4)"
+        );
     }
 
     #[test]
@@ -246,9 +305,9 @@ Graph(
 
     #[test]
     fn a_duplicate_id_rejects_the_whole_document() {
-        let text = r#"Graph(version: 3, nodes: {
-            "a": Node(type: "K", pos: (0.0, 0.0), inlets: ()),
-            "a": Node(type: "K", pos: (1.0, 1.0), inlets: ()),
+        let text = r#"Graph(version: 4, nodes: {
+            "a": Node(type: "K", metadata: {}, inlets: ()),
+            "a": Node(type: "K", metadata: {}, inlets: ()),
         })"#;
         let error = parse(text).expect_err("must fail");
         assert_eq!(error, ParseError::DuplicateId("a".to_string()));
@@ -256,7 +315,7 @@ Graph(
 
     #[test]
     fn an_empty_document_is_valid() {
-        let doc = parse("Graph(version: 3, nodes: {}, edges: [])").expect("parses");
+        let doc = parse("Graph(version: 4, nodes: {}, edges: [])").expect("parses");
         assert!(doc.nodes.is_empty());
         assert!(doc.edges.is_empty());
     }

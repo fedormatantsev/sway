@@ -97,7 +97,7 @@ impl NodeKind for Remap {
 
 #[cfg(test)]
 mod tests {
-    use bevy::math::Vec2;
+    
     use bevy_reflect::TypeRegistry;
     use sway_graph::graph::registry::register_node_kind;
     use sway_graph::graph::{Graph, Node, Part, Port};
@@ -112,9 +112,7 @@ mod tests {
         register_node_kind::<Math>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
-        let source = graph.insert(Node::of(
-            Vec2::ZERO,
-            Math {
+        let source = graph.insert(Node::of(Math {
                 inlets: MathIn {
                     op: MathOp::Add,
                     a: 0.0,
@@ -124,9 +122,7 @@ mod tests {
             },
         ));
         harness::set_field(&mut graph, source, "a", &3.0f32);
-        let node = graph.insert(Node::of(
-            Vec2::ZERO,
-            Math {
+        let node = graph.insert(Node::of(Math {
                 inlets: MathIn {
                     op: MathOp::Mul,
                     a: 0.0,
@@ -151,9 +147,7 @@ mod tests {
         register_node_kind::<Remap>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
-        let source = graph.insert(Node::of(
-            Vec2::ZERO,
-            Math {
+        let source = graph.insert(Node::of(Math {
                 inlets: MathIn {
                     op: MathOp::Add,
                     a: 0.5,
@@ -162,9 +156,7 @@ mod tests {
                 ..Default::default()
             },
         ));
-        let node = graph.insert(Node::of(
-            Vec2::ZERO,
-            Remap {
+        let node = graph.insert(Node::of(Remap {
                 inlets: RemapIn {
                     input: 0.0,
                     in_min: 0.0,
@@ -201,9 +193,7 @@ mod tests {
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
 
-        let osc = graph.insert(Node::of(
-            Vec2::ZERO,
-            Oscillator {
+        let osc = graph.insert(Node::of(Oscillator {
                 inlets: OscillatorIn {
                     time: 0.0,
                     period: 1.0,
@@ -214,9 +204,7 @@ mod tests {
                 ..Default::default()
             },
         ));
-        let math = graph.insert(Node::of(
-            Vec2::ZERO,
-            Math {
+        let math = graph.insert(Node::of(Math {
                 inlets: MathIn {
                     op: MathOp::Add,
                     a: 0.0,
@@ -225,9 +213,7 @@ mod tests {
                 ..Default::default()
             },
         ));
-        let remap = graph.insert(Node::of(
-            Vec2::ZERO,
-            Remap {
+        let remap = graph.insert(Node::of(Remap {
                 inlets: RemapIn {
                     input: 0.0,
                     in_min: 0.0,
@@ -283,7 +269,7 @@ mod tests {
         register_node_kind::<Math>(&mut registry);
         let world = harness::trace_world(registry);
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(Vec2::ZERO, Math::default()));
+        let node = graph.insert(Node::of(Math::default()));
 
         harness::tick(&mut graph, &world);
         graph.drain_dirty();

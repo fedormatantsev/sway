@@ -16,9 +16,9 @@ use bevy_ecs::system::{Commands, Res};
 use bevy_ecs::world::World;
 use sway_graph::graph::Graph;
 
-use crate::v3::asset::{GraphAsset, GraphAssetPlugin};
-use crate::v3::ids::StableIds;
-use crate::v3::{load, save_to_path};
+use crate::v4::asset::{GraphAsset, GraphAssetPlugin};
+use crate::v4::ids::StableIds;
+use crate::v4::{load, save_to_path};
 
 /// Relative path of the graph file inside the project directory.
 #[derive(Resource, Clone, Debug)]

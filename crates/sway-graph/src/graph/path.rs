@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn a_stored_path_stays_short() {
-        let node = Node::of(Vec2::ZERO, Counter::default());
+        let node = Node::of(Counter::default());
         // "step", not "inlets.step".
         let value = resolve(&node, Part::Inlets, "step").expect("resolves");
         assert_eq!(value.reflect_type_path(), "f32");
@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn a_nested_field_is_addressable() {
-        let mut node = Node::of(Vec2::ZERO, Nested::default());
+        let mut node = Node::of(Nested::default());
         let field = resolve_mut(&mut node, Part::Inlets, "point.x").expect("resolves");
         field.try_apply(&2.5f32).expect("apply");
 
@@ -92,13 +92,13 @@ mod tests {
 
     #[test]
     fn an_unknown_path_resolves_to_nothing() {
-        let node = Node::of(Vec2::ZERO, Counter::default());
+        let node = Node::of(Counter::default());
         assert!(resolve(&node, Part::Inlets, "nope").is_none());
     }
 
     #[test]
     fn a_parsed_path_addresses_the_same_field() {
-        let node = Node::of(Vec2::ZERO, Counter::default());
+        let node = Node::of(Counter::default());
         let parsed = parse(Part::Inlets, "step").expect("parses");
         let value = node.value().reflect_path(&parsed).expect("resolves");
         assert_eq!(value.reflect_type_path(), "f32");

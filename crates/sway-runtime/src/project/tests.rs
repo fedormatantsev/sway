@@ -59,7 +59,7 @@ fn graph(app: &mut App) -> Mut<'_, Graph> {
 }
 
 fn insert<T: Reflect + TypePath>(app: &mut App, value: T) -> NodeId {
-    graph(app).insert(Node::of(Vec2::ZERO, value))
+    graph(app).insert(Node::of(value))
 }
 
 fn connect(app: &mut App, src: (NodeId, &str), dst: (NodeId, &str)) {

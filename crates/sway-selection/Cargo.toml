@@ -1,0 +1,14 @@
+[package]
+name = "sway-selection"
+version.workspace = true
+edition.workspace = true
+
+# Which node the editor is pointed at. Shared by the crate that shows the
+# panes (`sway-editor`) and the crate that picks in the viewport
+# (`sway-editor-viewport`); neither may depend on the other, so the vocabulary
+# lives on its own rather than being parked in the engine — the graph holds no
+# surface's state.
+[dependencies]
+bevy_ecs.workspace = true
+sway-graph.workspace = true
+bevy_reflect.workspace = true

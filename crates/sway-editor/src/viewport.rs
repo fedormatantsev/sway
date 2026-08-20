@@ -28,7 +28,7 @@ use masonry::dpi::{LogicalPosition, PhysicalPosition};
 use masonry::imaging::Painter;
 use masonry::layout::{LenReq, Length};
 use masonry_core::kurbo::{Axis, Point, Size};
-use sway_graph::{
+use sway_viewport_input::{
     ViewportButton, ViewportInput, ViewportKey, ViewportModifiers, normalize_viewport_pos,
 };
 
@@ -275,7 +275,7 @@ mod tests {
     use masonry::dpi::PhysicalPosition;
     use masonry_core::app::VisualLayerKind;
     use masonry_testing::{PRIMARY_MOUSE, TestHarness};
-    use sway_graph::{ViewportButton, ViewportInput, ViewportKey};
+    use sway_viewport_input::{ViewportButton, ViewportInput, ViewportKey};
 
     fn harness() -> (TestHarness<Viewport>, Receiver<ViewportInput>) {
         let (tx, rx): (Sender<ViewportInput>, Receiver<ViewportInput>) =

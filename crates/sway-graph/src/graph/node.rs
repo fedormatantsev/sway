@@ -6,8 +6,8 @@
 //! serializer or the editor ever unwraps an `Option` for a missing part.
 
 use core::fmt;
+use std::collections::HashMap;
 
-use bevy_math::Vec2;
 use bevy_reflect::{GetPath, PartialReflect, Reflect};
 
 /// Which of a node kind's three parts a path is relative to.
@@ -41,30 +41,39 @@ impl fmt::Display for Part {
     }
 }
 
-/// One node: its kind, where the editor draws it, and the reflected value
-/// holding its three parts.
+/// One node: its kind, the annotations a surface hung on it, and the reflected
+/// value holding its three parts.
 ///
 /// `value` is the node kind's own struct — `Oscillator`, not a wrapper — so a
 /// node's logic can be written and tested as a plain Rust type.
 pub struct Node {
     kind: &'static str,
-    pos: Vec2,
+    /// Annotations, keyed by name and holding a value of any registered type.
+    /// The graph never reads a key and never acts on a write: an annotation is
+    /// where a surface parks its own state (the editor's canvas position under
+    /// `"pos"`), not a node value.
+    metadata: HashMap<String, Box<dyn PartialReflect>>,
     value: Box<dyn Reflect>,
 }
 
 impl Node {
-    /// Builds a node around an already-constructed node-kind value.
+    /// Builds a node around an already-constructed node-kind value, with no
+    /// annotations.
     ///
     /// `kind` is the value's reflected type path
     /// (`bevy_reflect::TypePath::type_path`). It is stored rather than looked
     /// up so a node can be described without a type registry in hand.
-    pub fn new(kind: &'static str, pos: Vec2, value: Box<dyn Reflect>) -> Self {
-        Self { kind, pos, value }
+    pub fn new(kind: &'static str, value: Box<dyn Reflect>) -> Self {
+        Self {
+            kind,
+            metadata: HashMap::new(),
+            value,
+        }
     }
 
     /// Builds a node from a concrete node-kind value.
-    pub fn of<T: Reflect + bevy_reflect::TypePath>(pos: Vec2, value: T) -> Self {
-        Self::new(T::type_path(), pos, Box::new(value))
+    pub fn of<T: Reflect + bevy_reflect::TypePath>(value: T) -> Self {
+        Self::new(T::type_path(), Box::new(value))
     }
 
     /// The reflected type path of this node's kind.
@@ -72,20 +81,15 @@ impl Node {
         self.kind
     }
 
-    /// Where the editor draws this node, in graph-canvas space.
-    pub fn pos(&self) -> Vec2 {
-        self.pos
+    /// The node's annotations. The graph does not interpret any of them.
+    pub fn metadata(&self) -> &HashMap<String, Box<dyn PartialReflect>> {
+        &self.metadata
     }
 
-    /// Moves the node. Returns `true` when the position actually changed —
-    /// callers use that to decide whether to dirty (architecture §7: never
-    /// write an equal value).
-    pub fn set_pos(&mut self, pos: Vec2) -> bool {
-        if self.pos == pos {
-            return false;
-        }
-        self.pos = pos;
-        true
+    /// The node's annotations, mutably. Writing one is not a node change, so
+    /// this deliberately does not dirty anything.
+    pub fn metadata_mut(&mut self) -> &mut HashMap<String, Box<dyn PartialReflect>> {
+        &mut self.metadata
     }
 
     /// The whole node-kind value.
@@ -117,9 +121,11 @@ impl Node {
 
 impl fmt::Debug for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut keys: Vec<&str> = self.metadata.keys().map(String::as_str).collect();
+        keys.sort_unstable();
         f.debug_struct("Node")
             .field("kind", &self.kind)
-            .field("pos", &self.pos)
+            .field("metadata", &keys)
             .finish_non_exhaustive()
     }
 }
@@ -128,12 +134,13 @@ impl fmt::Debug for Node {
 mod tests {
     use super::*;
     use crate::graph::testing::{Counter, Sink};
+    use bevy_math::Vec2;
 
     #[test]
     fn every_part_is_addressable_including_an_empty_one() {
         // `Sink` has no state: its `state` field is `()`. The point of D3 is
         // that it is addressed exactly like a populated part.
-        let node = Node::of(Vec2::ZERO, Sink::default());
+        let node = Node::of(Sink::default());
         for part in Part::ALL {
             assert!(node.part(part).is_some(), "{part} must resolve");
         }
@@ -145,16 +152,34 @@ mod tests {
     }
 
     #[test]
-    fn a_node_reports_its_kind_and_position() {
-        let node = Node::of(Vec2::new(3.0, 4.0), Counter::default());
+    fn a_node_reports_its_kind() {
+        let node = Node::of(Counter::default());
         assert_eq!(node.kind(), "sway_graph::graph::testing::Counter");
-        assert_eq!(node.pos(), Vec2::new(3.0, 4.0));
     }
 
     #[test]
-    fn moving_to_the_same_position_reports_no_change() {
-        let mut node = Node::of(Vec2::new(1.0, 1.0), Counter::default());
-        assert!(!node.set_pos(Vec2::new(1.0, 1.0)));
-        assert!(node.set_pos(Vec2::new(1.0, 2.0)));
+    fn a_new_node_carries_no_annotations() {
+        // No key is required to be present, and none is privileged.
+        let node = Node::of(Counter::default());
+        assert!(node.metadata().is_empty());
+    }
+
+    #[test]
+    fn an_annotation_reads_back_as_the_type_it_was_written_with() {
+        // The point of holding annotations reflectively rather than as strings:
+        // the reader downcasts, it does not parse.
+        let mut node = Node::of(Counter::default());
+        node.metadata_mut()
+            .insert("pos".into(), Box::new(Vec2::new(3.0, 4.0)));
+        node.metadata_mut().insert("flag".into(), Box::new(true));
+
+        let pos = node.metadata()["pos"]
+            .try_downcast_ref::<Vec2>()
+            .expect("still a Vec2");
+        assert_eq!(*pos, Vec2::new(3.0, 4.0));
+        assert_eq!(
+            node.metadata()["flag"].try_downcast_ref::<bool>(),
+            Some(&true)
+        );
     }
 }

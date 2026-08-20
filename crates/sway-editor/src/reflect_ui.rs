@@ -13,14 +13,15 @@
 
 use std::any::TypeId;
 
+use bevy_reflect::enums::{DynamicEnum, DynamicVariant};
 use bevy_reflect::{PartialReflect, ReflectRef, TypeInfo, TypeRegistry};
-use sway_graph::graph::{FieldValue, NodeParts, Part, node_kind_type_id};
+use sway_graph::graph::{NodeParts, Part, node_kind_type_id};
 
 /// One field a node kind declares in one of its parts.
 ///
 /// `path` is relative to the part -- `"frequency"`, never `"inlets.frequency"`
 /// -- which is exactly what an [`Edge`](sway_graph::graph::Edge) stores and
-/// what [`GraphCommand::SetField`](sway_graph::graph::GraphCommand) takes.
+/// what [`EditorEdit::SetField`](crate::edit::EditorEdit) takes.
 #[derive(Clone, Debug)]
 pub struct PartField {
     /// Field path relative to the part.
@@ -133,37 +134,80 @@ fn is_integer(id: TypeId) -> bool {
         || id == TypeId::of::<usize>()
 }
 
-/// Parses a committed string against the field's declared reflected type.
+/// Converts a committed string into a value of the field's **declared type**.
+///
+/// The control is the only thing that knows what it produced, so this is the
+/// editor's job, not the graph's: `Graph::set_field` takes a reflected value
+/// and enumerates no set of types a write may carry.
 ///
 /// `None` means "do not send anything": either the type has no control, or the
 /// text does not parse, in which case the field simply snaps back on the next
 /// read. A silently-dropped write and a write of the wrong value are both
 /// worse than no write.
-pub fn parse_field(info: &TypeInfo, text: &str) -> Option<FieldValue> {
+///
+/// An out-of-range integer **saturates** rather than being dropped. A dropped
+/// write looks identical to a UI that ignored the keystroke, because the
+/// inspector re-reads the unchanged field and snaps back.
+pub fn coerce_field(info: &TypeInfo, text: &str) -> Option<Box<dyn PartialReflect>> {
     let id = info.type_id();
-    if id == TypeId::of::<f32>() || id == TypeId::of::<f64>() {
-        return text.trim().parse::<f64>().ok().map(FieldValue::Float);
+    if id == TypeId::of::<f32>() {
+        return text
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|number| Box::new(number as f32) as Box<dyn PartialReflect>);
+    }
+    if id == TypeId::of::<f64>() {
+        return text
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|number| Box::new(number) as Box<dyn PartialReflect>);
     }
     if is_integer(id) {
-        return text.trim().parse::<i64>().ok().map(FieldValue::Int);
+        let number = text.trim().parse::<i64>().ok()?;
+        return narrow_integer(id, number);
     }
     if id == TypeId::of::<bool>() {
-        return Some(FieldValue::Bool(text.trim() == "true"));
+        return Some(Box::new(text.trim() == "true"));
     }
     if id == TypeId::of::<String>() {
-        return Some(FieldValue::Str(text.to_string()));
+        return Some(Box::new(text.to_string()));
     }
     if id == TypeId::of::<bevy_math::Vec2>() {
         let [x, y] = parse_components::<2>(text)?;
-        return Some(FieldValue::Vec2(bevy_math::Vec2::new(x, y)));
+        return Some(Box::new(bevy_math::Vec2::new(x, y)));
     }
     if id == TypeId::of::<bevy_math::Vec3>() {
         let [x, y, z] = parse_components::<3>(text)?;
-        return Some(FieldValue::Vec3(bevy_math::Vec3::new(x, y, z)));
+        return Some(Box::new(bevy_math::Vec3::new(x, y, z)));
     }
     if enum_variants(info).is_some() {
-        return Some(FieldValue::Enum(text.trim().to_string()));
+        // A unit variant, by name. `try_apply` on an enum switches variant.
+        return Some(Box::new(DynamicEnum::new(
+            text.trim().to_string(),
+            DynamicVariant::Unit,
+        )));
     }
+    None
+}
+
+/// Boxes `value` as the concrete integer type `id` names, saturating rather
+/// than wrapping.
+///
+/// The cast must be explicit: `-1i64 as u32` wraps to `u32::MAX`, which would
+/// be a far worse answer than `0`.
+fn narrow_integer(id: TypeId, value: i64) -> Option<Box<dyn PartialReflect>> {
+    macro_rules! narrow {
+        ($($t:ty),+ $(,)?) => {$(
+            if id == TypeId::of::<$t>() {
+                let saturated = <$t>::try_from(value)
+                    .unwrap_or(if value < 0 { <$t>::MIN } else { <$t>::MAX });
+                return Some(Box::new(saturated));
+            }
+        )+};
+    }
+    narrow!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
     None
 }
 
@@ -345,23 +389,54 @@ mod tests {
                 .unwrap()
         };
 
+        // Each value arrives as the field's *declared* type, not as some
+        // intermediate the graph would then have to narrow.
+        let level = coerce_field(info("level"), " 0.75 ").expect("parses");
+        assert_eq!(level.try_downcast_ref::<f32>(), Some(&0.75));
+        assert!(coerce_field(info("level"), "nope").is_none());
+
+        let enabled = coerce_field(info("enabled"), "true").expect("parses");
+        assert_eq!(enabled.try_downcast_ref::<bool>(), Some(&true));
+
+        let label = coerce_field(info("label"), "hi").expect("parses");
+        assert_eq!(label.try_downcast_ref::<String>(), Some(&"hi".to_string()));
+
+        // A unit enum variant arrives as a `DynamicEnum` naming it: applying
+        // one is what switches the variant.
+        let shape = coerce_field(info("shape"), "Saw").expect("parses");
+        assert_eq!(shape.reflect_type_path(), "bevy_reflect::DynamicEnum");
+    }
+
+    #[test]
+    fn an_out_of_range_integer_saturates_rather_than_being_dropped() {
+        // A dropped write looks identical to a UI that ignored the keystroke,
+        // because the inspector re-reads the unchanged field and snaps back.
+        use bevy_reflect::Typed;
+
+        let info = <u8 as Typed>::type_info();
+        let high = coerce_field(info, "9999").expect("parses");
+        assert_eq!(high.try_downcast_ref::<u8>(), Some(&u8::MAX));
+
+        let low = coerce_field(info, "-5").expect("parses");
+        assert_eq!(low.try_downcast_ref::<u8>(), Some(&0));
+
+        let ok = coerce_field(info, "7").expect("parses");
+        assert_eq!(ok.try_downcast_ref::<u8>(), Some(&7));
+    }
+
+    #[test]
+    fn a_value_that_is_already_the_fields_type_passes_straight_through() {
+        use bevy_reflect::Typed;
+
+        let vec2 = coerce_field(<bevy_math::Vec2 as Typed>::type_info(), "1.5, -2.0")
+            .expect("parses");
         assert_eq!(
-            parse_field(info("level"), " 0.75 "),
-            Some(FieldValue::Float(0.75))
+            vec2.try_downcast_ref::<bevy_math::Vec2>(),
+            Some(&bevy_math::Vec2::new(1.5, -2.0)),
         );
-        assert_eq!(parse_field(info("level"), "nope"), None);
-        assert_eq!(
-            parse_field(info("enabled"), "true"),
-            Some(FieldValue::Bool(true))
-        );
-        assert_eq!(
-            parse_field(info("shape"), "Saw"),
-            Some(FieldValue::Enum("Saw".to_string()))
-        );
-        assert_eq!(
-            parse_field(info("label"), "hi"),
-            Some(FieldValue::Str("hi".to_string()))
-        );
+
+        let float = coerce_field(<f64 as Typed>::type_info(), "0.25").expect("parses");
+        assert_eq!(float.try_downcast_ref::<f64>(), Some(&0.25));
     }
 
     #[test]

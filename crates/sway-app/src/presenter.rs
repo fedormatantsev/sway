@@ -5,6 +5,7 @@
 //! (`sway_editor::EditorUi::viewport_rect`) instead of a hardcoded inset.
 
 use bevy::app::App;
+use bevy::ecs::change_detection::DetectChangesMut;
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::math::UVec2;
 use crossbeam_channel::Sender;
@@ -12,7 +13,10 @@ use masonry_core::core::CursorIcon;
 use sway_gpu::{
     Compositor, GpuContext, Quad, UiRenderer, UiTexture, ViewportTexture, WindowSurface,
 };
-use sway_graph::{Graph, GraphCommand, ViewportInput};
+use sway_editor::edit::EditorEdit;
+use sway_graph::Graph;
+use sway_selection::Selection;
+use sway_viewport_input::ViewportInput;
 use winit::dpi::PhysicalSize;
 
 /// Blits the viewport fullscreen. No masonry, no vello.
@@ -72,7 +76,7 @@ impl EditorPresenter {
         gpu: &GpuContext,
         size: PhysicalSize<u32>,
         scale_factor: f64,
-        commands: Sender<GraphCommand>,
+        commands: Sender<EditorEdit>,
         viewport_input: Sender<ViewportInput>,
     ) -> Self {
         let editor = sway_editor::EditorUi::new(size, scale_factor, commands, viewport_input);
@@ -127,13 +131,30 @@ impl EditorPresenter {
     ///
     /// Called from `present` between the previous frame's `app.update()` and
     /// this frame's masonry redraw, which is the one place the two halves of
-    /// the process meet (design D11). The borrow of `&Graph` only has to
-    /// survive this call — there is no `Arc`, no mutex and no copy, because
-    /// the UI read and the tick never overlap.
-    fn apply_graph(&mut self, app: &App) {
+    /// the process meet (design D11). The borrow only has to survive this call
+    /// — there is no `Arc`, no mutex and no copy, because the UI read and the
+    /// tick never overlap.
+    ///
+    /// Mutable because the editor writes its own canvas placement onto the
+    /// nodes' annotations here rather than sending it as an edit: this is the
+    /// moment it holds the graph, and an annotation is not a scene change.
+    fn apply_graph(&mut self, app: &mut App) {
         let type_registry = app.world().resource::<AppTypeRegistry>().clone();
-        if let Some(graph) = app.world().get_resource::<Graph>() {
-            self.editor.apply_graph(graph, &type_registry.read());
+        // Both resources at once: `apply_graph` writes the editor's own
+        // placement and selection while it reads. `resource_scope` takes the
+        // selection out so the graph can still be borrowed alongside it.
+        if app.world().get_resource::<Graph>().is_some()
+            && app.world().get_resource::<Selection>().is_some()
+        {
+            app.world_mut()
+                .resource_scope(|world, mut selection: bevy::ecs::change_detection::Mut<Selection>| {
+                    let mut graph = world.resource_mut::<Graph>();
+                    self.editor.apply_graph(
+                        graph.bypass_change_detection(),
+                        &mut selection,
+                        &type_registry.read(),
+                    );
+                });
         }
         if let Some(transport) = app.world().get_resource::<sway_midi::Transport>() {
             self.editor.apply_transport(transport);

@@ -11,10 +11,14 @@
 //! - A node kind implements [`NodeKind`] and is registered with
 //!   [`register_node_kind`], which also records the reflected type of each
 //!   part as [`NodeParts`] type data.
-//! - Everything outside the graph writes it through [`GraphCommand`].
-//! - [`GraphPlugin`] schedules the command drain and the tick.
+//! - Everything outside the graph writes it through the graph's own
+//!   operations: [`Graph::insert`], [`Graph::create`], [`Graph::remove`],
+//!   [`Graph::set_field`], [`Graph::connect`], [`Graph::disconnect`] and
+//!   [`Graph::set_slot`]. There is no second vocabulary restating them as
+//!   data — a surface that cannot reach the graph when a gesture happens
+//!   records it in a form of its own and applies it later.
+//! - [`GraphPlugin`] inserts the resource and schedules the tick.
 
-pub mod command;
 pub mod edge;
 pub mod id;
 pub mod legality;
@@ -27,13 +31,10 @@ pub mod registry;
 pub mod testing;
 pub mod tick;
 
-pub use command::{
-    CommandOutcome, FieldValue, GraphCommand, GraphRx, apply_graph_command, apply_graph_commands,
-};
 pub use edge::{Compat, Edge, Port};
 pub use id::{EdgeId, NodeId};
 pub use legality::{compatibility, compatibility_of_values, is_valueless};
-pub use model::{ConnectError, Graph};
+pub use model::{ConnectError, FieldWrite, Graph};
 pub use node::{Node, Part};
 pub use order::{EvalOrder, GraphStep, Link, PropagateStep, Sorted, Target, topological_order};
 pub use registry::{

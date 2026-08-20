@@ -3,7 +3,7 @@
 //! Rows are `Label` children for headers and read-only values, for the same
 //! reason `SceneTree`'s are: `imaging::Painter` takes only pre-shaped
 //! glyphs. An editable field gets the widget its `FieldKind` calls for, and
-//! committing an edit sends exactly one `GraphCommand::SetField`.
+//! committing an edit sends exactly one `EditorEdit::SetField`.
 
 use std::collections::HashMap;
 
@@ -22,11 +22,13 @@ use masonry::widgets::{
 };
 use masonry_core::kurbo::{Axis, Point, Rect, Size};
 use peniko::Color;
-use sway_graph::graph::{EdgeId, Graph, GraphCommand, NodeId as GraphNodeId, Part, path};
+use sway_graph::graph::{EdgeId, Graph, NodeId as GraphNodeId, Part, path};
+
+use crate::edit::EditorEdit;
 
 use crate::canvas::reorder_commands;
 use crate::reflect_ui::{
-    enum_variants, format_value, has_control, is_bool, is_variadic, parse_field, part_fields,
+    enum_variants, format_value, has_control, is_bool, is_variadic, coerce_field, part_fields,
     short_type_name,
 };
 
@@ -127,7 +129,7 @@ pub struct Inspector {
     generation: u64,
     // --- the graph model (design D11).
     /// Where inlet edits go once this inspector is driven by the graph.
-    graph_commands: Option<Sender<GraphCommand>>,
+    graph_commands: Option<Sender<EditorEdit>>,
     /// The node whose inlets are currently listed.
     graph_node: Option<GraphNodeId>,
     graph_signature: Vec<String>,
@@ -136,7 +138,7 @@ pub struct Inspector {
 }
 
 impl Inspector {
-    pub fn new(commands: Sender<GraphCommand>) -> Self {
+    pub fn new(commands: Sender<EditorEdit>) -> Self {
         Self {
             rows: Vec::new(),
             generation: 0,
@@ -149,8 +151,8 @@ impl Inspector {
 
     /// Points this inspector at the graph command set. Once set,
     /// [`populate_from_graph`](Self::populate_from_graph) is the read path and
-    /// every edit commits as a [`GraphCommand::SetField`].
-    pub fn set_graph_commands(this: &mut WidgetMut<'_, Self>, commands: Sender<GraphCommand>) {
+    /// every edit commits as a [`EditorEdit::SetField`].
+    pub fn set_graph_commands(this: &mut WidgetMut<'_, Self>, commands: Sender<EditorEdit>) {
         this.widget.graph_commands = Some(commands);
     }
 
@@ -195,7 +197,7 @@ impl Inspector {
     }
 
     /// Parses `text` against the row's *reflected field type* and sends one
-    /// [`GraphCommand::SetField`].
+    /// [`EditorEdit::SetField`].
     ///
     /// A connection into the field changes nothing here (task 7.8): an inlet
     /// with an edge is still editable, and the edit holds until the next tick
@@ -213,11 +215,14 @@ impl Inspector {
         let Some(info) = target.info else {
             return; // no static type info: no control, nothing to parse
         };
-        let Some(value) = parse_field(info, text) else {
+        // The control is the only thing that knows what it produced, so the
+        // conversion to the field's declared type happens here rather than in
+        // the graph -- which names no set of types a write may carry.
+        let Some(value) = coerce_field(info, text) else {
             return; // unparseable, or a type with no control
         };
         if let Some(commands) = &self.graph_commands {
-            let _ = commands.send(GraphCommand::SetField {
+            let _ = commands.send(EditorEdit::SetField {
                 node: target.node,
                 path: target.path,
                 value,
@@ -328,9 +333,9 @@ impl Inspector {
     pub fn populate_from_graph(
         this: &mut WidgetMut<'_, Self>,
         graph: &Graph,
+        selection: Option<GraphNodeId>,
         registry: &bevy_reflect::TypeRegistry,
     ) {
-        let selection = graph.selection();
         let node = selection.and_then(|id| graph.get(id));
         let header = node.map(|node| short_type_name(node.kind()));
         let mut pending: Vec<PendingRow> = Vec::new();
@@ -892,7 +897,7 @@ impl Widget for Inspector {
 }
 
 /// The graph model (design D11): the inspector reads the selected node's
-/// `inlets` part through reflection and commits `GraphCommand::SetField`.
+/// `inlets` part through reflection and commits `EditorEdit::SetField`.
 #[cfg(test)]
 mod graph_model_tests {
     use super::Inspector;
@@ -902,9 +907,15 @@ mod graph_model_tests {
     use crossbeam_channel::Receiver;
     use masonry::core::{DefaultProperties, PointerButton, Widget};
     use masonry_testing::TestHarness;
-    use sway_graph::graph::{FieldValue, Graph, GraphCommand, Node, NodeId as GraphNodeId, Port};
+    use crate::edit::EditorEdit;
+    use sway_graph::graph::{Graph, Node, NodeId as GraphNodeId, Port};
 
-    fn harness(graph: &Graph) -> (TestHarness<Inspector>, Receiver<GraphCommand>) {
+    /// Selection is the editor's own state now, so a test says what is
+    /// selected rather than writing it into the graph first.
+    fn harness_with(
+        graph: &Graph,
+        selection: Option<GraphNodeId>,
+    ) -> (TestHarness<Inspector>, Receiver<EditorEdit>) {
         let (tx, rx) = crossbeam_channel::unbounded();
         let (legacy_tx, _legacy_rx) = crossbeam_channel::unbounded();
         let mut harness = TestHarness::create(
@@ -913,13 +924,13 @@ mod graph_model_tests {
         );
         harness.edit_root_widget(|mut inspector| {
             Inspector::set_graph_commands(&mut inspector, tx);
-            Inspector::populate_from_graph(&mut inspector, graph, &registry());
+            Inspector::populate_from_graph(&mut inspector, graph, selection, &registry());
         });
         (harness, rx)
     }
 
-    fn selected(graph: &mut Graph, node: GraphNodeId) {
-        graph.set_selection(Some(node));
+    fn harness(graph: &Graph) -> (TestHarness<Inspector>, Receiver<EditorEdit>) {
+        harness_with(graph, None)
     }
 
     fn paths(harness: &TestHarness<Inspector>) -> Vec<String> {
@@ -942,18 +953,16 @@ mod graph_model_tests {
 
     #[test]
     fn the_inspector_lists_the_selected_nodes_inlet_fields() {
-        let (mut graph, source, _gate) = source_and_gate();
-        selected(&mut graph, source);
-        let (harness, _rx) = harness(&graph);
+        let (graph, source, _gate) = source_and_gate();
+        let (harness, _rx) = harness_with(&graph, Some(source));
 
         assert_eq!(paths(&harness), vec!["level", "label", "enabled", "shape"]);
     }
 
     #[test]
     fn an_outlet_is_a_socket_not_an_editable_field() {
-        let (mut graph, source, _gate) = source_and_gate();
-        selected(&mut graph, source);
-        let (harness, _rx) = harness(&graph);
+        let (graph, source, _gate) = source_and_gate();
+        let (harness, _rx) = harness_with(&graph, Some(source));
 
         assert!(
             !harness.root_widget().graph_lists("out"),
@@ -965,18 +974,16 @@ mod graph_model_tests {
     #[test]
     fn state_is_hidden() {
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(bevy_math::Vec2::ZERO, Memory::default()));
-        selected(&mut graph, node);
-        let (harness, _rx) = harness(&graph);
+        let node = graph.insert(Node::of(Memory::default()));
+        let (harness, _rx) = harness_with(&graph, Some(node));
 
         assert_eq!(paths(&harness), vec!["rate"], "`phase` is state");
     }
 
     #[test]
     fn a_field_with_no_control_is_shown_read_only_rather_than_omitted() {
-        let (mut graph, _sources, mixer) = variadic_graph();
-        selected(&mut graph, mixer);
-        let (harness, _rx) = harness(&graph);
+        let (graph, _sources, mixer) = variadic_graph();
+        let (harness, _rx) = harness_with(&graph, Some(mixer));
 
         assert!(
             harness.root_widget().graph_lists("terms"),
@@ -990,9 +997,8 @@ mod graph_model_tests {
 
     #[test]
     fn each_control_comes_from_its_fields_reflected_type() {
-        let (mut graph, source, _gate) = source_and_gate();
-        selected(&mut graph, source);
-        let (harness, _rx) = harness(&graph);
+        let (graph, source, _gate) = source_and_gate();
+        let (harness, _rx) = harness_with(&graph, Some(source));
 
         for path in ["level", "label", "enabled", "shape"] {
             assert!(
@@ -1007,9 +1013,8 @@ mod graph_model_tests {
 
     #[test]
     fn committing_an_edit_sends_one_set_field_naming_the_inlet_path() {
-        let (mut graph, source, _gate) = source_and_gate();
-        selected(&mut graph, source);
-        let (mut harness, rx) = harness(&graph);
+        let (graph, source, _gate) = source_and_gate();
+        let (mut harness, rx) = harness_with(&graph, Some(source));
         let row = row_of(&harness, "level");
 
         harness.edit_root_widget(|mut inspector| {
@@ -1018,19 +1023,18 @@ mod graph_model_tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![GraphCommand::SetField {
+            vec![EditorEdit::SetField {
                 node: source,
                 path: "level".to_string(),
-                value: FieldValue::Float(0.75),
+                value: Box::new(0.75f32),
             }],
         );
     }
 
     #[test]
     fn an_edit_that_does_not_parse_sends_nothing() {
-        let (mut graph, source, _gate) = source_and_gate();
-        selected(&mut graph, source);
-        let (mut harness, rx) = harness(&graph);
+        let (graph, source, _gate) = source_and_gate();
+        let (mut harness, rx) = harness_with(&graph, Some(source));
         let row = row_of(&harness, "level");
 
         harness.edit_root_widget(|mut inspector| {
@@ -1042,9 +1046,8 @@ mod graph_model_tests {
 
     #[test]
     fn committing_on_the_header_row_sends_nothing() {
-        let (mut graph, source, _gate) = source_and_gate();
-        selected(&mut graph, source);
-        let (mut harness, rx) = harness(&graph);
+        let (graph, source, _gate) = source_and_gate();
+        let (mut harness, rx) = harness_with(&graph, Some(source));
 
         harness.edit_root_widget(|mut inspector| {
             Inspector::commit_graph_for_test(&mut inspector, 0, "0.75");
@@ -1057,9 +1060,8 @@ mod graph_model_tests {
     fn a_connected_field_is_still_editable() {
         // Task 7.8: an inlet with an edge into it accepts an edit; the edit
         // holds until the next tick propagates over it.
-        let (mut graph, _driver, driven) = chained_sources();
-        selected(&mut graph, driven);
-        let (mut harness, rx) = harness(&graph);
+        let (graph, _driver, driven) = chained_sources();
+        let (mut harness, rx) = harness_with(&graph, Some(driven));
 
         assert!(
             graph
@@ -1076,10 +1078,10 @@ mod graph_model_tests {
 
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
-            vec![GraphCommand::SetField {
+            vec![EditorEdit::SetField {
                 node: driven,
                 path: "level".to_string(),
-                value: FieldValue::Float(0.25),
+                value: Box::new(0.25f32),
             }],
         );
     }
@@ -1095,13 +1097,12 @@ mod graph_model_tests {
 
     #[test]
     fn an_unchanged_selection_does_not_rebuild_the_rows() {
-        let (mut graph, source, _gate) = source_and_gate();
-        selected(&mut graph, source);
-        let (mut harness, _rx) = harness(&graph);
+        let (graph, source, _gate) = source_and_gate();
+        let (mut harness, _rx) = harness_with(&graph, Some(source));
         let first = harness.root_widget().generation();
 
         harness.edit_root_widget(|mut inspector| {
-            Inspector::populate_from_graph(&mut inspector, &graph, &registry());
+            Inspector::populate_from_graph(&mut inspector, &graph, Some(source), &registry());
         });
 
         assert_eq!(harness.root_widget().generation(), first);
@@ -1110,8 +1111,7 @@ mod graph_model_tests {
     #[test]
     fn a_focused_row_survives_an_unrelated_value_change() {
         let (mut graph, source, _gate) = source_and_gate();
-        selected(&mut graph, source);
-        let (mut harness, _rx) = harness(&graph);
+        let (mut harness, _rx) = harness_with(&graph, Some(source));
         let row = row_of(&harness, "level");
         let input_id = harness
             .root_widget()
@@ -1130,7 +1130,7 @@ mod graph_model_tests {
             value.try_apply(&"changed".to_string()).expect("same type");
         }
         harness.edit_root_widget(|mut inspector| {
-            Inspector::populate_from_graph(&mut inspector, &graph, &registry());
+            Inspector::populate_from_graph(&mut inspector, &graph, Some(source), &registry());
         });
 
         assert_eq!(
@@ -1147,9 +1147,8 @@ mod graph_model_tests {
 
     #[test]
     fn a_variadic_inlets_edges_are_listed_in_ordering_key_order() {
-        let (mut graph, sources, mixer) = variadic_graph();
-        selected(&mut graph, mixer);
-        let (harness, _rx) = harness(&graph);
+        let (graph, sources, mixer) = variadic_graph();
+        let (harness, _rx) = harness_with(&graph, Some(mixer));
 
         // `variadic_graph` connects sources 0, 1, 2 at slots 30, 10, 20, so
         // ordering-key order is 1, 2, 0 -- not the order they were connected
@@ -1172,9 +1171,8 @@ mod graph_model_tests {
     fn an_edge_label_names_the_outlet_when_the_source_has_more_than_one() {
         // `Source` declares two outlets (`out` and `pair`), so naming the node
         // alone would not say which of them this edge leaves from.
-        let (mut graph, sources, mixer) = variadic_graph();
-        selected(&mut graph, mixer);
-        let (harness, _rx) = harness(&graph);
+        let (graph, sources, mixer) = variadic_graph();
+        let (harness, _rx) = harness_with(&graph, Some(mixer));
 
         assert!(
             harness.root_widget().graph_edge_rows()[0].ends_with("\u{00b7} out"),
@@ -1188,16 +1186,21 @@ mod graph_model_tests {
     fn an_edge_label_is_just_the_source_when_its_kind_has_one_outlet() {
         // `Gate` declares a single outlet, so naming the node says everything.
         let mut graph = Graph::default();
-        let mixer = graph.insert(Node::of(bevy_math::Vec2::new(400.0, 0.0), Mixer::default()));
-        let first = graph.insert(Node::of(bevy_math::Vec2::ZERO, Gate::default()));
-        let second = graph.insert(Node::of(bevy_math::Vec2::new(0.0, 100.0), Gate::default()));
+        let mixer = graph.insert(crate::test_kinds::placed(
+            bevy_math::Vec2::new(400.0, 0.0),
+            Mixer::default(),
+        ));
+        let first = graph.insert(Node::of(Gate::default()));
+        let second = graph.insert(crate::test_kinds::placed(
+            bevy_math::Vec2::new(0.0, 100.0),
+            Gate::default(),
+        ));
         for (node, slot) in [(first, 10), (second, 20)] {
             graph
                 .connect(Port::new(node, "out"), Port::new(mixer, "terms"), slot)
                 .expect("f32 -> Vec<f32>");
         }
-        selected(&mut graph, mixer);
-        let (harness, _rx) = harness(&graph);
+        let (harness, _rx) = harness_with(&graph, Some(mixer));
 
         assert_eq!(
             harness.root_widget().graph_edge_rows(),
@@ -1209,13 +1212,15 @@ mod graph_model_tests {
     fn an_inlet_with_one_edge_lists_no_ordering_rows() {
         // There is no order to change, so the fan is not drawn.
         let mut graph = Graph::default();
-        let mixer = graph.insert(Node::of(bevy_math::Vec2::new(400.0, 0.0), Mixer::default()));
-        let source = graph.insert(Node::of(bevy_math::Vec2::ZERO, Source::default()));
+        let mixer = graph.insert(crate::test_kinds::placed(
+            bevy_math::Vec2::new(400.0, 0.0),
+            Mixer::default(),
+        ));
+        let source = graph.insert(Node::of(Source::default()));
         graph
             .connect(Port::new(source, "out"), Port::new(mixer, "terms"), 0)
             .expect("f32 -> Vec<f32>");
-        selected(&mut graph, mixer);
-        let (harness, _rx) = harness(&graph);
+        let (harness, _rx) = harness_with(&graph, Some(mixer));
 
         assert!(harness.root_widget().graph_edge_rows().is_empty());
         assert!(harness.root_widget().graph_lists("terms"));
@@ -1223,18 +1228,16 @@ mod graph_model_tests {
 
     #[test]
     fn a_non_variadic_inlet_lists_no_ordering_rows() {
-        let (mut graph, _driver, driven) = chained_sources();
-        selected(&mut graph, driven);
-        let (harness, _rx) = harness(&graph);
+        let (graph, _driver, driven) = chained_sources();
+        let (harness, _rx) = harness_with(&graph, Some(driven));
 
         assert!(harness.root_widget().graph_edge_rows().is_empty());
     }
 
     #[test]
     fn moving_an_edge_down_changes_only_the_keys_that_move() {
-        let (mut graph, sources, mixer) = variadic_graph();
-        selected(&mut graph, mixer);
-        let (mut harness, rx) = harness(&graph);
+        let (graph, sources, mixer) = variadic_graph();
+        let (mut harness, rx) = harness_with(&graph, Some(mixer));
         // Ordering-key order is [s1@10, s2@20, s0@30]; ids in that order.
         let ids: Vec<_> = {
             let mut edges: Vec<_> = graph.edges().to_vec();
@@ -1251,11 +1254,11 @@ mod graph_model_tests {
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
             vec![
-                GraphCommand::SetSlot {
+                EditorEdit::SetSlot {
                     edge: ids[1],
                     slot: 0
                 },
-                GraphCommand::SetSlot {
+                EditorEdit::SetSlot {
                     edge: ids[2],
                     slot: 20
                 },
@@ -1266,9 +1269,8 @@ mod graph_model_tests {
 
     #[test]
     fn moving_an_edge_up_moves_it_the_other_way() {
-        let (mut graph, _sources, mixer) = variadic_graph();
-        selected(&mut graph, mixer);
-        let (mut harness, rx) = harness(&graph);
+        let (graph, _sources, mixer) = variadic_graph();
+        let (mut harness, rx) = harness_with(&graph, Some(mixer));
         let ids: Vec<_> = {
             let mut edges: Vec<_> = graph.edges().to_vec();
             edges.sort_by_key(|edge| edge.sort_key());
@@ -1283,11 +1285,11 @@ mod graph_model_tests {
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
             vec![
-                GraphCommand::SetSlot {
+                EditorEdit::SetSlot {
                     edge: ids[0],
                     slot: 0
                 },
-                GraphCommand::SetSlot {
+                EditorEdit::SetSlot {
                     edge: ids[2],
                     slot: 10
                 },
@@ -1297,9 +1299,8 @@ mod graph_model_tests {
 
     #[test]
     fn moving_an_edge_past_either_end_sends_nothing() {
-        let (mut graph, _sources, mixer) = variadic_graph();
-        selected(&mut graph, mixer);
-        let (mut harness, rx) = harness(&graph);
+        let (graph, _sources, mixer) = variadic_graph();
+        let (mut harness, rx) = harness_with(&graph, Some(mixer));
         let buttons = harness.root_widget().graph_edge_row_buttons();
 
         // The first row's "up" and the last row's "down" have nowhere to go.
@@ -1314,19 +1315,18 @@ mod graph_model_tests {
         // The graph is the truth: the inspector shows the new order only once
         // the graph has been told, exactly as the canvas does for selection.
         let (mut graph, sources, mixer) = variadic_graph();
-        selected(&mut graph, mixer);
-        let (mut harness, rx) = harness(&graph);
+        let (mut harness, rx) = harness_with(&graph, Some(mixer));
         let (_, down) = harness.root_widget().graph_edge_row_buttons()[0];
 
         harness.mouse_click_on(down, Some(PointerButton::Primary));
         for command in rx.try_iter() {
-            let GraphCommand::SetSlot { edge, slot } = command else {
+            let EditorEdit::SetSlot { edge, slot } = command else {
                 panic!("expected SetSlot");
             };
             assert!(graph.set_slot(edge, slot), "the key really changed");
         }
         harness.edit_root_widget(|mut inspector| {
-            Inspector::populate_from_graph(&mut inspector, &graph, &registry());
+            Inspector::populate_from_graph(&mut inspector, &graph, Some(mixer), &registry());
         });
 
         assert_eq!(
@@ -1345,9 +1345,8 @@ mod graph_model_tests {
         // kind. `Source` is declared in the test fixtures and nothing in the
         // widget layer names it.
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(bevy_math::Vec2::ZERO, Source::default()));
-        selected(&mut graph, node);
-        let (harness, _rx) = harness(&graph);
+        let node = graph.insert(Node::of(Source::default()));
+        let (harness, _rx) = harness_with(&graph, Some(node));
 
         assert_eq!(paths(&harness), vec!["level", "label", "enabled", "shape"]);
     }

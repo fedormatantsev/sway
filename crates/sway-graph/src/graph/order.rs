@@ -311,7 +311,6 @@ mod tests {
     use crate::graph::edge::Port;
     use crate::graph::node::Node;
     use crate::graph::testing::{Counter, Fan, Sink, Source};
-    use bevy_math::Vec2;
 
     fn n(index: u32) -> NodeId {
         NodeId::new(index, 0)
@@ -361,8 +360,8 @@ mod tests {
     #[test]
     fn rebuilding_twice_without_a_change_gives_the_same_order() {
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Counter::default()));
         graph
             .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
             .expect("legal");
@@ -390,8 +389,8 @@ mod tests {
     #[test]
     fn a_propagate_step_comes_before_the_node_that_consumes_it() {
         let mut graph = Graph::default();
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Counter::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Counter::default()));
         graph
             .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
             .expect("legal");
@@ -410,8 +409,8 @@ mod tests {
     fn a_valueless_edge_emits_no_propagate_step_but_still_orders() {
         let mut graph = Graph::default();
         // `Sink` is downstream of `Source` through a marker outlet.
-        let a = graph.insert(Node::of(Vec2::ZERO, Source::default()));
-        let b = graph.insert(Node::of(Vec2::ZERO, Sink::default()));
+        let a = graph.insert(Node::of(Source::default()));
+        let b = graph.insert(Node::of(Sink::default()));
         graph
             .connect(Port::new(a, "marker"), Port::new(b, "marker"), 0)
             .expect("legal");
@@ -426,10 +425,10 @@ mod tests {
     #[test]
     fn variadic_edges_are_indexed_in_slot_order_not_slot_value() {
         let mut graph = Graph::default();
-        let fan = graph.insert(Node::of(Vec2::ZERO, Fan::default()));
+        let fan = graph.insert(Node::of(Fan::default()));
         let mut sources = Vec::new();
         for _ in 0..3 {
-            sources.push(graph.insert(Node::of(Vec2::ZERO, Source::default())));
+            sources.push(graph.insert(Node::of(Source::default())));
         }
         // Sparse, out-of-order slots.
         for (source, slot) in sources.iter().zip([30, 10, 20]) {
@@ -460,8 +459,8 @@ mod tests {
     #[test]
     fn a_list_inlet_is_truncated_to_its_edge_count() {
         let mut graph = Graph::default();
-        let fan = graph.insert(Node::of(Vec2::ZERO, Fan::default()));
-        let source = graph.insert(Node::of(Vec2::ZERO, Source::default()));
+        let fan = graph.insert(Node::of(Fan::default()));
+        let source = graph.insert(Node::of(Source::default()));
         graph
             .connect(Port::new(source, "out"), Port::new(fan, "values"), 0)
             .expect("legal");

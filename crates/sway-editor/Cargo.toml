@@ -4,6 +4,7 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
+bevy_app.workspace = true
 masonry.workspace = true
 masonry_core.workspace = true
 imaging.workspace = true
@@ -12,6 +13,8 @@ peniko.workspace = true
 ui-events-winit.workspace = true
 winit.workspace = true
 sway-graph.workspace = true
+sway-viewport-input.workspace = true
+sway-selection.workspace = true
 sway-midi.workspace = true
 crossbeam-channel.workspace = true
 bevy_ecs.workspace = true
@@ -21,5 +24,4 @@ bevy_transform.workspace = true
 
 [dev-dependencies]
 masonry_testing.workspace = true
-bevy_app.workspace = true
 sway-nodes.workspace = true

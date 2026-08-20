@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/sway-geo", "crates/sway-graph", "crates/sway-document", "crates/sway-nodes", "crates/sway-midi-core", "crates/sway-midi", "crates/sway-app", "crates/sway-runtime", "crates/sway-gpu", "crates/sway-editor"]
+members = ["crates/sway-geo", "crates/sway-graph", "crates/sway-document", "crates/sway-nodes", "crates/sway-midi-core", "crates/sway-midi", "crates/sway-app", "crates/sway-runtime", "crates/sway-gpu", "crates/sway-editor", "crates/sway-viewport-input", "crates/sway-selection"]
 
 [workspace.package]
 edition = "2024"
@@ -25,6 +25,8 @@ sway-midi = { path = "crates/sway-midi" }
 sway-runtime = { path = "crates/sway-runtime" }
 sway-gpu = { path = "crates/sway-gpu" }
 sway-editor = { path = "crates/sway-editor" }
+sway-viewport-input = { path = "crates/sway-viewport-input" }
+sway-selection = { path = "crates/sway-selection" }
 bytemuck = { version = "1", features = ["derive"] }
 naga = { version = "29", features = ["wgsl-in"] }
 wgpu = "=29.0.4"

@@ -4,7 +4,7 @@
 //! load never edits a live world — it builds a fresh `Graph` from nothing
 //! (design D1's "load builds a `Graph`", not "reconciles one"), so there is no
 //! `parse`/`items` split to make: a whole-document failure is a `ParseError`
-//! returned from `crate::v3::parse`, and everything past that point is a
+//! returned from `crate::v4::parse`, and everything past that point is a
 //! per-item skip recorded here (spec: "Unresolved ids, kinds and paths are
 //! reported and skipped").
 
@@ -24,6 +24,14 @@ pub enum LoadItemError {
     /// the kind's registered `inlets` type, or did not apply. The node is
     /// skipped whole — nothing about it is inserted into the graph.
     BadInlets { id: String, message: String },
+    /// One annotation's payload named a type the registry does not know, or
+    /// did not read back as that type. Only that annotation is dropped — the
+    /// node's kind, inlets and other annotations still load.
+    BadMetadata {
+        id: String,
+        key: String,
+        message: String,
+    },
     /// An edge names a source id no node entry declares (including one that
     /// failed to load for a reason recorded separately).
     MissingEdgeSource { from: String, to: String },
@@ -55,6 +63,9 @@ impl core::fmt::Display for LoadItemError {
                 candidates.join(", ")
             ),
             Self::BadInlets { id, message } => write!(f, "{id}.inlets: {message}"),
+            Self::BadMetadata { id, key, message } => {
+                write!(f, "{id}.metadata[\"{key}\"]: {message}")
+            }
             Self::MissingEdgeSource { from, to } => {
                 write!(f, "{from} -> {to}: no node has the id \"{from}\"")
             }
@@ -68,7 +79,7 @@ impl core::fmt::Display for LoadItemError {
     }
 }
 
-/// The result of one `crate::v3::load` call.
+/// The result of one `crate::v4::load` call.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LoadDiagnostics {
     pub items: Vec<LoadItemError>,

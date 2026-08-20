@@ -5631,6 +5631,8 @@ dependencies = [
  "sway-midi",
  "sway-nodes",
  "sway-runtime",
+ "sway-selection",
+ "sway-viewport-input",
  "winit",
 ]
 
@@ -5667,6 +5669,8 @@ dependencies = [
  "sway-graph",
  "sway-midi",
  "sway-nodes",
+ "sway-selection",
+ "sway-viewport-input",
  "ui-events-winit",
  "winit",
 ]
@@ -5708,7 +5712,7 @@ dependencies = [
  "bevy_reflect",
  "bevy_time",
  "bevy_transform",
- "crossbeam-channel",
+ "sway-viewport-input",
 ]
 
 [[package]]
@@ -5758,6 +5762,24 @@ dependencies = [
  "sway-gpu",
  "sway-graph",
  "sway-nodes",
+ "sway-selection",
+ "sway-viewport-input",
+]
+
+[[package]]
+name = "sway-selection"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "bevy_reflect",
+ "sway-graph",
+]
+
+[[package]]
+name = "sway-viewport-input"
+version = "0.1.0"
+dependencies = [
+ "bevy_math",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@
 //! already claims the `sway.ron` extension, and Bevy's `AssetServer` does not
 //! support two loaders registered for one extension in the same `App`. This
 //! plugin registers the version 3 asset type and its loader only; a startup
-//! system that reads a loaded [`GraphAsset`] and calls [`crate::v3::load`] to
+//! system that reads a loaded [`GraphAsset`] and calls [`crate::v4::load`] to
 //! build the live `Graph` resource — and never consults the asset again — is
 //! for whichever wave wires this plugin into an `App` (`sway-app`, group 8),
 //! once it drops `ProjectPlugin`.
@@ -16,7 +16,7 @@ use bevy_asset::io::Reader;
 use bevy_asset::{Asset, AssetApp, AssetLoader, LoadContext};
 use bevy_reflect::TypePath;
 
-use crate::v3::doc::{GraphDoc, ParseError, parse};
+use crate::v4::doc::{GraphDoc, ParseError, parse};
 
 #[derive(Asset, TypePath, Debug, Clone)]
 pub struct GraphAsset {
@@ -83,7 +83,7 @@ mod tests {
 
     #[test]
     fn the_loader_reads_text_into_a_document() {
-        let text = r#"Graph(version: 3, nodes: {}, edges: [])"#;
+        let text = r#"Graph(version: 4, nodes: {}, edges: [])"#;
         let doc = parse(text).expect("parses");
         assert!(doc.nodes.is_empty());
     }
