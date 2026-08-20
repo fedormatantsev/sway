@@ -94,18 +94,18 @@
 
 ## 11. Demo asset
 
-- [ ] 11.1 Rewrite `crates/sway-app/assets/demo.sway.ron`: `version: 4`, `pos: (x, y)` → `metadata: {"pos": "x,y"}` on all 25 nodes, and `type: "Vec3"` → `type: "MakeVec3"` on `vec3A`/`vec3B`.
-- [ ] 11.2 Update the file's header comment where it describes the format or names node kinds.
-- [ ] 11.3 Load it through `load_from_path` in a test and assert the load is diagnostic-clean.
+- [x] 11.1 Rewrite `crates/sway-app/assets/demo.sway.ron`: `version: 4`, `pos: (x, y)` → `metadata: {"pos": "x,y"}` on all 25 nodes, and `type: "Vec3"` → `type: "MakeVec3"` on `vec3A`/`vec3B`.
+- [x] 11.2 Update the file's header comment where it describes the format or names node kinds.
+- [x] 11.3 Load it through `load_from_path` in a test and assert the load is diagnostic-clean.
 
 ## 12. Documentation
 
-- [ ] 12.1 Add `docs/architecture.md` §11 "Source structure": the engine rule, the node-domain rule, the one-plugin rule, the dependency direction, and the shared-vocabulary crate rule.
-- [ ] 12.2 Update §8's crate layout table for `sway-base-nodes`, `sway-viewport-input`, `sway-editor-viewport` and the removed pipelines.
-- [ ] 12.3 Update §5's ownership table: selection moves to the editor, viewport input moves out of `sway-graph`.
-- [ ] 12.4 Update §10: the `Vec3` value node keeps its role under the name `MakeVec3`, and base nodes take time as an inlet.
-- [ ] 12.5 Replace every `GraphCommand` reference with the mutation API: §1 ("the authoring surface is `GraphCommand`"), §2 ("everything outside the graph writes it through `GraphCommand`" and the command list), §5's ownership table, §7's "they are commands applied in `PreUpdate`", and §10's settled-decisions entry.
-- [ ] 12.6 Update §2's node table and §7's pipeline listing where they mention `pos` or `Select`, and record the format-4 break where §7 describes the document.
+- [x] 12.1 Add `docs/architecture.md` §11 "Source structure": the engine rule, the node-domain rule, the one-plugin rule, the dependency direction, and the shared-vocabulary crate rule.
+- [x] 12.2 Update §8's crate layout table for `sway-base-nodes`, `sway-viewport-input`, `sway-editor-viewport` and the removed pipelines.
+- [x] 12.3 Update §5's ownership table: selection moves to the editor, viewport input moves out of `sway-graph`.
+- [x] 12.4 Update §10: the `Vec3` value node keeps its role under the name `MakeVec3`, and base nodes take time as an inlet.
+- [x] 12.5 Replace every `GraphCommand` reference with the mutation API: §1 ("the authoring surface is `GraphCommand`"), §2 ("everything outside the graph writes it through `GraphCommand`" and the command list), §5's ownership table, §7's "they are commands applied in `PreUpdate`", and §10's settled-decisions entry.
+- [x] 12.6 Update §2's node table and §7's pipeline listing where they mention `pos` or `Select`, and record the format-4 break where §7 describes the document.
 
 ## 13. End-to-end verification
 

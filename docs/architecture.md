@@ -41,13 +41,14 @@ attention; onboarding, docs, and distribution are deferred.
 ### Layers
 
 **Engine (`sway-graph`)** owns what makes the control graph a graph: the
-`Graph` resource, generational `NodeId`, node-kind registration, the command
-set, Kahn rebuild into a flat step list, and the exclusive tick walk over
-that list. It does not own MIDI, pixels, event buffers, or the on-disk
-document. It depends on Bevy's non-rendering subcrates — not `bevy_render`.
+`Graph` resource, generational `NodeId`, node-kind registration, Kahn rebuild
+into a flat step list, and the exclusive tick walk over that list. It does not
+own MIDI, pixels, event buffers, the on-disk document, a UI toolkit, or a
+channel. It depends on Bevy's non-rendering subcrates — not `bevy_render`.
 Connection storage, single-source, fan-out, and rewire are the edge list and
-the connect command. The authoring surface is `GraphCommand`. Show and editor
-builds share the same engine; there are no topology-watch systems to omit.
+`Graph::connect`. The authoring surface is the graph's own operations
+(§2). Show and editor builds share the same engine; there are no
+topology-watch systems to omit.
 
 **Runtime (`sway-runtime` + host)** is the Bevy app that exists every frame:
 world, render pipelines, animation systems, and a small set of service facades
@@ -82,7 +83,7 @@ The graph is the **authored model**. It declares nodes and edges, evaluates
 them, and tracks which nodes changed. The Bevy world is **derived**: projectors
 spawn entities, allocate asset handles, and attach materials after the tick.
 Nothing in the world writes graph values; authoring reaches the world only
-through `GraphCommand`.
+through the graph.
 
 Low-cardinality signals live as node fields. High-cardinality data (points,
 rigid bodies, particle lifetimes) lives in the ECS, parameterised by the graph.
@@ -105,12 +106,21 @@ part is `()`:
 | State | Internal memory | Hidden | No |
 | Outlets | Values other nodes can read | Outlet sockets only | No |
 
+Alongside the parts a node carries **annotations**: a map of typed values,
+keyed by name, that the graph never interprets, never acts on, and never
+requires. They are where a surface parks its own state — the editor keeps
+canvas placement under `"pos"` as a `Vec2`. Writing one does not mark the node
+changed, because nothing downstream depends on it. The graph holds no other
+display state: no selection, no viewport, no canvas.
+
 An **edge** is `(src NodeId, outlet path) → (dst NodeId, inlet path)` plus a
 `slot` sort key. The path names a **declared field** of the inlets or outlets
 part. The resolver prepends `inlets.` / `outlets.`, so stored paths stay short
-(`"translation"`, not `"inlets.translation"`). A compound inlet is connected as
-a whole; scene placement is three inlets (`translation`, `rotation`, `scale`)
-so a `Vec3` can drive a cube without a nested path.
+(`"translation"`, not `"inlets.translation"`). A compound inlet may be connected as
+a whole *or* by naming one component, so one axis can be driven while the
+others keep their authored values; scene placement is three inlets
+(`translation`, `rotation`, `scale`) so a `Vec3` can drive a cube without a
+nested path.
 
 Connect-time legality is decided from reflected types:
 
@@ -126,7 +136,7 @@ outlet type S → inlet type D is legal iff
 the `Vec` is sized to the edge count and filled in that order. A non-variadic
 inlet sits at slot 0 and takes the same code path.
 
-The connect command enforces the invariants `Relationship` used to provide
+`Graph::connect` enforces the invariants `Relationship` used to provide
 silently: no self-edges, a single-connection inlet is replaced rather than
 duplicated, and deleting a node drops every edge that names it. Fan-out is
 free — it is the edge list.
@@ -148,10 +158,21 @@ The tick is an exclusive system driven through `World::resource_scope`, so
 genuinely does not contain the `Graph`: a node cannot re-enter the tick or
 read another node's outlet behind the edge list's back.
 
-Everything outside the graph writes it through `GraphCommand` (create, delete,
-set field, move, connect, disconnect, select, set slot). The gizmo emits the
-same `SetField` the inspector does. Picking returns an `Entity` only to look
-up a `NodeId` for selection.
+Everything outside the graph writes it through the graph's own operations —
+`insert`, `create`, `remove`, `set_field`, `connect`, `disconnect`,
+`set_slot` — and there is no second vocabulary in the engine restating them as
+data. A field write carries `&dyn PartialReflect` and reports
+`FieldWrite { Written, Unchanged, Rejected }`, so the engine enumerates no set
+of value types a write may carry: converting whatever an editing control
+produced into the field's declared type is the authoring surface's job.
+
+A surface that cannot reach the graph at the moment a gesture happens may
+record that gesture in a form of its own and apply it later — a masonry widget
+cannot borrow the world mid-dispatch, so `sway-editor` has an `EditorEdit`
+payload and a `PreUpdate` applier of its own. That form belongs to the surface,
+not to the engine. Anything that *can* reach `&mut Graph` — document load, the
+viewport's gizmo and picker — calls the methods directly. Picking returns an
+`Entity` only to look up a `NodeId` for the editor's selection.
 
 ## 3. Events
 
@@ -284,7 +305,7 @@ not months of dependency patching.
 
 | Concern | Owner |
 |---|---|
-| Value connection storage, single-source, fan-out, rewire | **`sway-graph`** (edge list + connect command) |
+| Value connection storage, single-source, fan-out, rewire | **`sway-graph`** (edge list + `Graph::connect`) |
 | Entity lifecycle for projected scene nodes | **`sway-runtime`** projectors |
 | Hierarchy / transform propagation | `bevy_transform` (`ChildOf`), projected from `children` edges |
 | Value typing of connections | `bevy_reflect` at connect time |
@@ -294,13 +315,16 @@ not months of dependency patching.
 | MIDI IO, typed messages, pulse-grid clock math | **`sway-midi-core`** |
 | Beat / transport snapshot + `MidiTime` | **`sway-midi`** |
 | Topological order, step list, walk | **`sway-graph`** |
-| Selection | **`sway-graph`** (`Graph::selection`), read by the editor from the resource |
+| Selection | **`sway-selection`** (`Selection` resource), set by the editor's panes and by viewport picking |
+| Node placement on the editor canvas | **`sway-editor`**, persisted as a `"pos"` annotation on the node |
+| Viewport pointer/key vocabulary | **`sway-viewport-input`**, shared by `sway-editor` and `sway-editor-viewport` |
+| Deferring an edit past a widget's event dispatch | **`sway-editor`** (`EditorEdit` + its `PreUpdate` applier) |
 | Event-wire buffers + pre-tick clear/copy | **`sway-events`** |
 | Document parse/emit | **`sway-document`** from the `Graph` |
 | Geometry tables / operators | **`sway-geo`** (CPU; dormant for the MVP, §6) |
 
-`sway-graph` must not depend on `bevy_render`, MIDI types, or the document
-format.
+`sway-graph` must not depend on `bevy_render`, MIDI types, a UI toolkit, a
+channel, or the document format — see §11.
 
 ## 6. Scene composition
 
@@ -359,7 +383,7 @@ ordinary Bevy entities after the tick; Bevy takes over from there
 (`Transform` propagation, rendering).
 
 ```
-PreUpdate     drain GraphCommand → Graph
+PreUpdate     drain EditorEdit → Graph (editor builds only)
 FixedUpdate   MIDI feed → drain → sample Transport
               rebuild order if dirty
               sway-events: clear wire buffers → copy TriggerOut → buffers
@@ -375,6 +399,13 @@ The tick and the scene/attachment projectors wait until every asset reports
 loaded; the MIDI drain does not. `AssetEvent::Modified` for the graph asset
 is ignored — reloading a project is an explicit action. Content still
 hot-reloads through the ordinary asset watcher.
+
+The document is at **format version 4**. A node entry stores its kind, its
+authored inlets, and its annotations — a map of typed values the document
+carries and does not interpret, which is where the editor keeps canvas
+placement. Version 3 gave placement a field of its own; there is no
+compatibility read for it, so a version-3 file is refused by version, naming
+both. The only file affected was `demo.sway.ron`.
 
 Because the tick holds `&mut Graph` through `resource_scope`, writes are
 immediate within the tick.
@@ -396,8 +427,8 @@ outlets are omitted). **Every inlet is editable**, driven or not — the
 inspector does not refuse a driven field. Editing a driven field holds only
 until the next tick, when propagate writes over it again. A save still bakes
 the instantaneous driven value into the file; harmless, since the first tick
-after load overwrites it. The gizmo writes through `SetField`, exactly as the
-inspector does.
+after load overwrites it. The gizmo writes through `Graph::set_field`, exactly as the inspector's edit
+does — directly, because it already holds the graph.
 
 Continuously driven transforms should write a
 previous/next pair (`DrivenTransform`) and let a per-frame system lerp by
@@ -405,9 +436,11 @@ previous/next pair (`DrivenTransform`) and let a per-frame system lerp by
 
 ### Structural change
 
-Spawning, despawning, and rewiring do not happen during a tick: they are
-commands applied in `PreUpdate`. The next `FixedUpdate` rebuilds before
-ticking. The document uses stable string ids; `NodeId` is runtime-only. Load
+Spawning, despawning, and rewiring do not happen during a tick. Nothing
+reachable during one *can* mutate the graph: `resource_scope` takes the `Graph`
+out of the `World` a node sees. What `PreUpdate` decides is *when* an editor's
+deferred edits land, which is before the next `FixedUpdate` rebuilds and
+ticks. The document uses stable string ids; `NodeId` is runtime-only. Load
 mints a `HashMap<FileId, NodeId>` once — there is no `claim.rs` and no
 four-pass reconcile against a parallel entity world. Deleting a node despawns
 its projected entity and releases its asset.
@@ -418,20 +451,26 @@ mid-tick.
 ## 8. Crate layout
 
 ```
-sway-gpu          wgpu instance/device/queue — bevy↔vello pin lives here
-sway-graph        Graph resource, NodeId, commands, order, tick
-                  (no MIDI, no document, no bevy_render)
-sway-events       event wires, per-wire buffers, pre-tick clear/copy
-sway-document     version 3 on-disk format; stable ids; load/save the Graph
-sway-nodes        built-in value node kinds (Oscillator, Lfo, Math, …)
-sway-midi-core    MIDI IO, typed messages, PulseClock (no Bevy)
-sway-midi         Bevy plugin, Transport snapshot, MidiTime
-sway-geo          Geometry attribute tables and CPU operators
-sway-runtime      headless Bevy app; services; pipelines; editor viewport plugin
-                  (camera, picking, gizmo input) depends on sway-graph
-sway-editor       masonry UI; links the runtime directly
-sway-app          host: winit, device, editor shell or show presenter
+sway-gpu              wgpu instance/device/queue — bevy↔vello pin lives here
+sway-graph            Graph resource, NodeId, mutation API, order, tick
+                      (no MIDI, no document, no bevy_render, no UI, no channel)
+sway-events           event wires, per-wire buffers, pre-tick clear/copy
+sway-document         version 4 on-disk format; stable ids; load/save the Graph
+sway-base-nodes       the base value/signal node kinds (Oscillator, Envelope,
+                      Math, Remap, MakeVec3) — pure functions of their inlets
+sway-midi-core        MIDI IO, typed messages, PulseClock (no Bevy)
+sway-midi             Bevy plugin, Transport snapshot, MidiTime
+sway-geo              Geometry attribute tables and CPU operators (dormant)
+sway-runtime          headless Bevy app; render-coupled node kinds; projectors
+sway-viewport-input   the viewport's pointer/key/scroll vocabulary
+sway-selection        which node the editor is pointed at
+sway-editor           masonry UI; the editor's own deferred-edit payload
+sway-editor-viewport  camera orbit, transform gizmo, picking (editor only)
+sway-app              host: winit, device, editor shell or show presenter
 ```
+
+Deleted with this layout: the point-cloud, scatter-compute and sprite-layer
+pipelines, which were exported and reached by no application or test (§10).
 
 There is no `sway-schema`. Connection typing is Rust's; editor metadata and
 document payloads use `bevy_reflect`; registries and the document shape do not
@@ -462,14 +501,22 @@ need a separate schema crate.
   polices.
 - Events as in §3; value wires and event wires are distinct. Event payloads are
   generic (`TriggerOut<P>`).
-- Document lives outside `sway-graph`; authoring is `GraphCommand`.
+- Document lives outside `sway-graph`; authoring is the graph's own
+  operations, not a second vocabulary restating them as data (§2, §11).
 - MIDI IO and pulse-clock math live in `sway-midi-core`; the `Transport`
   snapshot and `MidiTime` live in `sway-midi`; the graph stays MIDI-free.
 - Fixed graph tick retained for continuous values.
 - Connections are typed at connect time from reflected field types. Transform,
-  colour and tint inlets take `Vec3`, not per-axis floats; a `Vec3 { x, y, z }`
-  value node with driveable components is what produces them. Genuinely scalar
-  fields take floats.
+  colour and tint inlets take `Vec3`, not per-axis floats; a `MakeVec3` node
+  with driveable components is what produces them. (Named for the assembling:
+  a node kind called `Vec3`, where `bevy_math::Vec3` is what its own outlet is
+  made of, had to be aliased around at every use.) Reaching into one
+  consumer's vector inlet by naming a component is the other route, and both
+  are legal. Genuinely scalar fields take floats.
+- A base node kind is a pure function of its inlets and state. One that
+  advances over time takes that time as an **inlet** rather than reading a
+  clock, so the source of time is a connection the author can see and change —
+  `MidiTime`, in practice.
 - The palette lists registered node kinds from the type registry.
 
 **Out of MVP**
@@ -489,3 +536,76 @@ need a separate schema crate.
 
 - None recorded for the graph model. Cycle members still tick; they read the
   previous tick's values.
+
+## 11. Source structure
+
+Which crate does a thing go in? These are the rules, and §8's layout is what
+they produce.
+
+### The engine crate knows no concrete domain
+
+Exactly one crate — `sway-graph` — owns the generic graph mechanics: identity,
+nodes, edges, path resolution, connect legality, ordering and the tick. It
+names no concrete node kind, no UI toolkit type, no MIDI type, no render type
+and no on-disk format. Its manifest is where that is enforced.
+
+Its public surface stays as small as the mechanics require. Where the ECS
+framework already provides a behaviour, the engine uses that provision rather
+than introducing a type for it. An item with no consumer outside the engine is
+not public — `EvalOrder`, the step list, the sort and the path parser are all
+crate-private, and what a projector needs is `Graph::eval_order`.
+
+The engine does not enumerate the concrete value types a node kind may declare.
+Anything it carries on a node's behalf is reflected, so a node kind with a
+field type no other kind uses registers, connects, evaluates and serializes
+with no edit to the engine.
+
+### A node domain is a self-contained crate with one plugin
+
+Each domain of node kinds lives in its own crate holding both the node kinds
+and their projection onto the ECS world. A domain crate exposes **exactly one**
+top-level plugin, and adding it registers every type, system and resource the
+domain needs. A host never adds a second plugin, registers a type, or inserts a
+resource on a domain's behalf.
+
+`sway-midi` is the shape to copy: `MidiPlugin` brings the transport's
+resources, its systems *and* the `MidiTime` node kind that reads them.
+
+A crate is named for the domain it covers, not for the language construct it
+contains — which is why `sway-nodes` became `sway-base-nodes`.
+
+### Dependencies point from host to domain to engine
+
+```
+sway-app ──▶ domain crates ──▶ sway-graph
+```
+
+The engine depends on no crate of this project. A domain crate depends on the
+engine. The host depends on domain crates. **No domain crate depends on
+another domain crate.**
+
+`sway-editor-viewport → sway-runtime` is not an exception to that: it is not a
+node domain but an editor surface, and the dependency runs surface → runtime,
+the same direction the host runs. The rule is worded about *domain* crates so
+that stays legible.
+
+A declared dependency the crate does not use is removed.
+
+### Shared vocabulary gets a crate of its own
+
+Where two crates need the same vocabulary and neither may depend on the other,
+that vocabulary lives in a crate of its own — never parked in the engine
+because the engine is what both already depend on.
+
+Two exist. `sway-viewport-input` holds the pointer/key/scroll events the
+editor's masonry widget produces and the editor viewport consumes;
+`sway-selection` holds which node the editor is pointed at, set by the editor's
+panes and by viewport picking. `sway-editor` links masonry and not
+`bevy_render`; `sway-editor-viewport` links the `bevy` facade. Neither can
+depend on the other, and neither vocabulary is the graph's business.
+
+### Code that nothing reaches is deleted
+
+The workspace keeps no public item, module or plugin that no build path
+reaches. Work deliberately deferred past the current milestone is recorded in
+the roadmap (§10), not kept as unreachable code.

@@ -1,4 +1,4 @@
-// The demo scene, as a version 3 graph document. Nothing about this scene is
+// The demo scene, as a version 4 graph document. Nothing about this scene is
 // set up in Rust: the camera, the light, the meshes and the materials are all
 // nodes, and every connection below is an edge in this file.
 //
@@ -24,7 +24,7 @@
 // say *which* producer a placement reads and to order projection — the mesh
 // exists before the placement asks for it.
 //
-// The cubes' x offsets live in the `Vec3` nodes because an edge writes
+// The cubes' x offsets live in the `MakeVec3` nodes because an edge writes
 // `translation` whole. `cubeA`/`cubeB` therefore carry an identity pose in
 // this file: their translation is driven, and an authored one would be
 // overwritten on the first tick anyway.
@@ -105,73 +105,77 @@
 // type registry at load, so moving a node kind between modules cannot break
 // this file. `inlets` holds authored inlets only — never `state` (handles,
 // loaded paths, oscillator memory) and never `outlets`; both come from the
-// kind's own defaults. An edge names two part-relative paths and a slot: the
+// kind's own defaults. `metadata` holds annotations the document carries and
+// does not interpret: each value records its own type path, so no key has a
+// field of its own and nothing here declares what `"pos"` means — that is the
+// editor's canvas placement, and the editor is the only thing that reads it.
+// An edge names two part-relative paths and a slot: the
 // source path is inside the producer's `outlets`, the destination path inside
 // the consumer's `inlets`, and `slot` is a sort key, used only where several
 // edges land on one variadic inlet (here: `group.children`, at 10/20/30, so a
 // fourth cube can be inserted between two of them without renumbering).
 Graph(
-    version: 3,
+    version: 4,
     nodes: {
         // ---------------------------------------------------------------
         // Time, and the two cube LFOs.
         // ---------------------------------------------------------------
-        "midiTime": Node(type: "MidiTime", pos: (-700.0, 100.0), inlets: ()),
-        "lfoA": Node(type: "Oscillator", pos: (-460.0, 40.0), inlets: (time: 0.0, period: 8.0, shape: Sine, phase: 0.0, amplitude: 0.5)),
-        "lfoB": Node(type: "Oscillator", pos: (-460.0, 160.0), inlets: (time: 0.0, period: 2.0, shape: Sine, phase: 0.0, amplitude: 0.0)),
-        "vec3A": Node(type: "Vec3", pos: (-220.0, 40.0), inlets: (x: -0.8, y: 0.0, z: 0.0)),
-        "vec3B": Node(type: "Vec3", pos: (-220.0, 160.0), inlets: (x: 0.8, y: 0.0, z: 0.0)),
+        "midiTime": Node(type: "MidiTime", metadata: {"pos": {"glam::Vec2": (-700.0, 100.0)}}, inlets: ()),
+        "lfoA": Node(type: "Oscillator", metadata: {"pos": {"glam::Vec2": (-460.0, 40.0)}}, inlets: (time: 0.0, period: 8.0, shape: Sine, phase: 0.0, amplitude: 0.5)),
+        "lfoB": Node(type: "Oscillator", metadata: {"pos": {"glam::Vec2": (-460.0, 160.0)}}, inlets: (time: 0.0, period: 2.0, shape: Sine, phase: 0.0, amplitude: 0.0)),
+        "vec3A": Node(type: "MakeVec3", metadata: {"pos": {"glam::Vec2": (-220.0, 40.0)}}, inlets: (x: -0.8, y: 0.0, z: 0.0)),
+        "vec3B": Node(type: "MakeVec3", metadata: {"pos": {"glam::Vec2": (-220.0, 160.0)}}, inlets: (x: 0.8, y: 0.0, z: 0.0)),
 
         // ---------------------------------------------------------------
         // The cubes: one mesh producer, one material producer, three
         // placements, one group.
         // ---------------------------------------------------------------
-        "cube": Node(type: "MeshAsset", pos: (20.0, -80.0), inlets: (path: "cube.gltf#Mesh0/Primitive0")),
-        "mat": Node(type: "PbrMaterial", pos: (180.0, 260.0), inlets: (base_color: (0.6, 0.7, 0.9), metallic: 0.1, roughness: 0.4)),
-        "cubeA": Node(type: "MeshNode", pos: (20.0, 40.0), inlets: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
-        "cubeB": Node(type: "MeshNode", pos: (20.0, 160.0), inlets: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
-        "cubeC": Node(type: "MeshNode", pos: (20.0, 280.0), inlets: (translation: (0.0, 1.6, -0.8), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
-        "group": Node(type: "Group", pos: (260.0, 100.0), inlets: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
+        "cube": Node(type: "MeshAsset", metadata: {"pos": {"glam::Vec2": (20.0, -80.0)}}, inlets: (path: "cube.gltf#Mesh0/Primitive0")),
+        "mat": Node(type: "PbrMaterial", metadata: {"pos": {"glam::Vec2": (180.0, 260.0)}}, inlets: (base_color: (0.6, 0.7, 0.9), metallic: 0.1, roughness: 0.4)),
+        "cubeA": Node(type: "MeshNode", metadata: {"pos": {"glam::Vec2": (20.0, 40.0)}}, inlets: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
+        "cubeB": Node(type: "MeshNode", metadata: {"pos": {"glam::Vec2": (20.0, 160.0)}}, inlets: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
+        "cubeC": Node(type: "MeshNode", metadata: {"pos": {"glam::Vec2": (20.0, 280.0)}}, inlets: (translation: (0.0, 1.6, -0.8), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
+        "group": Node(type: "Group", metadata: {"pos": {"glam::Vec2": (260.0, 100.0)}}, inlets: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
 
         // ---------------------------------------------------------------
         // What looks at the scene, and what lights it.
         // ---------------------------------------------------------------
-        "camera": Node(type: "Camera", pos: (420.0, -120.0), inlets: (translation: (0.0, 1.5, 5.0), rotation: (-0.14521316, 0.0, 0.0, 0.98940045), scale: (1.0, 1.0, 1.0))),
-        "sun": Node(type: "DirectionalLight", pos: (420.0, -20.0), inlets: (translation: (4.0, 8.0, 4.0), rotation: (-0.424708, 0.339851, 0.175920, 0.820473), scale: (1.0, 1.0, 1.0), illuminance: 6000.0)),
+        "camera": Node(type: "Camera", metadata: {"pos": {"glam::Vec2": (420.0, -120.0)}}, inlets: (translation: (0.0, 1.5, 5.0), rotation: (-0.14521316, 0.0, 0.0, 0.98940045), scale: (1.0, 1.0, 1.0))),
+        "sun": Node(type: "DirectionalLight", metadata: {"pos": {"glam::Vec2": (420.0, -20.0)}}, inlets: (translation: (4.0, 8.0, 4.0), rotation: (-0.424708, 0.339851, 0.175920, 0.820473), scale: (1.0, 1.0, 1.0), illuminance: 6000.0)),
 
         // ---------------------------------------------------------------
         // Sprite layers (add-sprite-material). See the header diagram and
         // the depth-sign / interpenetration arithmetic above.
         // ---------------------------------------------------------------
-        "colorSeq": Node(type: "FrameSequence", pos: (-220.0, 480.0), inlets: (folder: "sprites/pulse_color", color_space: Display)),
+        "colorSeq": Node(type: "FrameSequence", metadata: {"pos": {"glam::Vec2": (-220.0, 480.0)}}, inlets: (folder: "sprites/pulse_color", color_space: Display)),
         // Data, not Display: this run is heights, not colour, and reading it
         // through an sRGB view would warp every displacement (design D8).
-        "depthSeq": Node(type: "FrameSequence", pos: (-220.0, 540.0), inlets: (folder: "sprites/pulse_depth", color_space: Data)),
-        "spriteOsc": Node(type: "Oscillator", pos: (-460.0, 420.0), inlets: (time: 0.0, period: 6.0, shape: Saw, phase: 0.0, amplitude: 1.0)),
+        "depthSeq": Node(type: "FrameSequence", metadata: {"pos": {"glam::Vec2": (-220.0, 540.0)}}, inlets: (folder: "sprites/pulse_depth", color_space: Data)),
+        "spriteOsc": Node(type: "Oscillator", metadata: {"pos": {"glam::Vec2": (-460.0, 420.0)}}, inlets: (time: 0.0, period: 6.0, shape: Saw, phase: 0.0, amplitude: 1.0)),
         // Same period, opposite phase: the two layers are always on different
         // frames without a second animation mechanism.
-        "spriteOsc2": Node(type: "Oscillator", pos: (-460.0, 620.0), inlets: (time: 0.0, period: 6.0, shape: Saw, phase: 0.5, amplitude: 1.0)),
+        "spriteOsc2": Node(type: "Oscillator", metadata: {"pos": {"glam::Vec2": (-460.0, 620.0)}}, inlets: (time: 0.0, period: 6.0, shape: Saw, phase: 0.5, amplitude: 1.0)),
         // -1..1 (Saw's own range) to 0..30 (the sequence's 30 frames).
         // out_max is exactly 30.0 on purpose — the read-side clamp is what
         // turns a value that reaches it into layer 29, not a `29.0` authored
         // here to dodge that.
-        "spriteRemap": Node(type: "Remap", pos: (-220.0, 420.0), inlets: (in_min: -1.0, in_max: 1.0, out_min: 0.0, out_max: 30.0, clamp: false)),
-        "spriteRemap2": Node(type: "Remap", pos: (-220.0, 620.0), inlets: (in_min: -1.0, in_max: 1.0, out_min: 0.0, out_max: 30.0, clamp: false)),
+        "spriteRemap": Node(type: "Remap", metadata: {"pos": {"glam::Vec2": (-220.0, 420.0)}}, inlets: (in_min: -1.0, in_max: 1.0, out_min: 0.0, out_max: 30.0, clamp: false)),
+        "spriteRemap2": Node(type: "Remap", metadata: {"pos": {"glam::Vec2": (-220.0, 620.0)}}, inlets: (in_min: -1.0, in_max: 1.0, out_min: 0.0, out_max: 30.0, clamp: false)),
         // depth_range negative: see the header's depth-sign note.
-        "spriteMat": Node(type: "SpriteMaterial", pos: (20.0, 420.0), inlets: (depth_range: -3.75, depth_pivot: 0.5)),
+        "spriteMat": Node(type: "SpriteMaterial", metadata: {"pos": {"glam::Vec2": (20.0, 420.0)}}, inlets: (depth_range: -3.75, depth_pivot: 0.5)),
         // A tint (own colour) and its own depth_range, both authored rather
         // than driven — nothing here says a material's per-layer knobs must
         // be graph-driven, only that frame timing is (D3/D4).
-        "spriteMat2": Node(type: "SpriteMaterial", pos: (20.0, 620.0), inlets: (tint: (1.0, 0.82, 0.86), depth_range: -3.5, depth_pivot: 0.5)),
-        "spritePlaneMesh": Node(type: "PlaneMesh", pos: (180.0, 360.0), inlets: (size: (1.4, 1.4))),
-        "spritePlaneMesh2": Node(type: "PlaneMesh", pos: (180.0, 560.0), inlets: (size: (1.2, 1.2))),
+        "spriteMat2": Node(type: "SpriteMaterial", metadata: {"pos": {"glam::Vec2": (20.0, 620.0)}}, inlets: (tint: (1.0, 0.82, 0.86), depth_range: -3.5, depth_pivot: 0.5)),
+        "spritePlaneMesh": Node(type: "PlaneMesh", metadata: {"pos": {"glam::Vec2": (180.0, 360.0)}}, inlets: (size: (1.4, 1.4))),
+        "spritePlaneMesh2": Node(type: "PlaneMesh", metadata: {"pos": {"glam::Vec2": (180.0, 560.0)}}, inlets: (size: (1.2, 1.2))),
         // Authored poses, no translation edge, like cubeC — these
         // placements are static, chosen to interpenetrate cubeC and each
         // other (see the header's arithmetic).
-        "spritePlane": Node(type: "MeshNode", pos: (260.0, 420.0), inlets: (translation: (0.0, 1.6, -0.6), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
+        "spritePlane": Node(type: "MeshNode", metadata: {"pos": {"glam::Vec2": (260.0, 420.0)}}, inlets: (translation: (0.0, 1.6, -0.6), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0))),
         // 30° yaw about Y — a non-trivial authored rotation, so its relief's
         // displacement axis is not parallel to spritePlane's.
-        "spritePlane2": Node(type: "MeshNode", pos: (260.0, 620.0), inlets: (translation: (0.3, 1.5, -0.5), rotation: (0.0, 0.258819, 0.0, 0.965926), scale: (1.0, 1.0, 1.0))),
+        "spritePlane2": Node(type: "MeshNode", metadata: {"pos": {"glam::Vec2": (260.0, 620.0)}}, inlets: (translation: (0.3, 1.5, -0.5), rotation: (0.0, 0.258819, 0.0, 0.965926), scale: (1.0, 1.0, 1.0))),
     },
     edges: [
         // Time into every oscillator.
