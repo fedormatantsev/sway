@@ -142,6 +142,12 @@ Graph(
         // ---------------------------------------------------------------
         "camera": Node(type: "Camera", metadata: {"pos": {"glam::Vec2": (420.0, -120.0)}}, inlets: (translation: (0.0, 1.5, 5.0), rotation: (-0.14521316, 0.0, 0.0, 0.98940045), scale: (1.0, 1.0, 1.0))),
         "sun": Node(type: "DirectionalLight", metadata: {"pos": {"glam::Vec2": (420.0, -20.0)}}, inlets: (translation: (4.0, 8.0, 4.0), rotation: (-0.424708, 0.339851, 0.175920, 0.820473), scale: (1.0, 1.0, 1.0), illuminance: 6000.0)),
+        // What the window and the HDMI path present. Without this, a document
+        // with a camera presents nothing: which camera is shown is authored,
+        // never guessed from creation order or from whichever rendered last.
+        // The camera's own `resolution` is left at its 1920x1080 default,
+        // which is why this entry does not name it.
+        "output": Node(type: "Output", metadata: {"pos": {"glam::Vec2": (640.0, -120.0)}}, inlets: ()),
 
         // ---------------------------------------------------------------
         // Sprite layers (add-sprite-material). See the header diagram and
@@ -190,6 +196,9 @@ Graph(
         // A whole Vec3 into a placement's translation.
         Edge(from: ("vec3A", "out"), to: ("cubeA", "translation"), slot: 0),
         Edge(from: ("vec3B", "out"), to: ("cubeB", "translation"), slot: 0),
+        // The camera into the output node. A marker edge like the ones below:
+        // it carries identity only, and no image travels along it.
+        Edge(from: ("camera", "camera"), to: ("output", "camera"), slot: 0),
         // One mesh, three placements. Marker edges: no value flows.
         Edge(from: ("cube", "mesh"), to: ("cubeA", "mesh"), slot: 0),
         Edge(from: ("cube", "mesh"), to: ("cubeB", "mesh"), slot: 0),

@@ -17,7 +17,7 @@ use bevy::prelude::*;
 use crossbeam_channel::Receiver;
 use sway_viewport_input::ViewportInput;
 
-pub use camera::{ViewportCamera, ViewportCameraRole};
+pub use camera::{ActiveViewportCamera, FittedRect, ViewportCamera, fit_aspect};
 
 /// The receiving half of the editor's viewport input channel, held by the
 /// world. Present only in an editor build.
@@ -65,6 +65,10 @@ impl Plugin for EditorViewportPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ViewportEvents>()
             .init_resource::<camera::ViewportCamera>()
+            .init_resource::<camera::ActiveViewportCamera>()
+            // The editor's consumer claim on a camera. Owned here, read by
+            // the runtime's target allocator.
+            .init_resource::<sway_runtime::EditorCameraPreview>()
             // The picker sets it and the gizmo follows it. Owned by the
             // editor, not the graph, so an editor build has to insert it.
             .init_resource::<sway_selection::Selection>()
@@ -94,15 +98,28 @@ impl Plugin for EditorViewportPlugin {
             )
             .add_systems(
                 Update,
-                (camera::tag_scene_cameras, camera::apply_active_camera).chain(),
+                (
+                    // Settle the selection first: a camera deleted since the
+                    // last frame must fall back before anything acts on it.
+                    camera::settle_viewport_camera,
+                    camera::publish_camera_preview,
+                )
+                    .chain()
+                    // Before projection, so the claim this frame publishes is
+                    // the one the allocator reads this frame.
+                    .before(sway_runtime::ProjectionSet),
             )
             .add_systems(
                 Update,
-                (
-                    gizmo::follow_selection,
-                    gizmo::mark_gizmo_camera,
-                    gizmo::disable_gizmo_camera_clear,
-                ),
+                (camera::apply_active_camera, gizmo::mark_gizmo_camera)
+                    .chain()
+                    // *After* projection: which cameras render is decided from
+                    // the targets this frame allocated, not last frame's.
+                    .after(sway_runtime::ProjectionSet),
+            )
+            .add_systems(
+                Update,
+                (gizmo::follow_selection, gizmo::disable_gizmo_camera_clear),
             )
             .add_systems(
                 PostUpdate,

@@ -90,7 +90,14 @@ pub enum FileRequest {
 /// [`FileRequest`] because it touches the world rather than the disk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewRequest {
-    ToggleCamera,
+    /// Show the camera at this index of the list the toolbar was last given
+    /// through [`EditorUi::apply_cameras`].
+    ///
+    /// An index rather than a camera, because the editor deliberately knows
+    /// nothing about what a camera is: the shell names them and the shell
+    /// resolves the answer. It replaced a two-state toggle, which could not
+    /// express a choice among a document's several cameras.
+    SelectCamera(usize),
 }
 
 /// Builds the root widget: a transport strip above four panes.
@@ -444,6 +451,19 @@ impl EditorUi {
         self.root
             .edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
                 TransportBar::apply_transport(&mut bar, transport);
+            });
+    }
+
+    /// Offers the cameras the viewport can show, by name, in the order a
+    /// [`ViewRequest::SelectCamera`] index refers to.
+    ///
+    /// The shell owns both the naming and the meaning: this crate has no
+    /// notion of a camera, and taking the list from outside is what keeps it
+    /// that way.
+    pub fn apply_cameras(&mut self, names: &[String]) {
+        self.root
+            .edit_widget_with_tag(TRANSPORT_BAR_TAG, |mut bar| {
+                TransportBar::apply_cameras(&mut bar, names);
             });
     }
 

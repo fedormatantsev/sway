@@ -7,7 +7,14 @@ Every camera node in the document MUST be offerable as a preview, so that a docu
 
 A previewed camera that leaves the document — deleted, or gone after a reload — MUST fall back to the editor's own camera rather than leaving the viewport blank or showing a stale image.
 
-Exactly one camera MUST be drawing at any moment: switching the preview MUST stop the previous camera from drawing into the pane rather than layering one over the other.
+Exactly one camera's image MUST reach the pane at any moment: switching the preview MUST stop the previous camera's image reaching it rather than layering one over the other.
+
+This constrains what the pane shows, and nothing else. A camera the graph consumes — one an output or a capture node is connected to — MUST go on rendering into its own target whether or not it is the one being previewed, because its consumers are entitled to the same frames either way. Previewing is a fourth consumer, not a switch that turns the others off.
+
+#### Scenario: Previewing one camera does not stop another being captured
+- **WHEN** a capture node records a camera while the viewport previews a different one
+- **THEN** the recorded files hold that camera's rendered frames
+- **AND** they are not blank
 
 #### Scenario: Previewing a camera does not edit the graph
 - **WHEN** the viewport is switched from the editor camera to a scene camera

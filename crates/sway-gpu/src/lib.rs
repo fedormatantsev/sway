@@ -6,6 +6,7 @@
 pub mod compositor;
 pub mod context;
 pub mod frame;
+pub mod readback;
 pub mod surface;
 pub mod textures;
 pub mod ui_render;
@@ -13,8 +14,9 @@ pub mod ui_render;
 pub use compositor::{Compositor, Quad};
 pub use context::GpuContext;
 pub use frame::Frame;
-pub use surface::WindowSurface;
-pub use textures::{UiTexture, ViewportTexture};
+pub use readback::{Readback, ReadbackPool, ReadbackRefused};
+pub use surface::{VsyncPreference, WindowSurface};
+pub use textures::{CameraTarget, TargetError, UiTexture, ViewportTexture};
 pub use ui_render::UiRenderer;
 pub use wgpu;
 

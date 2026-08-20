@@ -1,7 +1,9 @@
+mod capture;
 mod presenter;
 mod shell;
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use bevy::asset::LoadState;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
@@ -16,30 +18,63 @@ use sway_runtime::{ProducerSet, ProjectionSet, RuntimePlugin};
 /// Provisional graph tick rate pending the measurements specified in spec §11.
 const TICK_HZ: f64 = 120.0;
 
+#[derive(Debug, Default, PartialEq, Eq)]
 struct Args {
     midi_filter: String,
     list_only: bool,
     editor: bool,
+    /// Stop waiting for the display's refresh before presenting, so a display
+    /// slower than the show's fixed rate no longer bounds it. Off by default:
+    /// the fallback modes tear, which is a fair trade for a capture run and a
+    /// poor one for a show.
+    no_vsync: bool,
+    /// Write one image of the whole composited window to this path and exit.
+    /// The agent-facing path: no pointer, no keyboard, and an exit status that
+    /// alone says whether it worked.
+    capture_window: Option<PathBuf>,
 }
 
-fn parse_args() -> Args {
-    let mut args = Args {
-        midi_filter: String::new(),
-        list_only: false,
-        editor: false,
-    };
-    let mut it = std::env::args().skip(1);
+/// Parses `args` (the arguments *after* the program name).
+///
+/// Returns the argument it could not make sense of, rather than exiting: the
+/// caller reports it and exits with a failure status, so no run ever starts on
+/// a misunderstood command line.
+fn parse_args<I>(args: I) -> Result<Args, String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut parsed = Args::default();
+    let mut it = args.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--midi" => {
-                args.midi_filter = it.next().expect("--midi needs a substring");
+                parsed.midi_filter = it
+                    .next()
+                    .ok_or_else(|| "--midi needs a substring".to_string())?;
             }
-            "--list" => args.list_only = true,
-            "--editor" => args.editor = true,
-            other => panic!("unknown argument: {other}"),
+            "--list" => parsed.list_only = true,
+            "--editor" => parsed.editor = true,
+            "--no-vsync" => parsed.no_vsync = true,
+            "--capture-window" => {
+                parsed.capture_window = Some(PathBuf::from(
+                    it.next()
+                        .ok_or_else(|| "--capture-window needs a path".to_string())?,
+                ));
+            }
+            other => return Err(format!("unknown argument: {other}")),
         }
     }
-    args
+    Ok(parsed)
+}
+
+/// True once the graph has been projected at least once. The whole-window
+/// capture waits on this: a frame drawn before the scene exists is not the
+/// scene (design D8).
+#[derive(bevy::prelude::Resource, Default, Debug, Clone, Copy)]
+pub struct ProjectedFrames(pub u64);
+
+fn count_projected_frames(mut count: ResMut<ProjectedFrames>) {
+    count.0 += 1;
 }
 
 /// Logs every monitor once, so choosing `--monitor N` does not require
@@ -134,8 +169,14 @@ fn assets_ready(
     true
 }
 
-fn main() {
-    let args = parse_args();
+fn main() -> ExitCode {
+    let args = match parse_args(std::env::args().skip(1)) {
+        Ok(args) => args,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let sources = sway_midi::list_sources();
     if sources.is_empty() {
@@ -160,7 +201,7 @@ fn main() {
                 eprintln!("  {i}: {name}");
             }
         }
-        return;
+        return ExitCode::SUCCESS;
     }
 
     let destinations = sway_midi::list_destinations();
@@ -237,6 +278,16 @@ fn main() {
         .configure_sets(
             Update,
             ProjectionSet.run_if(assets_ready).after(ProducerSet),
+        )
+        // `ProjectionSet` is already gated on assets, so this counts exactly
+        // the frames in which the scene was actually projected — which is
+        // what `--capture-window` waits for.
+        .init_resource::<ProjectedFrames>()
+        .add_systems(
+            Update,
+            count_projected_frames
+                .after(ProjectionSet)
+                .run_if(assets_ready),
         );
 
         app
@@ -248,5 +299,57 @@ fn main() {
         commands: graph_tx,
         viewport_input: viewport_tx,
         project,
-    });
+        no_vsync: args.no_vsync,
+        capture_window: args.capture_window,
+    })
+}
+
+#[cfg(test)]
+mod arg_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Args, String> {
+        parse_args(args.iter().map(|a| a.to_string()))
+    }
+
+    #[test]
+    fn the_defaults_are_a_plain_show_run() {
+        let args = parse(&[]).expect("no arguments is a valid command line");
+        assert!(!args.editor);
+        assert!(!args.no_vsync);
+        assert!(!args.list_only);
+        assert_eq!(args.capture_window, None);
+        assert!(args.midi_filter.is_empty());
+    }
+
+    #[test]
+    fn the_new_flags_parse_alongside_the_existing_ones() {
+        let args = parse(&[
+            "--editor",
+            "--midi",
+            "Ableton",
+            "--no-vsync",
+            "--capture-window",
+            "/tmp/shot.png",
+        ])
+        .expect("a valid command line");
+        assert!(args.editor);
+        assert!(args.no_vsync);
+        assert_eq!(args.midi_filter, "Ableton");
+        assert_eq!(args.capture_window, Some(PathBuf::from("/tmp/shot.png")));
+    }
+
+    #[test]
+    fn a_flag_missing_its_value_is_refused_rather_than_guessed_at() {
+        // A capture with no path would have to invent one, and choosing a
+        // filename is exactly what the `app` spec forbids.
+        assert!(parse(&["--capture-window"]).is_err());
+        assert!(parse(&["--midi"]).is_err());
+    }
+
+    #[test]
+    fn an_unknown_argument_is_reported_by_name() {
+        let error = parse(&["--nope"]).expect_err("must fail");
+        assert!(error.contains("--nope"), "got {error}");
+    }
 }

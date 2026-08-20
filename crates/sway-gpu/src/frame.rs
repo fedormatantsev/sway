@@ -8,6 +8,7 @@
 use wgpu::{CommandEncoder, CommandEncoderDescriptor, Device, Queue, SurfaceTexture, TextureView};
 
 use crate::compositor::{Compositor, Quad};
+use crate::readback::{ReadbackPool, ReadbackRefused};
 
 /// One acquired, in-progress frame. Obtained from
 /// [`crate::WindowSurface::begin_frame`], which returns `None` instead of a
@@ -61,6 +62,25 @@ impl<'a> Frame<'a> {
             &self.view,
             quads,
         );
+    }
+
+    /// Queues a readback of this frame's presented surface texture — the
+    /// whole window exactly as it is about to be displayed.
+    ///
+    /// Call it after the last [`Self::composite`], so the copy is encoded
+    /// after the pass that produced the image. The copy is submitted with the
+    /// rest of the frame by [`Self::present`], and completes asynchronously
+    /// like every other readback: nothing here waits.
+    ///
+    /// This is the only way to reach the surface texture from outside the
+    /// crate, which keeps the rule that no caller holds a bare
+    /// `wgpu::SurfaceTexture`.
+    pub fn read_back(
+        &mut self,
+        pool: &mut ReadbackPool,
+        tag: u64,
+    ) -> Result<(), ReadbackRefused> {
+        pool.encode(&mut self.encoder, &self.surface_texture.texture, tag)
     }
 
     /// Finishes the encoder, submits it, and presents the frame.

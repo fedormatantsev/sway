@@ -41,9 +41,17 @@ pub struct TransportBar {
     fields: Vec<String>,
     generation: u64,
     playing: bool,
-    /// Open / Save / Camera, in that order. Built once; never rebuilt by a
-    /// readout.
-    buttons: [WidgetPod<Button>; 3],
+    /// Open / Save, in that order. Built once; never rebuilt by a readout.
+    buttons: [WidgetPod<Button>; 2],
+    /// One button per camera the viewport can show — the editor's own first,
+    /// then the document's camera nodes.
+    ///
+    /// A list rather than the single toggle this bar used to carry: a
+    /// document may hold any number of cameras and every one of them has to be
+    /// reachable, which a two-state control cannot express. Rebuilt only when
+    /// the names actually change, like the readout fields above.
+    camera_buttons: Vec<WidgetPod<Button>>,
+    camera_names: Vec<String>,
     /// What the toolbar has asked for since the shell last drained it.
     requests: Vec<FileRequest>,
     /// What the toolbar has asked for since the shell last drained it.
@@ -66,8 +74,9 @@ impl TransportBar {
             buttons: [
                 WidgetPod::new(Button::with_text("Open")),
                 WidgetPod::new(Button::with_text("Save")),
-                WidgetPod::new(Button::with_text("Camera")),
             ],
+            camera_buttons: Vec::new(),
+            camera_names: Vec::new(),
             requests: Vec::new(),
             view_requests: Vec::new(),
         }
@@ -91,8 +100,16 @@ impl TransportBar {
         self.buttons[1].id()
     }
 
-    pub fn camera_button_id(&self) -> WidgetId {
-        self.buttons[2].id()
+    /// The camera buttons, in the order they were last given. Index 0 is
+    /// whatever the caller named first — by convention the editor's own
+    /// camera.
+    pub fn camera_button_id(&self, index: usize) -> Option<WidgetId> {
+        self.camera_buttons.get(index).map(|button| button.id())
+    }
+
+    /// The camera names currently offered, in order. Exposed for tests.
+    pub fn camera_names(&self) -> Vec<String> {
+        self.camera_names.clone()
     }
 }
 
@@ -127,6 +144,30 @@ impl TransportBar {
         }
 
         this.widget.fields = fields;
+        this.widget.generation += 1;
+        this.ctx.children_changed();
+        this.ctx.request_layout();
+    }
+
+    /// Offers one button per camera the viewport can show.
+    ///
+    /// The names are the caller's — this widget knows nothing about cameras
+    /// beyond how many there are and what they are called, and reports a press
+    /// back as the index into the same list. Rebuilt only when the names
+    /// change, so a steady document costs one comparison per frame.
+    pub fn apply_cameras(this: &mut WidgetMut<'_, Self>, names: &[String]) {
+        if names == this.widget.camera_names {
+            return;
+        }
+        for button in this.widget.camera_buttons.drain(..) {
+            this.ctx.remove_child(button);
+        }
+        for name in names {
+            this.widget
+                .camera_buttons
+                .push(WidgetPod::new(Button::with_text(name.clone())));
+        }
+        this.widget.camera_names = names.to_vec();
         this.widget.generation += 1;
         this.ctx.children_changed();
         this.ctx.request_layout();
@@ -167,11 +208,16 @@ impl Widget for TransportBar {
                 self.requests.push(FileRequest::Save);
                 ctx.set_handled();
             }
-            Some(2) => {
-                self.view_requests.push(ViewRequest::ToggleCamera);
-                ctx.set_handled();
+            _ => {
+                if let Some(index) = self
+                    .camera_buttons
+                    .iter()
+                    .position(|button| button.id() == source)
+                {
+                    self.view_requests.push(ViewRequest::SelectCamera(index));
+                    ctx.set_handled();
+                }
             }
-            _ => {}
         }
     }
 
@@ -179,7 +225,7 @@ impl Widget for TransportBar {
         for label in &mut self.labels {
             ctx.register_child(label);
         }
-        for button in &mut self.buttons {
+        for button in self.buttons.iter_mut().chain(&mut self.camera_buttons) {
             ctx.register_child(button);
         }
     }
@@ -199,7 +245,7 @@ impl Widget for TransportBar {
             (Axis::Horizontal, LenReq::MaxContent) => Length::const_px(
                 PADDING
                     + self.labels.len() as f64 * FIELD_WIDTH
-                    + self.buttons.len() as f64 * BUTTON_WIDTH,
+                    + (self.buttons.len() + self.camera_buttons.len()) as f64 * BUTTON_WIDTH,
             ),
         }
     }
@@ -211,7 +257,12 @@ impl Widget for TransportBar {
             ctx.place_child(label, Point::new(x, 0.0));
         }
         let buttons_start = PADDING + self.labels.len() as f64 * FIELD_WIDTH;
-        for (index, button) in self.buttons.iter_mut().enumerate() {
+        for (index, button) in self
+            .buttons
+            .iter_mut()
+            .chain(&mut self.camera_buttons)
+            .enumerate()
+        {
             let x = buttons_start + index as f64 * BUTTON_WIDTH;
             ctx.run_layout(button, Size::new(BUTTON_WIDTH, TRANSPORT_BAR_HEIGHT));
             ctx.place_child(button, Point::new(x, 0.0));
@@ -262,7 +313,12 @@ impl Widget for TransportBar {
         self.labels
             .iter()
             .map(|label| label.id())
-            .chain(self.buttons.iter().map(|button| button.id()))
+            .chain(
+                self.buttons
+                    .iter()
+                    .chain(&self.camera_buttons)
+                    .map(|button| button.id()),
+            )
             .collect()
     }
 }
@@ -377,19 +433,78 @@ mod tests {
         });
     }
 
-    #[test]
-    fn the_camera_button_asks_the_shell_to_toggle() {
-        use crate::ViewRequest;
-        let mut harness = harness_with(&transport(false, 120.0, 0.0, true));
-        let camera_id = harness.root_widget().camera_button_id();
+    fn cameras() -> Vec<String> {
+        vec![
+            "Editor".to_string(),
+            "Camera 1".to_string(),
+            "Camera 2".to_string(),
+        ]
+    }
 
-        harness.mouse_click_on(camera_id, Some(masonry::core::PointerButton::Primary));
+    #[test]
+    fn every_offered_camera_gets_a_control_of_its_own() {
+        // A two-state toggle could not say "the second of three cameras", so
+        // the bar carries the whole list.
+        let mut harness = harness_with(&transport(false, 120.0, 0.0, true));
+        harness.edit_root_widget(|mut bar| {
+            TransportBar::apply_cameras(&mut bar, &cameras());
+        });
+
+        assert_eq!(harness.root_widget().camera_names(), cameras());
+        assert!(harness.root_widget().camera_button_id(2).is_some());
+        assert!(
+            harness.root_widget().camera_button_id(3).is_none(),
+            "and no control for a camera that was not offered"
+        );
+    }
+
+    #[test]
+    fn pressing_a_camera_control_names_that_camera_by_index() {
+        let mut harness = harness_with(&transport(false, 120.0, 0.0, true));
+        harness.edit_root_widget(|mut bar| {
+            TransportBar::apply_cameras(&mut bar, &cameras());
+        });
+        let second = harness
+            .root_widget()
+            .camera_button_id(2)
+            .expect("three cameras were offered");
+
+        harness.mouse_click_on(second, Some(masonry::core::PointerButton::Primary));
 
         harness.edit_root_widget(|mut bar| {
             assert_eq!(
                 TransportBar::take_view_requests(&mut bar),
-                vec![ViewRequest::ToggleCamera],
+                vec![ViewRequest::SelectCamera(2)],
+            );
+            assert!(
+                TransportBar::take_view_requests(&mut bar).is_empty(),
+                "the shell must not act on the same request twice",
             );
         });
+    }
+
+    #[test]
+    fn an_unchanged_camera_list_does_not_rebuild_the_bar() {
+        // The same comparison the readout fields get: a steady document must
+        // not rebuild a widget tree sixty times a second.
+        let mut harness = harness_with(&transport(false, 120.0, 0.0, true));
+        harness.edit_root_widget(|mut bar| {
+            TransportBar::apply_cameras(&mut bar, &cameras());
+        });
+        let generation = harness.root_widget().generation();
+
+        harness.edit_root_widget(|mut bar| {
+            TransportBar::apply_cameras(&mut bar, &cameras());
+        });
+        assert_eq!(harness.root_widget().generation(), generation);
+
+        harness.edit_root_widget(|mut bar| {
+            TransportBar::apply_cameras(&mut bar, &["Editor".to_string()]);
+        });
+        assert_ne!(
+            harness.root_widget().generation(),
+            generation,
+            "a camera that came or went does rebuild it"
+        );
     }
 }

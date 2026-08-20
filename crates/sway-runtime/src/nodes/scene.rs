@@ -21,7 +21,7 @@
 //! never confused for one another.
 
 use bevy::ecs::world::World;
-use bevy::math::{Quat, Vec3};
+use bevy::math::{Quat, UVec2, Vec3};
 use bevy::prelude::{
     Color, DirectionalLight as BevyDirectionalLight, PointLight as BevyPointLight,
 };
@@ -30,7 +30,14 @@ use bevy::reflect::std_traits::ReflectDefault;
 use bevy::transform::components::Transform;
 use sway_graph::graph::{NodeKind, ReflectNodeKind};
 
-use crate::nodes::protocol::{MeshSource, SceneChild, SceneMaterial, SceneNodeOut};
+use crate::nodes::protocol::{
+    CameraTargetOut, MeshSource, SceneChild, SceneMaterial, SceneNodeOut,
+};
+
+/// A camera's resolution when the author has not said otherwise (design D9).
+/// An HDMI show is the target, so this is the useful default rather than a
+/// small one.
+pub const DEFAULT_CAMERA_RESOLUTION: UVec2 = UVec2::new(1920, 1080);
 
 /// The Bevy `Transform` a scene node projects, assembled from its three pose
 /// inlets. A derived `Default` on `Vec3` would zero the scale; identity pose
@@ -158,6 +165,14 @@ pub struct CameraIn {
     pub translation: Vec3,
     pub rotation: Quat,
     pub scale: Vec3,
+    /// The size of the target this camera renders into, in pixels. Authored,
+    /// and independent of every window, editor pane and other camera: nothing
+    /// outside the graph may change it (`nodes`: "A camera declares the
+    /// resolution it renders at").
+    ///
+    /// A zero component produces no target, which is reported once and renders
+    /// nothing rather than falling back to some other size.
+    pub resolution: UVec2,
     pub children: Vec<SceneChild>,
 }
 
@@ -168,22 +183,28 @@ impl Default for CameraIn {
             translation,
             rotation,
             scale,
+            resolution: DEFAULT_CAMERA_RESOLUTION,
             children: Vec::new(),
         }
     }
 }
 
 /// The scene's camera, as opposed to the editor's own. What this node carries
-/// is identity — which of the cameras in the world the show looks through.
-/// The render target is set by
-/// [`headless::retarget_cameras`](crate::headless), and field of view and
-/// clear colour stay at Bevy's defaults until something asks otherwise.
+/// is identity — which of the cameras in the world a consumer looks through —
+/// and the resolution it renders at.
+///
+/// Its render target is allocated by
+/// [`headless::retarget_cameras`](crate::headless) from `resolution`, and only
+/// for a camera something actually consumes; field of view and clear colour
+/// stay at Bevy's defaults until something asks otherwise.
 #[derive(Reflect, Default, Debug)]
 #[reflect(NodeKind, Default)]
 pub struct Camera {
     pub inlets: CameraIn,
     pub state: (),
-    pub outlets: SceneNodeOut,
+    /// Both outlets: a camera is a placement in the scene *and* something an
+    /// output or a capture node can connect to.
+    pub outlets: CameraTargetOut,
 }
 
 impl NodeKind for Camera {
@@ -358,6 +379,39 @@ mod tests {
         assert!(has_children(&PointLightIn::default()));
 
         assert_eq!(SceneNodeOut::default().child, SceneChild);
+        // A camera's outlets carry the child port too, in a part of their own
+        // — it is a scene node as well as a source of frames.
+        assert_eq!(CameraTargetOut::default().child, SceneChild);
+    }
+
+    #[test]
+    fn a_camera_defaults_to_1920_by_1080_and_offers_its_frames() {
+        use crate::nodes::protocol::CameraTarget;
+        let inlets = CameraIn::default();
+        assert_eq!(inlets.resolution, UVec2::new(1920, 1080));
+        assert_eq!(Camera::default().outlets.camera, CameraTarget);
+    }
+
+    #[test]
+    fn adding_the_resolution_inlet_left_the_pose_inlets_alone() {
+        // Pose is what the gizmo writes and what a `Vec3` outlet connects to;
+        // a resolution field landing on top of one of them would be silent.
+        use bevy::reflect::{Typed, structs::Struct};
+        let bevy::reflect::TypeInfo::Struct(info) = CameraIn::type_info() else {
+            panic!("CameraIn is a struct");
+        };
+        let names: Vec<&str> = info.iter().map(|field| field.name()).collect();
+        assert_eq!(
+            names,
+            vec!["translation", "rotation", "scale", "resolution", "children"]
+        );
+
+        let identity = Transform::default();
+        let inlets = CameraIn::default();
+        assert_eq!(inlets.translation, identity.translation);
+        assert_eq!(inlets.rotation, identity.rotation);
+        assert_eq!(inlets.scale, identity.scale);
+        assert!(CameraIn::default().field("translation").is_some());
     }
 
     #[test]

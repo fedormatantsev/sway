@@ -18,19 +18,23 @@
 use bevy::prelude::*;
 use sway_graph::graph::RegisterNodeKind;
 
+pub mod capture;
 pub mod frame_sequence;
 pub mod mesh;
+pub mod output;
 pub mod pbr_material;
 pub mod protocol;
 pub mod scene;
 pub mod sprite_material;
 
+pub use capture::{Capture, CaptureIn, PathPatternError, expand_pattern};
 pub use frame_sequence::{FrameSequence, FrameSequenceIn, FrameSequenceState};
 pub use mesh::{MeshAsset, MeshAssetIn, MeshAssetState, PlaneMesh, PlaneMeshIn, PlaneMeshState};
+pub use output::{Output, OutputIn};
 pub use pbr_material::{PbrMaterial, PbrMaterialIn, PbrMaterialState};
 pub use scene::{
-    Camera, CameraIn, DirectionalLight, DirectionalLightIn, Group, GroupIn, MeshNode, MeshNodeIn,
-    PointLight, PointLightIn,
+    Camera, CameraIn, DEFAULT_CAMERA_RESOLUTION, DirectionalLight, DirectionalLightIn, Group,
+    GroupIn, MeshNode, MeshNodeIn, PointLight, PointLightIn,
 };
 pub use sprite_material::{SpriteMaterial, SpriteMaterialIn, SpriteMaterialState};
 
@@ -52,10 +56,12 @@ pub fn register_runtime_node_kinds(app: &mut App) {
         .register_type::<protocol::ImageSequence>()
         .register_type::<protocol::MeshSource>()
         .register_type::<protocol::SceneChild>()
+        .register_type::<protocol::CameraTarget>()
         .register_type::<protocol::MeshSourceOut>()
         .register_type::<protocol::SceneMaterialOut>()
         .register_type::<protocol::ImageSequenceOut>()
         .register_type::<protocol::SceneNodeOut>()
+        .register_type::<protocol::CameraTargetOut>()
         // --- producers -------------------------------------------------
         .register_node_kind::<MeshAsset>()
         .register_type::<MeshAssetIn>()
@@ -85,8 +91,16 @@ pub fn register_runtime_node_kinds(app: &mut App) {
         .register_type::<DirectionalLightIn>()
         .register_node_kind::<PointLight>()
         .register_type::<PointLightIn>()
+        // --- camera consumers ------------------------------------------
+        // Not scene nodes: they consume a camera rather than place anything.
+        .register_node_kind::<Output>()
+        .register_type::<OutputIn>()
+        .register_node_kind::<Capture>()
+        .register_type::<CaptureIn>()
         // Addressable by path from a document or the inspector.
-        .register_type::<Transform>();
+        .register_type::<Transform>()
+        // A camera's `resolution` inlet, addressable whole or per component.
+        .register_type::<UVec2>();
 }
 
 /// Registers every render-coupled node kind *and* the sprite material's
@@ -142,6 +156,8 @@ mod tests {
             "Camera",
             "DirectionalLight",
             "PointLight",
+            "Output",
+            "Capture",
         ] {
             assert!(
                 short_names.contains(&expected),

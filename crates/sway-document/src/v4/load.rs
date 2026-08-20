@@ -227,7 +227,7 @@ fn connect_edge(graph: &mut Graph, ids: &StableIds, edge: &EdgeDoc) -> Result<()
 mod tests {
     use super::*;
     use crate::v4::doc::parse;
-    use bevy_reflect::Reflect;
+    use bevy_reflect::{GetPath, Reflect};
     use sway_graph::graph::{ReflectNodeKind, register_node_kind};
 
     #[derive(Reflect, Default, Debug)]
@@ -368,6 +368,68 @@ mod tests {
             ),
             "got {:?}",
             diagnostics.items
+        );
+    }
+
+    #[test]
+    fn a_node_kind_that_gained_an_inlet_loads_the_older_entry_with_the_default() {
+        // A file written before an inlet existed names every field but the new
+        // one. That is the ordinary state of a project on disk after a node
+        // kind grows a field, so it has to load with the new inlet at its
+        // `Default` rather than being reported and skipped.
+        #[derive(Reflect, Debug)]
+        struct GrownIn {
+            size: f32,
+            resolution: (u32, u32),
+        }
+        impl Default for GrownIn {
+            fn default() -> Self {
+                Self {
+                    size: 0.0,
+                    resolution: (1920, 1080),
+                }
+            }
+        }
+        #[derive(Reflect, Default, Debug)]
+        #[reflect(NodeKind)]
+        struct Grown {
+            inlets: GrownIn,
+            state: (),
+            outlets: (),
+        }
+        impl sway_graph::graph::NodeKind for Grown {
+            fn evaluate(&mut self, _world: &bevy_ecs::world::World) {}
+        }
+
+        let mut registry = registry();
+        register_node_kind::<Grown>(&mut registry);
+        registry.register::<GrownIn>();
+
+        let (graph, ids, diagnostics) = load(
+            &doc(r#"Graph(version: 4, nodes: {
+                "cam": Node(type: "Grown", metadata: {}, inlets: (size: 3.0)),
+            })"#),
+            &registry,
+        );
+
+        assert!(diagnostics.is_clean(), "{diagnostics:?}");
+        assert_eq!(graph.len(), 1);
+        let node = graph.get(ids.node_of("cam").expect("assigned")).unwrap();
+        assert_eq!(
+            node.value()
+                .path::<f32>("inlets.size")
+                .copied()
+                .expect("the authored field"),
+            3.0,
+            "the field the file names is applied"
+        );
+        assert_eq!(
+            node.value()
+                .path::<(u32, u32)>("inlets.resolution")
+                .copied()
+                .expect("the new field"),
+            (1920, 1080),
+            "the field the file predates takes its default"
         );
     }
 

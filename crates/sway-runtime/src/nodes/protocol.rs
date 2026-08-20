@@ -10,6 +10,7 @@
 //! | image sequence | [`ImageSequence`] | [`ImageSequenceNode`] |
 //! | mesh source | [`MeshSource`] | [`MeshNode`] |
 //! | hierarchy | [`SceneChild`] | — (the projector needs only the `NodeId`) |
+//! | camera target | [`CameraTarget`] | — (the projector needs only the `NodeId`) |
 //!
 //! **A marker edge propagates nothing** — `sway-graph` sets `Edge::valueless`
 //! from `size_of_val == 0` at connect time — but it **stays in the sort**,
@@ -68,6 +69,20 @@ pub struct MeshSource;
 #[reflect(Default, Debug, PartialEq, Hash)]
 pub struct SceneChild;
 
+/// The camera-target protocol's marker. An outlet of this type says "this node
+/// renders a frame you may consume"; an inlet of this type says "a camera may
+/// be connected here".
+///
+/// Like [`SceneChild`] it has no trait. The `nodes` spec requires the
+/// connection to carry identity only — no value and no image travels along it
+/// — so a consumer reaches the frames by asking the runtime for the target
+/// belonging to the node at the other end of the edge, never by reading a
+/// field. What the edge buys beyond schema is its place in the sort: a
+/// consumer is projected after the camera that feeds it.
+#[derive(Reflect, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[reflect(Default, Debug, PartialEq, Hash)]
+pub struct CameraTarget;
+
 // ---------------------------------------------------------------------------
 // Shared outlet parts
 // ---------------------------------------------------------------------------
@@ -91,6 +106,17 @@ pub struct SceneMaterialOut {
 #[reflect(Default, Debug, PartialEq)]
 pub struct ImageSequenceOut {
     pub sequence: ImageSequence,
+}
+
+/// The outlets of a node that renders a frame.
+///
+/// A camera declares this *alongside* its `SceneNodeOut`, because a camera is
+/// both a placement in the scene and something a consumer can look through.
+#[derive(Reflect, Default, Debug, Clone, Copy, PartialEq)]
+#[reflect(Default, Debug, PartialEq)]
+pub struct CameraTargetOut {
+    pub child: SceneChild,
+    pub camera: CameraTarget,
 }
 
 /// The outlets of every scene node: one port, offering itself as a child.
@@ -123,6 +149,16 @@ pub const COLOR: &str = "color";
 pub const DEPTH: &str = "depth";
 /// The outlet an image-sequence producer offers.
 pub const SEQUENCE: &str = "sequence";
+/// The inlet a consumer's camera arrives on, and the outlet a camera offers
+/// its rendered frames through. Both sides share one name, like `material`
+/// and `mesh`.
+pub const CAMERA: &str = "camera";
+/// A camera's authored resolution.
+pub const RESOLUTION: &str = "resolution";
+/// A capture node's output path pattern.
+pub const PATH: &str = "path";
+/// A capture node's recording flag.
+pub const RECORDING: &str = "recording";
 
 // ---------------------------------------------------------------------------
 // Traits
@@ -206,5 +242,6 @@ mod tests {
         assert!(is_valueless(&ImageSequence));
         assert!(is_valueless(&MeshSource));
         assert!(is_valueless(&SceneChild));
+        assert!(is_valueless(&CameraTarget));
     }
 }

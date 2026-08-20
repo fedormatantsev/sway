@@ -10,16 +10,42 @@ use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::math::UVec2;
 use crossbeam_channel::Sender;
 use masonry_core::core::CursorIcon;
+use sway_editor_viewport::{ViewportCamera, fit_aspect};
+use sway_graph::graph::NodeId;
 use sway_gpu::{
-    Compositor, GpuContext, Quad, UiRenderer, UiTexture, ViewportTexture, WindowSurface,
+    Compositor, GpuContext, Quad, ReadbackPool, UiRenderer, UiTexture, ViewportTexture,
+    WindowSurface,
 };
 use sway_editor::edit::EditorEdit;
 use sway_graph::Graph;
+use sway_runtime::{CameraTargets, PresentedCamera};
 use sway_selection::Selection;
 use sway_viewport_input::ViewportInput;
 use winit::dpi::PhysicalSize;
 
-/// Blits the viewport fullscreen. No masonry, no vello.
+/// A whole-window readback to encode into this frame, if one was asked for.
+///
+/// The ticket is the pool's tag; the pool is the caller's, because it also
+/// owns the comparison the capture settles by.
+pub type WindowReadback<'a> = Option<(u64, &'a mut ReadbackPool)>;
+
+/// The rectangle `resolution` occupies when fitted into a pane of `size`,
+/// offset to `origin` — the letterbox, in the destination's own pixels.
+///
+/// The arithmetic is `sway_editor_viewport::fit_aspect`, shared with the
+/// editor preview so the window and the pane cannot disagree about where a
+/// camera's image goes.
+fn letterboxed(origin: (f64, f64), size: UVec2, resolution: UVec2) -> kurbo::Rect {
+    let fit = fit_aspect(size, resolution);
+    kurbo::Rect::new(
+        origin.0 + f64::from(fit.offset.x),
+        origin.1 + f64::from(fit.offset.y),
+        origin.0 + f64::from(fit.offset.x + fit.size.x),
+        origin.1 + f64::from(fit.offset.y + fit.size.y),
+    )
+}
+
+/// Blits the presented camera into the window. No masonry, no vello.
 pub struct ShowPresenter;
 
 impl ShowPresenter {
@@ -28,8 +54,8 @@ impl ShowPresenter {
         app: &mut App,
         gpu: &GpuContext,
         surface: &WindowSurface,
-        viewport: &ViewportTexture,
         compositor: &mut Compositor,
+        window_readback: WindowReadback<'_>,
     ) {
         app.update();
 
@@ -40,11 +66,41 @@ impl ShowPresenter {
             return;
         };
 
-        frame.composite(&[Quad {
-            view: &viewport.sample_view,
-            dst: kurbo::Rect::new(0.0, 0.0, surface.width() as f64, surface.height() as f64),
-            blend: false,
-        }]);
+        // What is presented is authored: the camera the document's `Output`
+        // node names, and nothing else. No output node, or none with a camera,
+        // composites no viewport quad at all — a case the compositor already
+        // handles, and the specified behaviour rather than a fallback to
+        // whichever camera happened to render last.
+        let world = app.world();
+        let presented = world.resource::<PresentedCamera>().0;
+        let targets = world.resource::<CameraTargets>();
+        let quad = presented.and_then(|presented| {
+            let target = targets.target(presented.node)?;
+            Some(Quad {
+                view: &target.sample_view,
+                // The camera's authored resolution and the window's size are
+                // independent and are not reconciled by changing either one:
+                // the image is fitted, and the rest of the window is
+                // letterboxing.
+                dst: letterboxed(
+                    (0.0, 0.0),
+                    UVec2::new(surface.width(), surface.height()),
+                    presented.resolution,
+                ),
+                blend: false,
+            })
+        });
+
+        match quad {
+            Some(quad) => frame.composite(&[quad]),
+            None => frame.composite(&[]),
+        }
+
+        if let Some((ticket, pool)) = window_readback {
+            // After the composite, before the present: the copy is encoded
+            // into this frame's encoder and submitted with it.
+            let _ = frame.read_back(pool, ticket);
+        }
 
         frame.present();
     }
@@ -69,6 +125,11 @@ pub struct EditorPresenter {
     editor: sway_editor::EditorUi,
     ui_texture: UiTexture,
     ui_renderer: UiRenderer,
+    /// What each entry of the toolbar's camera list means, in the same order.
+    /// `None` is the editor's own camera; the rest are the document's camera
+    /// nodes. Rebuilt with the list, so an index the toolbar reports back
+    /// always resolves against the list it was showing.
+    camera_choices: Vec<Option<NodeId>>,
 }
 
 impl EditorPresenter {
@@ -86,7 +147,20 @@ impl EditorPresenter {
             editor,
             ui_texture,
             ui_renderer,
+            camera_choices: Vec::new(),
         }
+    }
+
+    /// What the toolbar's camera at `index` means.
+    ///
+    /// `None` for an index the last list did not have — a press against a
+    /// list that has since changed, which is a no-op rather than a wrong
+    /// camera.
+    pub fn camera_choice(&self, index: usize) -> Option<ViewportCamera> {
+        Some(match self.camera_choices.get(index)? {
+            None => ViewportCamera::Editor,
+            Some(node) => ViewportCamera::Node(*node),
+        })
     }
 
     /// The pending cursor request, if any. Forwards to `EditorUi::take_cursor`;
@@ -159,6 +233,46 @@ impl EditorPresenter {
         if let Some(transport) = app.world().get_resource::<sway_midi::Transport>() {
             self.editor.apply_transport(transport);
         }
+        self.apply_cameras(app);
+    }
+
+    /// Offers the editor's own camera plus every camera node in the document,
+    /// so a document with several cameras can be inspected through each of
+    /// them without rewiring the graph.
+    ///
+    /// Named and ordered here rather than in `sway-editor`, which has no
+    /// notion of a camera at all: the shell is what depends on both the
+    /// runtime and the editor. Order is the graph's own node order, so a
+    /// steady document keeps steady names.
+    fn apply_cameras(&mut self, app: &mut App) {
+        let mut choices: Vec<Option<NodeId>> = vec![None];
+        if let Some(graph) = app.world().get_resource::<Graph>() {
+            let mut cameras: Vec<NodeId> = graph
+                .iter()
+                .filter(|(_, node)| {
+                    node.value()
+                        .downcast_ref::<sway_runtime::nodes::Camera>()
+                        .is_some()
+                })
+                .map(|(id, _)| id)
+                .collect();
+            cameras.sort_unstable();
+            choices.extend(cameras.into_iter().map(Some));
+        }
+
+        if choices != self.camera_choices {
+            self.camera_choices = choices;
+        }
+        let names: Vec<String> = self
+            .camera_choices
+            .iter()
+            .enumerate()
+            .map(|(index, choice)| match choice {
+                None => "Editor".to_string(),
+                Some(_) => format!("Camera {index}"),
+            })
+            .collect();
+        self.editor.apply_cameras(&names);
     }
 
     /// One frame, in the fixed, load-bearing order (controller dispatch
@@ -179,6 +293,7 @@ impl EditorPresenter {
         surface: &WindowSurface,
         viewport: &mut ViewportTexture,
         compositor: &mut Compositor,
+        window_readback: WindowReadback<'_>,
     ) {
         // 0. The graph, from the previous frame's `app.update()`.
         self.apply_graph(app);
@@ -246,8 +361,38 @@ impl EditorPresenter {
             dst: kurbo::Rect::new(0.0, 0.0, surface.width() as f64, surface.height() as f64),
             blend: true,
         };
-        match rect {
-            Some(rect) => frame.composite(&[
+
+        // Previewing a camera node draws *that camera's* target into the pane,
+        // letterboxed to its authored aspect — not the pane-sized viewport
+        // texture, which only the editor's own camera renders into. The target
+        // is ordinarily already the fitted size (the editor asked for exactly
+        // that); where a graph consumer needed the authored resolution it is
+        // larger, and the same rect samples it down.
+        let world = app.world();
+        let previewed = world
+            .get_resource::<ViewportCamera>()
+            .and_then(|active| active.node())
+            .zip(world.get_resource::<CameraTargets>());
+        let preview_quad = rect.and_then(|rect| {
+            let (node, targets) = previewed?;
+            let target = targets.target(node)?;
+            Some(Quad {
+                view: &target.sample_view,
+                dst: letterboxed(
+                    (rect.x0, rect.y0),
+                    UVec2::new(
+                        rect.width().round().max(1.0) as u32,
+                        rect.height().round().max(1.0) as u32,
+                    ),
+                    UVec2::new(target.width, target.height),
+                ),
+                blend: false,
+            })
+        });
+
+        match (preview_quad, rect) {
+            (Some(preview), _) => frame.composite(&[preview, ui_quad]),
+            (None, Some(rect)) => frame.composite(&[
                 Quad {
                     view: &viewport.sample_view,
                     dst: rect,
@@ -255,7 +400,13 @@ impl EditorPresenter {
                 },
                 ui_quad,
             ]),
-            None => frame.composite(&[ui_quad]),
+            (None, None) => frame.composite(&[ui_quad]),
+        }
+
+        if let Some((ticket, pool)) = window_readback {
+            // After the composite, before the present — the whole window
+            // exactly as displayed, editor interface included.
+            let _ = frame.read_back(pool, ticket);
         }
 
         frame.present();

@@ -14,4 +14,7 @@ pub use nodes::sprite_material::{
     SpriteMaterialAsset, SpriteMaterialUniform, SpriteMeshBounds, inflate_local_aabb, layer_index,
     max_displacement, sync_sprite_material_bounds,
 };
-pub use project::{NodeEntities, ProducerSet, ProjectionSet, RuntimePlugin};
+pub use project::{
+    CameraTargets, CaptureIntent, CaptureIntents, EditorCameraPreview, NodeEntities, PresentedCamera,
+    PresentedTarget, ProducerSet, ProjectionSet, RuntimePlugin,
+};

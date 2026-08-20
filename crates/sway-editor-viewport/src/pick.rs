@@ -11,7 +11,7 @@ use sway_selection::Selection;
 use sway_viewport_input::{ViewportButton, ViewportInput};
 
 use sway_runtime::project::NodeEntities;
-use crate::{ViewportCamera, ViewportCameraRole};
+use crate::camera::ActiveViewportCamera;
 
 /// Builds a world-space ray from a normalized viewport position.
 ///
@@ -33,7 +33,7 @@ use crate::{ViewportCamera, ViewportCameraRole};
 /// (`bevy_render/src/camera.rs:294-300`) the `scale_factor` is *hardcoded to
 /// `1.0`* — unlike the `Window` and `Image` branches, which read a real DPI
 /// scale factor. This crate's viewport always renders to
-/// `RenderTarget::TextureView` (see `headless.rs`'s `retarget_cameras`), so
+/// `RenderTarget::TextureView` (see `project::cameras::retarget_cameras`), so
 /// for every camera this function is ever called with,
 /// `logical_viewport_size() == physical_viewport_size()` (as floats) and
 /// `pos * camera.logical_viewport_size()` is an exact pixel position, not an
@@ -69,11 +69,13 @@ fn is_gizmo_mesh(entity: Entity, gizmo_meshes: &HashSet<Entity>) -> bool {
 /// backend, which needs `bevy_winit` — disabled here. Its `SystemParam`
 /// fields are `Res<Assets<Mesh>>`, three `Local`s and two `Query`s, none of
 /// which that plugin initialises (spec M7-6).
-#[allow(clippy::type_complexity)] // an ECS query filter tuple, not a type to simplify
+// ECS system params, not a signature to simplify: a query filter tuple, and
+// one parameter per thing a pick has to consult.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn pick_on_click(
     events: Res<crate::ViewportEvents>,
-    active: Res<ViewportCamera>,
-    cameras: Query<(&Camera, &GlobalTransform, &ViewportCameraRole)>,
+    active: Res<ActiveViewportCamera>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
     gizmo_state: Option<Res<bevy::gizmos::transform_gizmo::TransformGizmoState>>,
     gizmo_meshes: Query<Entity, Or<(With<TransformGizmoRoot>, With<TransformGizmoMeshMarker>)>>,
     mut ray_cast: MeshRayCast,
@@ -108,14 +110,14 @@ pub fn pick_on_click(
             continue;
         }
 
-        let Some((camera, camera_transform)) = cameras.iter().find_map(|(camera, tf, role)| {
-            matches!(
-                (*active, role),
-                (ViewportCamera::Editor, ViewportCameraRole::Editor)
-                    | (ViewportCamera::Scene, ViewportCameraRole::Scene)
-            )
-            .then_some((camera, tf))
-        }) else {
+        // The camera the pick is made through is the one actually drawing
+        // into the pane — resolved once by `apply_active_camera` rather than
+        // re-derived here, so a click can never be cast through a camera the
+        // viewport is not showing.
+        let Some(entity) = active.0 else {
+            continue;
+        };
+        let Ok((camera, camera_transform)) = cameras.get(entity) else {
             continue;
         };
 
@@ -227,7 +229,6 @@ pub(crate) mod click_tests {
     use super::*;
     use sway_runtime::nodes::scene::MeshNode;
     use sway_runtime::project::NodeEntities;
-    use crate::{ViewportCamera, ViewportCameraRole};
     use sway_graph::graph::{Graph, Node};
     use sway_viewport_input::{ViewportButton, ViewportInput, ViewportModifiers};
 
@@ -276,11 +277,34 @@ pub(crate) mod click_tests {
                 .spawn((Mesh3d(handle), Transform::default(), Visibility::default()))
                 .id()
         };
-        app.world_mut().spawn((
-            Camera3d::default(),
-            ViewportCameraRole::Scene,
-            Transform::from_xyz(0.0, 0.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
-        ));
+        // The view is the editor's own camera, moved to look straight down -Z
+        // from `(0, 0, 10)` — the geometry these tests were written against.
+        //
+        // Deliberately *not* a document camera node: a camera the graph
+        // produced renders into a target the runtime's projector allocates
+        // for it, so previewing one here would mean adding `RuntimePlugin`,
+        // and its scene projector would strip the `Mesh3d` off the
+        // hand-spawned cube below (a `MeshNode` with nothing connected to its
+        // `mesh` port renders nothing, quite correctly). Camera *selection*
+        // is covered by `camera::active_camera_tests`; what these tests are
+        // about is the ray, and the editor camera casts the same one.
+        //
+        // One update first: `spawn_editor_camera` runs in `Startup`, so there
+        // is no camera to move until the schedule has run once.
+        app.update();
+        {
+            let mut editor = app
+                .world_mut()
+                .query::<(&mut crate::camera::EditorCamera, &mut Transform)>();
+            let (mut cam, mut transform) = editor
+                .single_mut(app.world_mut())
+                .expect("EditorViewportPlugin spawns exactly one");
+            cam.pivot = Vec3::ZERO;
+            cam.yaw = 0.0;
+            cam.pitch = 0.0;
+            cam.distance = 10.0;
+            *transform = crate::camera::orbit_transform(&cam);
+        }
         // Several updates: `Aabb` is computed by a PostUpdate system and the
         // camera's projection is filled in by Bevy's camera systems.
         for _ in 0..4 {
@@ -313,7 +337,6 @@ pub(crate) mod click_tests {
     #[test]
     fn clicking_a_mesh_selects_it() {
         let (mut app, cube, tx) = app_with_a_cube();
-        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
         let node = bind_cube(&mut app, cube);
         click(&mut app, &tx, Vec2::splat(0.5));
         assert_eq!(app.world().resource::<Selection>().get(), Some(node));
@@ -322,7 +345,6 @@ pub(crate) mod click_tests {
     #[test]
     fn clicking_empty_space_clears_the_selection() {
         let (mut app, cube, tx) = app_with_a_cube();
-        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
         let node = bind_cube(&mut app, cube);
         app.world_mut()
             .resource_mut::<Selection>()
@@ -334,7 +356,6 @@ pub(crate) mod click_tests {
     #[test]
     fn an_alt_click_navigates_instead_of_picking() {
         let (mut app, cube, tx) = app_with_a_cube();
-        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
         tx.send(ViewportInput::Down {
             button: ViewportButton::Primary,
             pos: Vec2::splat(0.5),

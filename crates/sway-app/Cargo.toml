@@ -24,3 +24,8 @@ winit.workspace = true
 kurbo.workspace = true
 masonry_core.workspace = true
 rfd = "0.15"
+# Encoding is a host concern: `sway-gpu` reads a target back as raw pixels and
+# knows nothing about file formats or filesystems (design D7). PNG only —
+# nothing here writes another format, and the default feature set pulls in a
+# dozen decoders no capture will ever use.
+image = { version = "0.25", default-features = false, features = ["png"] }

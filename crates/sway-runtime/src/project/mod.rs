@@ -51,11 +51,16 @@ use sway_graph::graph::{Graph, NodeId};
 #[cfg(test)]
 mod tests;
 
+pub mod cameras;
 pub mod entities;
 pub mod materials;
 pub mod producers;
 pub mod scene;
 
+pub use cameras::{
+    CameraTargets, CaptureIntent, CaptureIntents, EditorCameraPreview, PresentedCamera,
+    PresentedTarget, allocate_camera_targets, publish_camera_consumers, retarget_cameras,
+};
 pub use entities::NodeEntities;
 pub use materials::{project_pbr_materials, project_sprite_materials};
 pub use producers::{project_frame_sequences, project_mesh_assets, project_plane_meshes};
@@ -156,6 +161,10 @@ impl Plugin for RuntimePlugin {
 
         app.init_resource::<Graph>()
             .init_resource::<NodeEntities>()
+            .init_resource::<CameraTargets>()
+            .init_resource::<cameras::CameraDiagnostics>()
+            .init_resource::<PresentedCamera>()
+            .init_resource::<CaptureIntents>()
             .add_systems(
                 Update,
                 (
@@ -183,6 +192,16 @@ impl Plugin for RuntimePlugin {
                     project_scene_entities,
                     attach_materials,
                     project_children,
+                    // Targets after the entities exist, so a camera spawned
+                    // this pass is pointed at its own target this pass.
+                    // `RenderDevice` is absent in a device-free test app, and
+                    // a test that never allocates a target still exercises
+                    // everything above.
+                    allocate_camera_targets.run_if(
+                        resource_exists::<bevy::render::renderer::RenderDevice>
+                            .and_then(resource_exists::<bevy::render::texture::ManualTextureViews>),
+                    ),
+                    publish_camera_consumers,
                     clear_dirty,
                 )
                     .chain()

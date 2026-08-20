@@ -21,8 +21,8 @@
 //! `cursor_in_viewport_pixels`, rather than `Window::cursor_position()`) and
 //! the "exactly one camera" fallback dropped, since `mark_gizmo_camera`
 //! above keeps at most one `TransformGizmoCamera` marked — it can also mark
-//! zero, e.g. `ViewportCamera` toggled to `Scene` before that document's
-//! scene camera has spawned — so both `viewport_gizmo_hover` and
+//! zero, e.g. `ViewportCamera` switched to a camera node before that
+//! document's camera has been projected — so both `viewport_gizmo_hover` and
 //! `viewport_gizmo_drag` must (and do) handle finding no marked camera at
 //! all, not just "exactly one".
 //!
@@ -93,23 +93,13 @@ pub fn follow_selection(
 /// document's scene camera, and the gizmo renderer's own overlay camera.
 pub fn mark_gizmo_camera(
     mut commands: Commands,
-    active: Res<crate::ViewportCamera>,
-    cameras: Query<(Entity, &crate::ViewportCameraRole)>,
+    active: Res<crate::camera::ActiveViewportCamera>,
     marked: Query<Entity, With<TransformGizmoCamera>>,
 ) {
-    let wanted = cameras.iter().find_map(|(entity, role)| {
-        matches!(
-            (*active, role),
-            (
-                crate::ViewportCamera::Editor,
-                crate::ViewportCameraRole::Editor
-            ) | (
-                crate::ViewportCamera::Scene,
-                crate::ViewportCameraRole::Scene
-            )
-        )
-        .then_some(entity)
-    });
+    // Resolved once, by `apply_active_camera`, from the camera selection and
+    // the node that produced each camera entity — so the gizmo, the picker
+    // and the renderer cannot disagree about which camera is drawing.
+    let wanted = active.0;
     for entity in &marked {
         if Some(entity) != wanted {
             commands.entity(entity).remove::<TransformGizmoCamera>();
@@ -124,9 +114,9 @@ pub fn mark_gizmo_camera(
 
 /// The gizmo overlay camera's own render layer (`GIZMO_RENDER_LAYER` in
 /// `bevy_gizmos_render::transform_gizmo_render`, private to that crate).
-/// Nothing else in this codebase attaches a `RenderLayers` to a camera — see
-/// `camera::tag_scene_cameras` — so this literal is the same public
-/// stand-in used there.
+/// Nothing else in this codebase attaches a `RenderLayers` to a camera, so
+/// this literal is how the overlay camera is recognised for the one thing
+/// that still needs to name it.
 const GIZMO_RENDER_LAYER: usize = 15;
 
 /// Stops the gizmo overlay camera from blanking the scene beneath it.
@@ -677,19 +667,20 @@ mod tests {
 
     #[test]
     fn the_active_viewport_camera_carries_the_gizmo_camera_marker() {
-        use crate::{ViewportCamera, ViewportCameraRole};
+        use crate::camera::ActiveViewportCamera;
 
         let mut app = App::new();
-        app.init_resource::<ViewportCamera>()
+        app.init_resource::<ActiveViewportCamera>()
             .add_systems(Update, mark_gizmo_camera);
-        let editor = app.world_mut().spawn(ViewportCameraRole::Editor).id();
-        let scene = app.world_mut().spawn(ViewportCameraRole::Scene).id();
+        let editor = app.world_mut().spawn_empty().id();
+        let scene = app.world_mut().spawn_empty().id();
 
+        app.world_mut().resource_mut::<ActiveViewportCamera>().0 = Some(editor);
         app.update();
         assert!(app.world().get::<TransformGizmoCamera>(editor).is_some());
         assert!(app.world().get::<TransformGizmoCamera>(scene).is_none());
 
-        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
+        app.world_mut().resource_mut::<ActiveViewportCamera>().0 = Some(scene);
         app.update();
         assert!(
             app.world().get::<TransformGizmoCamera>(editor).is_none(),
@@ -712,19 +703,18 @@ mod tests {
 
     /// Builds on `pick::click_tests::app_with_a_cube`: the cube becomes the
     /// gizmo focus by way of `Selection` (exactly how the real editor drives
-    /// it — `follow_selection` does the rest), and the scene camera gets
-    /// `TransformGizmoCamera` by way of `ViewportCamera` (`mark_gizmo_camera`
-    /// does the rest). The cube sits at the origin; the camera looks at it
+    /// it — `follow_selection` does the rest), and the viewport's camera gets
+    /// `TransformGizmoCamera` by way of `ActiveViewportCamera`
+    /// (`apply_active_camera` and `mark_gizmo_camera` do the rest). The cube
+    /// sits at the origin; the camera looks at it
     /// from `(0, 0, 10)` down `-Z` with `+Y` up, so world `+X` (the X handle)
     /// reads as screen-right of centre and world `+Y` (the Y handle) as
     /// screen-up — a deterministic, camera-aligned layout to hover-test
     /// against.
     fn app_with_a_focused_gizmo() -> (App, Entity) {
-        use crate::ViewportCamera;
         use crate::pick::click_tests::app_with_a_cube;
 
         let (mut app, cube, tx) = app_with_a_cube();
-        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
         let node = bind_entity(&mut app, cube);
         app.world_mut()
             .resource_mut::<Selection>()
@@ -1037,8 +1027,8 @@ mod tests {
     fn a_cancel_still_ends_the_drag_when_no_camera_carries_the_gizmo_marker() {
         // The stuck-drag hazard: `mark_gizmo_camera` can mark zero cameras
         // (see its doc comment and `viewport_gizmo_drag`'s own "End drag"
-        // comment) — e.g. the user toggles `ViewportCamera` to `Scene`
-        // before that document's scene camera has spawned. If the end-drag
+        // comment) — e.g. the user previews a camera node before that
+        // document's camera has been projected. If the end-drag
         // check ran only after the `cameras` query, this frame would return
         // early before ever resetting `state.active`, and `pick_on_click`
         // would refuse to select anything for the rest of the session.

@@ -5618,6 +5618,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "crossbeam-channel",
+ "image",
  "kurbo",
  "masonry_core",
  "rfd",

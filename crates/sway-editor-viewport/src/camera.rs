@@ -3,8 +3,12 @@
 //! Navigation is a pure function of four numbers, which is what makes it
 //! testable with no window, no app and no render device.
 
-use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
+use bevy::render::texture::ManualTextureViews;
+use sway_graph::graph::{Graph, NodeId};
+use sway_runtime::headless::VIEWPORT_HANDLE;
+use sway_runtime::nodes::Camera as CameraNode;
+use sway_runtime::{CameraTargets, EditorCameraPreview, NodeEntities};
 use sway_viewport_input::{ViewportButton, ViewportInput};
 
 /// How far a full-viewport drag turns the camera. Deltas arrive normalized
@@ -94,7 +98,7 @@ enum NavigationMode {
 /// Spawns the one editor camera. `Startup`, editor builds only.
 pub fn spawn_editor_camera(mut commands: Commands) {
     let cam = EditorCamera::default();
-    commands.spawn((cam, orbit_transform(&cam), ViewportCameraRole::Editor));
+    commands.spawn((cam, orbit_transform(&cam)));
 }
 
 /// Turns this frame's viewport events into camera motion.
@@ -158,87 +162,227 @@ pub fn navigate_editor_camera(
     }
 }
 
-/// Which camera the viewport shows.
+/// Which camera the viewport shows: the editor's own, or one of the
+/// document's camera nodes.
+///
+/// A selection rather than the two-state toggle it used to be, because a
+/// document may hold any number of cameras and every one of them must be
+/// offerable as a preview. Editor state throughout: not a graph value, never
+/// reported as a node change, and not persisted with the document — which is
+/// why reopening a project shows the editor camera again.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ViewportCamera {
     #[default]
     Editor,
-    Scene,
+    /// The camera node being previewed. Falls back to [`Self::Editor`] when
+    /// that node leaves the document — see [`settle_viewport_camera`].
+    Node(NodeId),
 }
 
-/// Tags a camera as one of the two the toggle switches between.
-///
-/// A marker rather than a query over `EditorCamera` and the scene camera
-/// because `sway-runtime` does not depend on `sway-nodes` — `sway-app` composes
-/// the two. It is also what keeps the gizmo renderer's own overlay camera out
-/// of this system's reach.
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ViewportCameraRole {
-    Editor,
-    Scene,
-}
-
-/// Sets exactly one camera's `Camera::is_active` per frame: the one whose
-/// `ViewportCameraRole` matches the current `ViewportCamera`.
-///
-/// **Why this is needed (read `retarget_cameras` in `headless.rs` first):**
-/// `retarget_cameras` points *every* camera at the one viewport texture each
-/// `Update` and never touches `is_active`. With two cameras targeting the
-/// same texture, whichever renders last simply overwrites the other's
-/// pixels — both would appear to "work" until a second camera existed.
-/// `Camera::is_active` is the actual off switch: `bevy_render::camera`'s
-/// `extract_cameras` checks `if !camera.is_active` first thing and, when
-/// true, removes `ExtractedCamera`/`ExtractedView`/etc. from the render
-/// entity and `continue`s past the rest of extraction for that camera —
-/// no `ExtractedView` means the camera driver node never runs a render
-/// graph pass for it, so an inactive camera neither draws nor clears.
-pub fn apply_active_camera(
-    active: Res<ViewportCamera>,
-    mut cameras: Query<(&ViewportCameraRole, &mut Camera)>,
-) {
-    for (role, mut camera) in &mut cameras {
-        let should_be_active = matches!(
-            (*active, role),
-            (ViewportCamera::Editor, ViewportCameraRole::Editor)
-                | (ViewportCamera::Scene, ViewportCameraRole::Scene)
-        );
-        // Never write an equal value (architecture §7): `Camera` is extracted
-        // every frame and a needless write dirties it.
-        if camera.is_active != should_be_active {
-            camera.is_active = should_be_active;
+impl ViewportCamera {
+    /// The camera node being previewed, if any.
+    pub fn node(self) -> Option<NodeId> {
+        match self {
+            Self::Editor => None,
+            Self::Node(node) => Some(node),
         }
     }
 }
 
-/// Attaches `ViewportCameraRole::Scene` to any camera the document authored
-/// (i.e. any camera `sway-app` didn't already tag itself, such as
-/// the scene camera). Runs every `Update` because a camera can
-/// arrive with a reload.
+/// Which camera entity is drawing into the viewport this frame, resolved once
+/// so the picker and the gizmo do not each re-derive it.
 ///
-/// Excludes the gizmo renderer's own overlay camera, which must stay active
-/// unconditionally. `GizmoOverlayCamera` (the marker
-/// `bevy_gizmos_render::transform_gizmo_render` tags it with) is private to
-/// that crate, so this filters on what is public instead: reading that
-/// crate's `spawn_gizmo_meshes` (registered in `Startup`), the overlay camera
-/// is spawned with `RenderLayers::layer(15)` (`GIZMO_RENDER_LAYER`) and
-/// nothing else in this codebase ever attaches a `RenderLayers` to a camera,
-/// so "carries no `RenderLayers`" is a safe, public stand-in for "is not the
-/// gizmo overlay camera".
-#[allow(clippy::type_complexity)] // an ECS query filter tuple, not a type to simplify
-pub fn tag_scene_cameras(
-    mut commands: Commands,
-    cameras: Query<
-        Entity,
-        (
-            With<Camera>,
-            Without<ViewportCameraRole>,
-            Without<EditorCamera>,
-            Without<RenderLayers>,
-        ),
-    >,
+/// `None` while the selected camera has not been projected yet — a legitimate
+/// state for a frame or two after a reload, not an error.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActiveViewportCamera(pub Option<Entity>);
+
+/// Falls back to the editor's own camera when the previewed one leaves the
+/// document — deleted, or gone after a reload.
+///
+/// Without this the viewport would hold a `NodeId` naming nothing, and show
+/// either a blank pane or, worse, whatever a reused id now points at.
+pub fn settle_viewport_camera(graph: Option<Res<Graph>>, mut active: ResMut<ViewportCamera>) {
+    let Some(node) = active.node() else {
+        return;
+    };
+    let still_a_camera = graph.is_some_and(|graph| {
+        graph
+            .get(node)
+            .is_some_and(|node| node.value().downcast_ref::<CameraNode>().is_some())
+    });
+    if !still_a_camera {
+        *active = ViewportCamera::Editor;
+    }
+}
+
+/// Decides which cameras render, and records which one the pane is showing.
+///
+/// **A camera renders iff it has somewhere to render.** Each camera the graph
+/// declares gets a render target of its own, allocated only for a camera
+/// something consumes — an output node, a capture node, or this preview. So
+/// "has a target" already *is* the question "does anything want this camera's
+/// frames", and it is the whole rule for a graph camera. The editor's own
+/// camera is the exception: it has no authored resolution and renders into the
+/// pane-sized viewport texture, so it draws only while the pane is showing it.
+///
+/// **Why this is not "exactly one camera is active".** It was, before each
+/// camera had a target of its own: every camera pointed at the one viewport
+/// texture, so two active cameras overwrote each other and the selection had to
+/// switch the losers off. With per-camera targets there is nothing to
+/// overwrite, and switching a consumed camera off instead *starves* it — a
+/// capture node recording a camera the author was not previewing wrote frame
+/// after frame of the default clear colour. The `nodes` spec's "one camera
+/// serves several consumers" requires it to keep rendering; the `editor`
+/// spec's "exactly one camera is drawing" is about the pane, and the pane's
+/// image is chosen by the presenter compositing one target, not by `is_active`.
+///
+/// `Camera::is_active` is the real off switch: `bevy_render::camera`'s
+/// `extract_cameras` checks it first thing and, when false, strips
+/// `ExtractedCamera`/`ExtractedView` from the render entity, so the camera
+/// driver node never runs a pass — an inactive camera neither draws nor clears.
+///
+/// Cameras are identified by the node that produced them ([`NodeEntities`]).
+/// Anything that is neither the editor's own camera nor a graph camera — the
+/// gizmo renderer's overlay camera, above all — is left alone, because it must
+/// keep rendering unconditionally. That is the identity-based exclusion that
+/// replaced the old "carries no `RenderLayers`" heuristic.
+///
+/// Runs *after* projection, so it reads the same frame's allocation rather
+/// than the previous frame's.
+pub fn apply_active_camera(
+    active: Res<ViewportCamera>,
+    nodes: Option<Res<NodeEntities>>,
+    targets: Option<Res<CameraTargets>>,
+    mut resolved: ResMut<ActiveViewportCamera>,
+    editor_cameras: Query<Entity, With<EditorCamera>>,
+    mut cameras: Query<&mut Camera>,
 ) {
-    for entity in &cameras {
-        commands.entity(entity).insert(ViewportCameraRole::Scene);
+    // Which camera the *pane* shows. Only this drives picking and the gizmo.
+    let shown = match *active {
+        ViewportCamera::Editor => editor_cameras.iter().next(),
+        ViewportCamera::Node(node) => nodes.as_ref().and_then(|nodes| nodes.entity(node)),
+    };
+
+    let editor_camera = editor_cameras.iter().next();
+    for (node, entity) in nodes.iter().flat_map(|nodes| nodes.iter()) {
+        let Ok(mut camera) = cameras.get_mut(entity) else {
+            // Not every projected node owns a camera — most own a mesh or
+            // nothing at all.
+            continue;
+        };
+        let has_target = targets
+            .as_ref()
+            .is_some_and(|targets| targets.target(node).is_some());
+        // Never write an equal value (architecture §7): `Camera` is extracted
+        // every frame and a needless write dirties it.
+        if camera.is_active != has_target {
+            camera.is_active = has_target;
+        }
+    }
+
+    if let Some(entity) = editor_camera
+        && let Ok(mut camera) = cameras.get_mut(entity)
+    {
+        let should_be_active = Some(entity) == shown;
+        if camera.is_active != should_be_active {
+            camera.is_active = should_be_active;
+        }
+    }
+
+    if resolved.0 != shown {
+        resolved.0 = shown;
+    }
+}
+
+/// The largest rectangle of `aspect`'s ratio that fits inside `pane`, centred.
+///
+/// Sizes are floored rather than rounded, so the result can never exceed the
+/// pane by a pixel: a 641-pixel-wide pane fits 641x360 for a 16:9 camera
+/// (design D4), whose aspect of 1.7806 differs from 16:9 by well under a
+/// pixel's worth of framing. The alternative — snapping the pane to
+/// exact-aspect sizes — would make the preview jitter as the pane is dragged.
+///
+/// A zero-component pane or aspect yields a zero-size rect at the origin,
+/// which allocates no target and draws nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FittedRect {
+    /// Top-left corner, relative to the pane's own origin.
+    pub offset: UVec2,
+    pub size: UVec2,
+}
+
+pub fn fit_aspect(pane: UVec2, aspect: UVec2) -> FittedRect {
+    if pane.x == 0 || pane.y == 0 || aspect.x == 0 || aspect.y == 0 {
+        return FittedRect::default();
+    }
+
+    // Compare `pane.x / pane.y` against `aspect.x / aspect.y` without
+    // dividing: integers here mean the comparison is exact, and the only
+    // rounding in the whole function is the one floor below.
+    let pane_is_wider = u64::from(pane.x) * u64::from(aspect.y)
+        > u64::from(pane.y) * u64::from(aspect.x);
+
+    let size = if pane_is_wider {
+        // Height-bound: use the full height and take the width from it.
+        let width = (u64::from(pane.y) * u64::from(aspect.x) / u64::from(aspect.y)) as u32;
+        UVec2::new(width.max(1), pane.y)
+    } else {
+        // Width-bound (and the exactly-equal case, where both give the same
+        // answer): use the full width and take the height from it.
+        let height = (u64::from(pane.x) * u64::from(aspect.y) / u64::from(aspect.x)) as u32;
+        UVec2::new(pane.x, height.max(1))
+    };
+
+    FittedRect {
+        // Integer division: an odd remainder puts the extra pixel of
+        // letterboxing on the bottom/right, consistently.
+        offset: (pane - size) / 2,
+        size,
+    }
+}
+
+/// Publishes what the editor is previewing, and at how many pixels.
+///
+/// The pane's own size is read from the viewport texture's registration
+/// (`VIEWPORT_HANDLE`), which the host resizes to the pane every frame — so
+/// this needs no second channel from the host to learn it.
+///
+/// The size published is the *fitted* one: previewing a camera costs the
+/// pane's pixels, not the camera's authored resolution, and the authored
+/// resolution contributes its aspect ratio only. Where the graph also consumes
+/// the camera, the runtime allocates at the authored resolution regardless and
+/// the preview samples that target down (design D4) — so this is a floor on
+/// the target size, not a demand.
+pub fn publish_camera_preview(
+    active: Res<ViewportCamera>,
+    graph: Option<Res<Graph>>,
+    views: Option<Res<ManualTextureViews>>,
+    mut preview: ResMut<EditorCameraPreview>,
+    mut last_pane: Local<UVec2>,
+) {
+    if let Some(views) = views.as_ref()
+        && let Some(view) = views.get(&VIEWPORT_HANDLE)
+    {
+        *last_pane = view.size;
+    }
+
+    let next = match (active.node(), graph.as_ref()) {
+        (Some(node), Some(graph)) => graph
+            .get(node)
+            .and_then(|node| node.value().downcast_ref::<CameraNode>())
+            .map(|camera| EditorCameraPreview {
+                node: Some(node),
+                size: fit_aspect(*last_pane, camera.inlets.resolution).size,
+            })
+            .unwrap_or_default(),
+        _ => EditorCameraPreview::default(),
+    };
+
+    // Never write an equal value: the runtime reallocates a target whenever
+    // the size it is asked for changes.
+    if *preview != next {
+        *preview = next;
     }
 }
 
@@ -348,55 +492,124 @@ mod tests {
 }
 
 #[cfg(test)]
-mod active_camera_tests {
+mod fit_tests {
     use super::*;
 
-    /// Stands in for `SceneCamera`, which lives in `sway-nodes` — a crate
-    /// `sway-runtime` deliberately does not depend on. See `apply_active_camera`.
-    ///
-    /// Never constructed: it documents the shape being stood in for, not
-    /// behaviour under test, so it is `#[allow(dead_code)]` rather than
-    /// dropped, to keep `cargo test` output warning-free.
-    #[derive(Component)]
-    #[allow(dead_code)]
-    struct TestSceneCamera;
-
     #[test]
-    fn exactly_one_of_the_two_cameras_is_active_in_either_position() {
-        let mut app = App::new();
-        app.init_resource::<ViewportCamera>()
-            .add_systems(Update, apply_active_camera);
-        let editor = app
-            .world_mut()
-            .spawn((
-                EditorCamera::default(),
-                Camera::default(),
-                ViewportCameraRole::Editor,
-            ))
-            .id();
-        let scene = app
-            .world_mut()
-            .spawn((Camera::default(), ViewportCameraRole::Scene))
-            .id();
-
-        app.update();
-        assert!(app.world().get::<Camera>(editor).unwrap().is_active);
-        assert!(!app.world().get::<Camera>(scene).unwrap().is_active);
-
-        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Scene;
-        app.update();
-        assert!(!app.world().get::<Camera>(editor).unwrap().is_active);
-        assert!(app.world().get::<Camera>(scene).unwrap().is_active);
+    fn a_pane_wider_than_the_camera_letterboxes_top_and_bottom() {
+        // The `editor` spec's own example: 1920x1080 previewed in a 640x480
+        // pane occupies a centred 640x360 region.
+        let fit = fit_aspect(UVec2::new(640, 480), UVec2::new(1920, 1080));
+        assert_eq!(fit.size, UVec2::new(640, 360));
+        assert_eq!(fit.offset, UVec2::new(0, 60));
+        assert_eq!(fit.offset.y * 2 + fit.size.y, 480, "centred exactly");
     }
 
     #[test]
-    fn a_camera_with_no_role_is_left_alone() {
-        // The gizmo renderer spawns its own overlay camera (spec M7-8). If
-        // this system deactivated every camera it did not recognise, the
-        // gizmo would vanish from the screen.
+    fn an_odd_pane_width_floors_rather_than_overflowing_the_pane() {
+        // 641 / (16/9) is 360.5625. Flooring gives design D4's 641x360 — an
+        // aspect of 1.7806 rather than 1.7778, below the threshold at which
+        // framing is observable — and, unlike rounding, can never produce a
+        // rect a pixel wider or taller than the pane it has to fit in.
+        let fit = fit_aspect(UVec2::new(641, 480), UVec2::new(1920, 1080));
+        assert_eq!(fit.size, UVec2::new(641, 360));
+        assert!(fit.offset.x + fit.size.x <= 641);
+        assert!(fit.offset.y + fit.size.y <= 480);
+    }
+
+    #[test]
+    fn a_pane_narrower_than_the_camera_letterboxes_left_and_right() {
+        // Taller than 16:9, so the width binds and the bars are vertical.
+        let fit = fit_aspect(UVec2::new(400, 400), UVec2::new(1920, 1080));
+        assert_eq!(fit.size, UVec2::new(400, 225));
+        assert_eq!(fit.offset, UVec2::new(0, 87));
+
+        // And a pane narrower than the camera in the other sense: a portrait
+        // pane against a landscape camera is still width-bound.
+        let portrait = fit_aspect(UVec2::new(300, 900), UVec2::new(1920, 1080));
+        assert_eq!(portrait.size, UVec2::new(300, 168));
+        assert_eq!(portrait.offset, UVec2::new(0, 366));
+    }
+
+    #[test]
+    fn a_pane_taller_than_the_camera_binds_on_height() {
+        // A 1:2 camera in a 1000x400 pane: the height binds, so the rect is
+        // 200x400 with horizontal bars.
+        let fit = fit_aspect(UVec2::new(1000, 400), UVec2::new(1, 2));
+        assert_eq!(fit.size, UVec2::new(200, 400));
+        assert_eq!(fit.offset, UVec2::new(400, 0));
+    }
+
+    #[test]
+    fn a_matching_aspect_fills_the_pane_with_no_letterboxing() {
+        let fit = fit_aspect(UVec2::new(1280, 720), UVec2::new(1920, 1080));
+        assert_eq!(fit.size, UVec2::new(1280, 720));
+        assert_eq!(fit.offset, UVec2::ZERO);
+    }
+
+    #[test]
+    fn a_resolution_change_at_the_same_aspect_changes_nothing() {
+        // "Editing a camera's resolution without changing its aspect ratio
+        // MUST NOT change the preview at all."
+        assert_eq!(
+            fit_aspect(UVec2::new(640, 480), UVec2::new(1920, 1080)),
+            fit_aspect(UVec2::new(640, 480), UVec2::new(1280, 720))
+        );
+    }
+
+    #[test]
+    fn a_zero_component_fits_nothing_rather_than_dividing_by_zero() {
+        assert_eq!(fit_aspect(UVec2::ZERO, UVec2::new(16, 9)), FittedRect::default());
+        assert_eq!(
+            fit_aspect(UVec2::new(640, 480), UVec2::new(1920, 0)),
+            FittedRect::default()
+        );
+    }
+}
+
+#[cfg(test)]
+mod active_camera_tests {
+    use super::*;
+    use sway_graph::graph::Node;
+    use sway_runtime::nodes::CameraIn;
+
+    /// A world holding the editor camera, two projected graph cameras and the
+    /// gizmo renderer's overlay camera — the shape `apply_active_camera`
+    /// actually runs against.
+    fn app() -> (App, Entity, NodeId, Entity, NodeId, Entity, Entity) {
         let mut app = App::new();
         app.init_resource::<ViewportCamera>()
+            .init_resource::<ActiveViewportCamera>()
+            .init_resource::<NodeEntities>()
+            .init_resource::<Graph>()
             .add_systems(Update, apply_active_camera);
+
+        let editor = app
+            .world_mut()
+            .spawn((EditorCamera::default(), Camera::default()))
+            .id();
+
+        let spawn_scene_camera = |app: &mut App, resolution: UVec2| {
+            let node = app.world_mut().resource_mut::<Graph>().insert(Node::of(
+                CameraNode {
+                    inlets: CameraIn {
+                        resolution,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ));
+            let entity = app.world_mut().spawn(Camera::default()).id();
+            app.world_mut()
+                .resource_mut::<NodeEntities>()
+                .insert(node, entity);
+            (node, entity)
+        };
+        let (first, first_entity) = spawn_scene_camera(&mut app, UVec2::new(1920, 1080));
+        let (second, second_entity) = spawn_scene_camera(&mut app, UVec2::new(512, 512));
+
+        // The gizmo renderer's own overlay camera: no `EditorCamera`, and no
+        // graph node produced it.
         let overlay = app
             .world_mut()
             .spawn(Camera {
@@ -405,50 +618,400 @@ mod active_camera_tests {
             })
             .id();
 
+        (
+            app,
+            editor,
+            first,
+            first_entity,
+            second,
+            second_entity,
+            overlay,
+        )
+    }
+
+    fn active(app: &App, entity: Entity) -> bool {
+        app.world().get::<Camera>(entity).unwrap().is_active
+    }
+
+    #[test]
+    fn the_pane_shows_exactly_one_camera_and_switching_moves_it() {
+        // What the pane shows is one camera at a time, and every camera in the
+        // document is offerable. Which cameras *render* is a separate
+        // question — a camera the graph consumes keeps rendering into its own
+        // target whatever the pane is showing (`consumed_camera_tests`); the
+        // pane's image is one target composited by the presenter.
+        let (mut app, editor, first, first_entity, second, second_entity, _) = app();
+
         app.update();
+        assert_eq!(
+            app.world().resource::<ActiveViewportCamera>().0,
+            Some(editor),
+            "the editor's own camera by default"
+        );
+        assert!(active(&app, editor), "and it draws into the pane");
+
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Node(first);
+        app.update();
+        assert_eq!(
+            app.world().resource::<ActiveViewportCamera>().0,
+            Some(first_entity)
+        );
         assert!(
-            app.world().get::<Camera>(overlay).unwrap().is_active,
-            "an unrelated camera must keep rendering",
+            !active(&app, editor),
+            "the editor camera stops drawing into a pane showing something else"
+        );
+
+        // Every camera in the document is previewable, not just one.
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Node(second);
+        app.update();
+        assert_eq!(
+            app.world().resource::<ActiveViewportCamera>().0,
+            Some(second_entity)
+        );
+    }
+
+    #[test]
+    fn the_gizmo_overlay_camera_is_never_touched() {
+        // Identity, not a `RenderLayers` heuristic: the overlay camera is
+        // neither the editor camera nor a camera any graph node produced, so
+        // it is not this system's business. If it were deactivated the gizmo
+        // would vanish from the screen.
+        let (mut app, _editor, first, _, _, _, overlay) = app();
+        app.update();
+        assert!(active(&app, overlay));
+
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Node(first);
+        app.update();
+        assert!(active(&app, overlay), "an unrelated camera keeps rendering");
+    }
+
+    #[test]
+    fn a_deleted_camera_falls_back_to_the_editors_own() {
+        let (mut app, editor, first, _, _, second_entity, _) = app();
+        app.add_systems(Update, settle_viewport_camera.before(apply_active_camera));
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Node(first);
+        app.update();
+
+        app.world_mut().resource_mut::<Graph>().remove(first);
+        app.update();
+
+        assert_eq!(
+            *app.world().resource::<ViewportCamera>(),
+            ViewportCamera::Editor
+        );
+        assert!(active(&app, editor), "not a blank pane and not a stale image");
+        assert!(!active(&app, second_entity));
+    }
+
+    #[test]
+    fn previewing_a_camera_reports_no_node_as_changed() {
+        // Which camera is showing is editor state: switching it must not
+        // dirty a node or respawn anything projected.
+        let (mut app, _editor, first, _, _, _, _) = app();
+        app.update();
+        app.world_mut().resource_mut::<Graph>().drain_dirty();
+
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Node(first);
+        app.update();
+
+        assert!(
+            app.world().resource::<Graph>().dirty().next().is_none(),
+            "no node was reported as changed"
         );
     }
 }
 
+/// What the graph consumes has to keep rendering, whatever the editor is
+/// looking at.
+///
+/// A real device and the real runtime projector, because the question is
+/// exactly "does a camera the runtime allocated a target for stay active" —
+/// and only the runtime allocates one.
 #[cfg(test)]
-mod tag_scene_cameras_tests {
+mod consumed_camera_tests {
     use super::*;
-    use bevy::camera::visibility::RenderLayers;
+    use bevy::asset::AssetPlugin;
+    use bevy::render::renderer::RenderDevice;
+    use sway_graph::graph::{Node, Port};
+    use sway_runtime::nodes::{Capture, CaptureIn, Output, protocol};
+    use sway_runtime::nodes::CameraIn;
+    use sway_runtime::{CameraTargets, ProjectionSet, RuntimePlugin};
+
+    fn app() -> App {
+        let gpu = sway_gpu::GpuContext::new(None);
+        let mut app = App::new();
+        app.add_plugins((bevy::app::TaskPoolPlugin::default(), AssetPlugin::default()));
+        app.init_asset::<Mesh>();
+        app.init_asset::<Image>();
+        app.init_asset::<StandardMaterial>();
+        app.init_asset::<sway_runtime::SpriteMaterialAsset>();
+        app.add_plugins(RuntimePlugin);
+        app.insert_resource(RenderDevice::from(gpu.device.clone()))
+            .init_resource::<bevy::render::texture::ManualTextureViews>()
+            .init_resource::<ViewportCamera>()
+            .init_resource::<ActiveViewportCamera>()
+            // After projection, so `is_active` is decided from the same
+            // frame's allocation rather than the previous one's.
+            .add_systems(Update, apply_active_camera.after(ProjectionSet));
+        app.world_mut()
+            .spawn((EditorCamera::default(), Camera::default()));
+        app
+    }
+
+    fn add_camera(app: &mut App) -> NodeId {
+        app.world_mut()
+            .resource_mut::<Graph>()
+            .insert(Node::of(CameraNode {
+                inlets: CameraIn {
+                    resolution: UVec2::new(64, 64),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }))
+    }
+
+    fn connect(app: &mut App, from: NodeId, to: NodeId) {
+        app.world_mut()
+            .resource_mut::<Graph>()
+            .connect(
+                Port::new(from, protocol::CAMERA),
+                Port::new(to, protocol::CAMERA),
+                0,
+            )
+            .expect("a camera connects to a consumer");
+    }
+
+    fn is_active(app: &App, node: NodeId) -> bool {
+        let entity = app
+            .world()
+            .resource::<sway_runtime::NodeEntities>()
+            .entity(node)
+            .expect("the camera was projected");
+        app.world().get::<Camera>(entity).unwrap().is_active
+    }
 
     #[test]
-    fn an_untagged_camera_is_tagged_as_scene() {
-        let mut app = App::new();
-        app.add_systems(Update, tag_scene_cameras);
-        let camera = app.world_mut().spawn(Camera::default()).id();
+    fn a_captured_camera_keeps_rendering_while_the_editor_looks_elsewhere() {
+        // The bug this pins: a capture node recording a camera the editor is
+        // not previewing used to write frame after frame of Bevy's default
+        // clear colour, because the camera it reads was switched off. Each
+        // camera has a target of its own now, so there is nothing to overwrite
+        // and nothing to switch off.
+        let mut app = app();
+        let camera = add_camera(&mut app);
+        let capture = app
+            .world_mut()
+            .resource_mut::<Graph>()
+            .insert(Node::of(Capture {
+                inlets: CaptureIn {
+                    path: "grabs/frame_####.png".into(),
+                    recording: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }));
+        connect(&mut app, camera, capture);
 
+        // The editor is looking through its own camera, as it does by default.
+        app.update();
         app.update();
 
-        assert_eq!(
-            app.world().get::<ViewportCameraRole>(camera),
-            Some(&ViewportCameraRole::Scene)
+        assert!(
+            app.world().resource::<CameraTargets>().target(camera).is_some(),
+            "test setup: the capture node should have made the runtime allocate a target"
+        );
+        assert!(
+            is_active(&app, camera),
+            "a camera something consumes must keep rendering, or its consumers \
+             read an unrendered target"
         );
     }
 
     #[test]
-    fn a_camera_carrying_the_gizmo_render_layer_is_not_tagged() {
-        // The gizmo renderer's own overlay camera (spec M7-8, spawned by
-        // `bevy_gizmos_render::transform_gizmo_render::spawn_gizmo_meshes` in
-        // `Startup`) carries `RenderLayers::layer(15)`
-        // (`GIZMO_RENDER_LAYER`). See `tag_scene_cameras`'s doc comment for
-        // why that is a safe, public discriminator for "not a scene camera".
-        let mut app = App::new();
-        app.add_systems(Update, tag_scene_cameras);
-        let overlay = app
+    fn the_presented_camera_keeps_rendering_too() {
+        // Same rule for the output node: the window shows its camera whether
+        // or not the editor happens to be previewing that one.
+        let mut app = app();
+        let camera = add_camera(&mut app);
+        let output = app
             .world_mut()
-            .spawn((Camera::default(), RenderLayers::layer(15)))
-            .id();
+            .resource_mut::<Graph>()
+            .insert(Node::of(Output::default()));
+        connect(&mut app, camera, output);
 
         app.update();
+        app.update();
+        assert!(is_active(&app, camera));
+    }
 
-        assert_eq!(app.world().get::<ViewportCameraRole>(overlay), None);
+    #[test]
+    fn a_camera_nothing_consumes_and_nobody_previews_does_not_render() {
+        // It has no target, so there is nowhere for it to draw and no reason
+        // to pay for it.
+        let mut app = app();
+        let camera = add_camera(&mut app);
+        app.update();
+        app.update();
+
+        assert!(app.world().resource::<CameraTargets>().target(camera).is_none());
+        assert!(!is_active(&app, camera));
+    }
+
+    #[test]
+    fn the_editors_own_camera_stops_rendering_while_a_scene_camera_is_previewed() {
+        // The pane shows one image; the editor camera renders into the
+        // pane-sized viewport texture, so leaving it on while the pane shows
+        // something else is pure waste.
+        let mut app = app();
+        let camera = add_camera(&mut app);
+        let output = app
+            .world_mut()
+            .resource_mut::<Graph>()
+            .insert(Node::of(Output::default()));
+        connect(&mut app, camera, output);
+        app.update();
+
+        let editor_entity = app
+            .world_mut()
+            .query_filtered::<Entity, With<EditorCamera>>()
+            .single(app.world())
+            .expect("one editor camera");
+        assert!(app.world().get::<Camera>(editor_entity).unwrap().is_active);
+
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Node(camera);
+        app.update();
+        assert!(!app.world().get::<Camera>(editor_entity).unwrap().is_active);
+        assert!(is_active(&app, camera), "and the previewed one still renders");
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use bevy::render::render_resource::TextureFormat;
+    use bevy::render::texture::ManualTextureView;
+    use sway_graph::graph::Node;
+    use sway_runtime::nodes::CameraIn;
+
+    fn app(pane: UVec2) -> App {
+        let gpu = sway_gpu::GpuContext::new(None);
+        let texture = sway_gpu::ViewportTexture::new(&gpu.device, pane.x, pane.y);
+
+        let mut app = App::new();
+        app.init_resource::<ViewportCamera>()
+            .init_resource::<Graph>()
+            .init_resource::<EditorCameraPreview>()
+            .init_resource::<ManualTextureViews>()
+            .add_systems(Update, publish_camera_preview);
+        app.world_mut().resource_mut::<ManualTextureViews>().insert(
+            VIEWPORT_HANDLE,
+            ManualTextureView {
+                texture_view: texture.bevy_view.clone().into(),
+                size: pane,
+                view_format: TextureFormat::Rgba8UnormSrgb,
+            },
+        );
+        // The texture has to outlive the registration for the world to hold a
+        // live view; leaking it is what a real host's ownership does anyway.
+        std::mem::forget(texture);
+        app
+    }
+
+    fn add_camera(app: &mut App, resolution: UVec2) -> NodeId {
+        app.world_mut()
+            .resource_mut::<Graph>()
+            .insert(Node::of(CameraNode {
+                inlets: CameraIn {
+                    resolution,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }))
+    }
+
+    #[test]
+    fn a_preview_asks_for_the_fitted_pane_size_not_the_authored_resolution() {
+        // "The preview costs the pane's pixels, not the camera's."
+        let mut app = app(UVec2::new(640, 480));
+        let camera = add_camera(&mut app, UVec2::new(3840, 2160));
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Node(camera);
+        app.update();
+
+        assert_eq!(
+            *app.world().resource::<EditorCameraPreview>(),
+            EditorCameraPreview {
+                node: Some(camera),
+                size: UVec2::new(640, 360),
+            }
+        );
+    }
+
+    #[test]
+    fn the_editors_own_camera_claims_nothing() {
+        // It has no authored resolution and fills the pane, so there is no
+        // target for the runtime to allocate on its behalf.
+        let mut app = app(UVec2::new(640, 480));
+        add_camera(&mut app, UVec2::new(1920, 1080));
+        app.update();
+        assert_eq!(
+            *app.world().resource::<EditorCameraPreview>(),
+            EditorCameraPreview::default()
+        );
+    }
+
+    #[test]
+    fn editing_the_resolution_at_the_same_aspect_asks_for_the_same_size() {
+        let mut app = app(UVec2::new(640, 480));
+        let camera = add_camera(&mut app, UVec2::new(1920, 1080));
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Node(camera);
+        app.update();
+        let before = *app.world().resource::<EditorCameraPreview>();
+
+        app.world_mut()
+            .resource_mut::<Graph>()
+            .get_mut(camera)
+            .unwrap()
+            .value_mut()
+            .downcast_mut::<CameraNode>()
+            .unwrap()
+            .inlets
+            .resolution = UVec2::new(1280, 720);
+        app.update();
+
+        assert_eq!(*app.world().resource::<EditorCameraPreview>(), before);
+    }
+
+    #[test]
+    fn a_larger_pane_asks_for_more_pixels_at_the_same_aspect() {
+        // "Resizing the pane MUST change how many pixels the preview is drawn
+        // with, and MUST NOT change what is framed."
+        let mut app = app(UVec2::new(640, 480));
+        let camera = add_camera(&mut app, UVec2::new(1920, 1080));
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Node(camera);
+        app.update();
+        assert_eq!(
+            app.world().resource::<EditorCameraPreview>().size,
+            UVec2::new(640, 360)
+        );
+
+        let gpu = sway_gpu::GpuContext::new(None);
+        let bigger = sway_gpu::ViewportTexture::new(&gpu.device, 1280, 960);
+        app.world_mut().resource_mut::<ManualTextureViews>().insert(
+            VIEWPORT_HANDLE,
+            ManualTextureView {
+                texture_view: bigger.bevy_view.clone().into(),
+                size: UVec2::new(1280, 960),
+                view_format: TextureFormat::Rgba8UnormSrgb,
+            },
+        );
+        std::mem::forget(bigger);
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<EditorCameraPreview>().size,
+            UVec2::new(1280, 720),
+            "twice the pixels, the same 16:9 framing"
+        );
     }
 }
 

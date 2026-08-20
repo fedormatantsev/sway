@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bevy::asset::AssetPlugin;
-use bevy::camera::{ManualTextureViewHandle, RenderTarget};
+use bevy::camera::ManualTextureViewHandle;
 use bevy::prelude::*;
 use bevy::render::RenderPlugin;
 use bevy::render::render_resource::{TextureFormat, TextureView as BevyTextureView};
@@ -20,7 +20,14 @@ use bevy::render::settings::RenderCreation;
 use bevy::render::texture::{ManualTextureView, ManualTextureViews};
 use bevy::winit::WinitPlugin;
 
-/// The one manual texture view in the process: Bevy's render target.
+/// The editor camera's render target: the pane-sized viewport texture.
+///
+/// Handle zero, and no longer the only one — every camera the graph declares
+/// gets a handle of its own from
+/// [`CameraTargets`](crate::project::cameras::CameraTargets), sized by that
+/// camera's authored resolution. This one belongs to the cameras the graph did
+/// *not* produce (the editor's own camera and the gizmo overlay camera), whose
+/// size comes from the pane rather than from the document.
 pub const VIEWPORT_HANDLE: ManualTextureViewHandle = ManualTextureViewHandle(0);
 
 /// Builds the headless Bevy `App`: `RenderPlugin` in manual mode against the
@@ -32,8 +39,9 @@ pub const VIEWPORT_HANDLE: ManualTextureViewHandle = ManualTextureViewHandle(0);
 /// `project_dir` is the asset root: every path a graph names resolves relative
 /// to it (`architecture`: A project is a directory).
 ///
-/// Also wires up [`retarget_cameras`] (see its docs) and points
-/// `VIEWPORT_HANDLE` at `viewport` via [`set_viewport_view`].
+/// Also wires up [`retarget_cameras`](crate::project::cameras::retarget_cameras)
+/// (see its docs) and points `VIEWPORT_HANDLE` at `viewport` via
+/// [`set_viewport_view`].
 pub fn build_app(
     gpu: &sway_gpu::GpuContext,
     viewport: &sway_gpu::ViewportTexture,
@@ -70,8 +78,13 @@ pub fn build_app(
             .disable::<WinitPlugin>(),
     );
 
-    app.add_systems(PostStartup, retarget_cameras)
-        .add_systems(Update, retarget_cameras);
+    app.add_systems(PostStartup, crate::project::cameras::retarget_cameras)
+        .add_systems(
+            Update,
+            // After projection, so a camera allocated a target this frame is
+            // pointed at it this frame rather than the next one.
+            crate::project::cameras::retarget_cameras.after(crate::ProjectionSet),
+        );
 
     set_viewport_view(&mut app, viewport, size);
     app
@@ -99,29 +112,6 @@ pub fn set_viewport_view(app: &mut App, viewport: &sway_gpu::ViewportTexture, si
             view_format: TextureFormat::Rgba8UnormSrgb,
         },
     );
-}
-
-/// Points every camera at the viewport texture.
-///
-/// **Real API note (deviation from the task brief):** in Bevy 0.19,
-/// `RenderTarget` is not a field of `Camera` -- `Camera` is `#[require(...
-/// RenderTarget)]`, so the target lives on its own `RenderTarget` component,
-/// defaulting to `RenderTarget::Window(WindowRef::Primary)`. `RenderTarget`
-/// also does not derive `PartialEq` (unlike `ManualTextureViewHandle`, which
-/// does), so idempotence is checked by matching the variant and its handle,
-/// not by comparing whole `RenderTarget`s.
-///
-/// Runs in `PostStartup` so it sees cameras spawned by any `Startup` system,
-/// and re-runs in `Update` for cameras added later. Any camera that targets
-/// the (now nonexistent) primary window is retargeted to the viewport texture
-/// here, keeping camera-spawning systems free of headless-specific plumbing.
-fn retarget_cameras(mut targets: Query<&mut RenderTarget, With<Camera>>) {
-    for mut target in &mut targets {
-        let already_set = matches!(*target, RenderTarget::TextureView(h) if h == VIEWPORT_HANDLE);
-        if !already_set {
-            *target = RenderTarget::TextureView(VIEWPORT_HANDLE);
-        }
-    }
 }
 
 #[cfg(test)]

@@ -109,6 +109,10 @@ pub fn is_text_field(info: &TypeInfo) -> bool {
         || id == TypeId::of::<String>()
         || id == TypeId::of::<bevy_math::Vec2>()
         || id == TypeId::of::<bevy_math::Vec3>()
+        // A camera's resolution is two whole pixels counts, and it is
+        // authored — a field the graph declares as editable but the inspector
+        // shows read-only is a field nobody can actually set.
+        || id == TypeId::of::<bevy_math::UVec2>()
 }
 
 /// Whether the editor has *any* control for this field. A field that has none
@@ -179,6 +183,17 @@ pub fn coerce_field(info: &TypeInfo, text: &str) -> Option<Box<dyn PartialReflec
         let [x, y, z] = parse_components::<3>(text)?;
         return Some(Box::new(bevy_math::Vec3::new(x, y, z)));
     }
+    if id == TypeId::of::<bevy_math::UVec2>() {
+        // Whole pixels: a fractional or negative component is a typo, and a
+        // typo becomes no write rather than a silently rounded resolution.
+        let [x, y] = parse_components::<2>(text)?;
+        if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 || x.fract() != 0.0
+            || y.fract() != 0.0
+        {
+            return None;
+        }
+        return Some(Box::new(bevy_math::UVec2::new(x as u32, y as u32)));
+    }
     if enum_variants(info).is_some() {
         // A unit variant, by name. `try_apply` on an enum switches variant.
         return Some(Box::new(DynamicEnum::new(
@@ -240,6 +255,11 @@ pub fn format_value(value: &dyn PartialReflect) -> String {
     }
     if let Some(v) = value.try_downcast_ref::<bevy_math::Vec3>() {
         return format!("{:.2}, {:.2}, {:.2}", v.x, v.y, v.z);
+    }
+    if let Some(v) = value.try_downcast_ref::<bevy_math::UVec2>() {
+        // No decimals: a resolution of "1920.00, 1080.00" invites someone to
+        // type a fraction back in.
+        return format!("{}, {}", v.x, v.y);
     }
     for parse in [
         integer_text::<i8>,
@@ -402,6 +422,38 @@ mod tests {
         // one is what switches the variant.
         let shape = coerce_field(info("shape"), "Saw").expect("parses");
         assert_eq!(shape.reflect_type_path(), "bevy_reflect::DynamicEnum");
+    }
+
+    #[test]
+    fn a_resolution_is_editable_and_round_trips_as_whole_pixels() {
+        // A camera's `resolution` is authored, so the inspector has to offer a
+        // control for it — a field shown read-only is a field nobody can set,
+        // and the whole point of the inlet is that the author picks it.
+        use bevy_math::UVec2;
+        use bevy_reflect::Typed;
+
+        let info = UVec2::type_info();
+        assert!(has_control(info), "a resolution must be editable");
+
+        let parsed = coerce_field(info, " 1280, 720 ").expect("parses");
+        assert_eq!(parsed.try_downcast_ref::<UVec2>(), Some(&UVec2::new(1280, 720)));
+
+        // Round trip: what the inspector shows is what it accepts back.
+        assert_eq!(format_value(&UVec2::new(1920, 1080)), "1920, 1080");
+        let round_tripped =
+            coerce_field(info, &format_value(&UVec2::new(1920, 1080))).expect("re-parses");
+        assert_eq!(
+            round_tripped.try_downcast_ref::<UVec2>(),
+            Some(&UVec2::new(1920, 1080))
+        );
+
+        // A typo is no write rather than a silently mangled resolution: a
+        // rounded or wrapped size would change what the camera frames without
+        // saying so.
+        assert!(coerce_field(info, "1280").is_none(), "both components or none");
+        assert!(coerce_field(info, "1280.5, 720").is_none(), "not whole pixels");
+        assert!(coerce_field(info, "-16, 9").is_none(), "not a negative count");
+        assert!(coerce_field(info, "wide, tall").is_none());
     }
 
     #[test]
