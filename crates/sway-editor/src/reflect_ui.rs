@@ -4,7 +4,7 @@
 //! or field kinds. Every question the widget layer used to ask a hand-written
 //! view type -- what sockets does this node have, what control does this field
 //! want, how does a typed edit parse back -- is answered here directly from
-//! `bevy_reflect`'s own `TypeInfo`, with the graph's `NodeParts` type data as
+//! `bevy_reflect`'s own `TypeInfo`, with the graph's `part_type` lookup as
 //! the entry point.
 //!
 //! Nothing in this module allocates a description that outlives the call: the
@@ -15,7 +15,7 @@ use std::any::TypeId;
 
 use bevy_reflect::enums::{DynamicEnum, DynamicVariant};
 use bevy_reflect::{PartialReflect, ReflectRef, TypeInfo, TypeRegistry};
-use sway_graph::graph::{NodeParts, Part, node_kind_type_id};
+use sway_graph::graph::{Part, node_kind_type_id, part_type};
 
 /// One field a node kind declares in one of its parts.
 ///
@@ -38,10 +38,7 @@ pub fn part_fields(registry: &TypeRegistry, kind: &str, part: Part) -> Vec<PartF
     let Some(type_id) = node_kind_type_id(registry, kind) else {
         return Vec::new();
     };
-    let Some(parts) = registry.get_type_data::<NodeParts>(type_id) else {
-        return Vec::new();
-    };
-    let Some(info) = parts.part(part).info else {
+    let Some(info) = part_type(registry, type_id, part) else {
         return Vec::new();
     };
     fields_of(info)

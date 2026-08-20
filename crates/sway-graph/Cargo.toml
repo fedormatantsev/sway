@@ -3,15 +3,26 @@ name = "sway-graph"
 version.workspace = true
 edition.workspace = true
 
-# Spec §2: bevy_app/ecs/math/reflect/time/transform only. NOT the `bevy`
+# The generic graph engine: bevy_app/ecs/math/reflect only. NOT the `bevy`
 # facade, NOT bevy_render, NOT the document format (M6-2 moved it to
-# sway-document, taking bevy_asset/ron/serde with it). This manifest is the
-# only place that constraint is enforced.
+# sway-document, taking bevy_asset/ron/serde with it), NOT a channel, NOT a UI
+# toolkit. This manifest is the only place that constraint is enforced.
 [dependencies]
 bevy_app.workspace = true
 bevy_ecs.workspace = true
-bevy_math.workspace = true
+# `bevy_reflect` explicitly: dropping `bevy_transform` dropped the feature
+# unification that used to turn the glam reflect impls on, and a node's fields
+# are reflected values.
+bevy_math = { workspace = true, features = ["bevy_reflect"] }
 bevy_reflect.workspace = true
+# Read only by the `test-support` fixtures, so optional and off by default.
+bevy_time = { workspace = true, optional = true }
+
+[dev-dependencies]
 bevy_time.workspace = true
-bevy_transform.workspace = true
-sway-viewport-input.workspace = true
+
+[features]
+# The tick harness (`trace_world`, `tick_once`, `read_field`, `set_field`) and
+# the fixture node kinds, for crates that declare node kinds of their own.
+# Non-default: nothing in a show build needs it.
+test-support = ["dep:bevy_time"]

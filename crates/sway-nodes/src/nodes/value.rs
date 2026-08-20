@@ -47,13 +47,13 @@ mod tests {
     use sway_graph::graph::{Graph, Node, Part, Port};
 
     use super::*;
-    use crate::nodes::harness;
+    use sway_graph::graph::testing;
 
     #[test]
     fn a_vec3_node_publishes_its_three_fields() {
         let mut registry = TypeRegistry::new();
         register_node_kind::<Vec3>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let node = graph.insert(Node::of(Vec3 {
                 inlets: Vec3In {
@@ -65,11 +65,11 @@ mod tests {
             },
         ));
 
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
 
-        assert_eq!(harness::read_f32(&graph, node, Part::Outlets, "out.x"), 1.0);
-        assert_eq!(harness::read_f32(&graph, node, Part::Outlets, "out.y"), 2.0);
-        assert_eq!(harness::read_f32(&graph, node, Part::Outlets, "out.z"), 3.0);
+        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out.x"), 1.0);
+        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out.y"), 2.0);
+        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out.z"), 3.0);
     }
 
     #[test]
@@ -77,7 +77,7 @@ mod tests {
         let mut registry = TypeRegistry::new();
         register_node_kind::<Vec3>(&mut registry);
         register_node_kind::<crate::nodes::math::Math>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let source = graph.insert(Node::of(crate::nodes::math::Math {
                 inlets: crate::nodes::math::MathIn {
@@ -93,19 +93,19 @@ mod tests {
             .connect(Port::new(source, "out"), Port::new(vector, "y"), 0)
             .expect("legal");
 
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
 
         assert_eq!(
-            harness::read_f32(&graph, vector, Part::Outlets, "out.x"),
+            testing::read_field::<f32>(&graph, vector, Part::Outlets, "out.x"),
             0.0
         );
         assert_eq!(
-            harness::read_f32(&graph, vector, Part::Outlets, "out.y"),
+            testing::read_field::<f32>(&graph, vector, Part::Outlets, "out.y"),
             0.75,
             "the inlet must land before the node evaluates, in ONE tick"
         );
         assert_eq!(
-            harness::read_f32(&graph, vector, Part::Outlets, "out.z"),
+            testing::read_field::<f32>(&graph, vector, Part::Outlets, "out.z"),
             0.0
         );
     }
@@ -123,13 +123,13 @@ mod tests {
     fn an_equal_write_does_not_dirty_the_node() {
         let mut registry = TypeRegistry::new();
         register_node_kind::<Vec3>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let node = graph.insert(Node::of(Vec3::default()));
 
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
         graph.drain_dirty();
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
 
         assert!(
             !graph.is_dirty(node),

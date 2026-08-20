@@ -80,7 +80,7 @@ pub struct ProjectionSet;
 /// rebuilt yet) sorts last, by ascending id, so the pass is still total and
 /// still deterministic.
 pub fn dirty_in_graph_order(graph: &Graph) -> Vec<NodeId> {
-    let order = &graph.order().order;
+    let order = graph.eval_order();
     let mut dirty: Vec<NodeId> = graph.dirty().collect();
     dirty.sort_by_key(|node| {
         (
@@ -97,7 +97,7 @@ pub fn dirty_in_graph_order(graph: &Graph) -> Vec<NodeId> {
 /// Every node, in evaluation order, whether dirty or not.
 pub fn nodes_in_graph_order(graph: &Graph) -> Vec<NodeId> {
     let mut nodes = graph.node_ids();
-    let order = &graph.order().order;
+    let order = graph.eval_order();
     nodes.sort_by_key(|node| {
         (
             order

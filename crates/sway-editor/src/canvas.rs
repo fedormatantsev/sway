@@ -289,7 +289,8 @@ struct EdgeSlot {
 /// One socket of a node box laid out from the graph model.
 ///
 /// `info` is the field's *declared* reflected type, taken straight off the
-/// node kind's `NodeParts` -- the same `TypeInfo` `Graph::connect` compares, so
+/// node kind's declared part type -- the same `TypeInfo` `Graph::connect`
+/// compares, so
 /// the canvas's own legality answer cannot drift from the graph's.
 struct GraphSocket {
     path: String,
@@ -1043,7 +1044,7 @@ impl GraphCanvas {
     /// what the widgets keep afterwards is what they paint.
     ///
     /// Sockets come from each node kind's *declared* inlets and outlets
-    /// (`NodeParts` type data), so an inlet with nothing connected to it still
+    /// part types, so an inlet with nothing connected to it still
     /// has a socket, and a node's sockets do not change when an edge does.
     pub fn populate_from_graph(
         this: &mut WidgetMut<'_, Self>,

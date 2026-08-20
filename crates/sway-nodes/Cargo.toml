@@ -17,5 +17,7 @@ bevy_reflect.workspace = true
 bevy_time.workspace = true
 
 [dev-dependencies]
+# The tick harness, rather than a copy of it in this crate.
+sway-graph = { workspace = true, features = ["test-support"] }
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }

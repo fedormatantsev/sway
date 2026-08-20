@@ -1,14 +1,74 @@
-//! Fixture node kinds for the graph model's own tests.
+//! Fixture node kinds and the tick harness, for this crate's tests and for
+//! any crate that declares node kinds of its own.
 //!
-//! Every one of them follows design D3: a struct with exactly `inlets`,
-//! `state` and `outlets`, using `()` where a part is empty.
+//! Every fixture follows design D3: a struct with exactly `inlets`, `state`
+//! and `outlets`, using `()` where a part is empty.
+//!
+//! Reachable outside this crate through the non-default `test-support`
+//! feature. It exists because the harness below — a bare `World` with a fixed
+//! timestep, and one tick run against it — was otherwise copy-pasted into
+//! every crate that declares node kinds, each copy free to drift from the real
+//! tick it is standing in for.
 
+use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_ecs::world::World;
 use bevy_math::Vec2;
-use bevy_reflect::{Reflect, TypeRegistry};
+use bevy_reflect::{PartialReflect, Reflect, TypeRegistry, TypeRegistryArc};
 use bevy_time::{Fixed, Time};
 
+use crate::graph::id::NodeId;
+use crate::graph::model::Graph;
+use crate::graph::node::Part;
+use crate::graph::path;
 use crate::graph::registry::{NodeKind, ReflectNodeKind, register_node_kind};
+
+/// The tick rate every golden trace is taken at.
+pub const TICK_HZ: f64 = 120.0;
+
+/// A bare `World` with `registry` installed and a fixed timestep at
+/// [`TICK_HZ`], advanced by one step so the first tick already reports the
+/// real per-tick `dt`.
+///
+/// Deliberately holds **no `Graph`** — that is exactly what a node's
+/// `evaluate` sees, because the real tick runs inside `resource_scope`.
+pub fn trace_world(registry: TypeRegistry) -> World {
+    let mut world = World::new();
+    world.insert_resource(AppTypeRegistry(TypeRegistryArc::default()));
+    {
+        let installed = world.resource::<AppTypeRegistry>().clone();
+        *installed.write() = registry;
+    }
+    let mut time = Time::<Fixed>::from_hz(TICK_HZ);
+    let step = time.timestep();
+    time.advance_by(step);
+    world.insert_resource(time);
+    world
+}
+
+/// Runs one tick with the graph genuinely outside the world, as
+/// `World::resource_scope` guarantees in the real tick.
+pub fn tick_once(graph: &mut Graph, world: &World) {
+    let registry = world.resource::<AppTypeRegistry>().clone();
+    graph.rebuild_order_if_dirty();
+    crate::graph::tick::run(graph, world, &registry.read());
+}
+
+/// Reads one field of one part, downcast to `T`. Panics if it is not there.
+pub fn read_field<T: Clone + 'static>(graph: &Graph, node: NodeId, part: Part, field: &str) -> T {
+    path::resolve(graph.get(node).expect("a live node"), part, field)
+        .and_then(|value| value.try_downcast_ref::<T>().cloned())
+        .expect("a field of the requested type")
+}
+
+/// Writes one inlet field directly, bypassing the change reporting
+/// `Graph::set_field` does — a test setting up a starting state, not an edit.
+pub fn set_field(graph: &mut Graph, node: NodeId, field: &str, value: &dyn PartialReflect) {
+    let target = graph.get_mut(node).expect("a live node");
+    path::resolve_mut(target, Part::Inlets, field)
+        .expect("a field at that path")
+        .try_apply(value)
+        .expect("a value of that field's type");
+}
 
 /// A zero-sized outlet type. Standing in for the protocol markers
 /// (`SceneMaterial`, `MeshSource`, …) that `sway-runtime` will declare.

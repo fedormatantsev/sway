@@ -427,8 +427,23 @@ impl Graph {
         self.topology_dirty = true;
     }
 
+    /// Every node, in the order the tick evaluates them.
+    ///
+    /// The plan itself — the step list the tick walks — is the engine's own
+    /// business; what a consumer needs is the node order, which is what the
+    /// projectors sort their passes by.
+    pub fn eval_order(&self) -> &[NodeId] {
+        &self.order.order
+    }
+
+    /// Nodes the last rebuild found in a cycle. They still evaluate, appended
+    /// after the acyclic part, reading the previous tick's values.
+    pub fn cycles(&self) -> &[NodeId] {
+        &self.order.cycles
+    }
+
     /// The current evaluation plan.
-    pub fn order(&self) -> &EvalOrder {
+    pub(crate) fn order(&self) -> &EvalOrder {
         &self.order
     }
 

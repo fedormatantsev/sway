@@ -103,14 +103,14 @@ mod tests {
     use sway_graph::graph::{Graph, Node, Part, Port};
 
     use super::*;
-    use crate::nodes::harness;
+    use sway_graph::graph::testing;
 
     #[test]
     fn math_computes_from_its_authored_and_driven_inlets() {
         // "LFO x 2" is one Math with b left unwired.
         let mut registry = TypeRegistry::new();
         register_node_kind::<Math>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let source = graph.insert(Node::of(Math {
                 inlets: MathIn {
@@ -121,7 +121,7 @@ mod tests {
                 ..Default::default()
             },
         ));
-        harness::set_field(&mut graph, source, "a", &3.0f32);
+        testing::set_field(&mut graph, source, "a", &3.0f32);
         let node = graph.insert(Node::of(Math {
                 inlets: MathIn {
                     op: MathOp::Mul,
@@ -135,9 +135,9 @@ mod tests {
             .connect(Port::new(source, "out"), Port::new(node, "a"), 0)
             .expect("legal");
 
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
 
-        assert_eq!(harness::read_f32(&graph, node, Part::Outlets, "out"), 6.0);
+        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out"), 6.0);
     }
 
     #[test]
@@ -145,7 +145,7 @@ mod tests {
         let mut registry = TypeRegistry::new();
         register_node_kind::<Math>(&mut registry);
         register_node_kind::<Remap>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let source = graph.insert(Node::of(Math {
                 inlets: MathIn {
@@ -172,9 +172,9 @@ mod tests {
             .connect(Port::new(source, "out"), Port::new(node, "input"), 0)
             .expect("legal");
 
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
 
-        assert_eq!(harness::read_f32(&graph, node, Part::Outlets, "out"), 5.0);
+        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out"), 5.0);
     }
 
     #[test]
@@ -190,7 +190,7 @@ mod tests {
         register_node_kind::<Oscillator>(&mut registry);
         register_node_kind::<Math>(&mut registry);
         register_node_kind::<Remap>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
 
         let osc = graph.insert(Node::of(Oscillator {
@@ -232,19 +232,19 @@ mod tests {
             .connect(Port::new(math, "out"), Port::new(remap, "input"), 0)
             .expect("legal");
 
-        let dt = 1.0 / harness::TICK_HZ;
+        let dt = 1.0 / testing::TICK_HZ;
         let mut expected_time = 0.0_f64;
         for tick in 0..31 {
-            harness::set_field(&mut graph, osc, "time", &(expected_time as f32));
-            harness::tick(&mut graph, &world);
+            testing::set_field(&mut graph, osc, "time", &(expected_time as f32));
+            testing::tick_once(&mut graph, &world);
 
             let expected_osc = oscillator_value(1.0, Waveform::Sine, 0.0, 1.0, expected_time);
             let expected_math = math_value(MathOp::Add, expected_osc, 1.0);
             let expected_remap = remap_value(expected_math, 0.0, 2.0, -1.0, 1.0, true);
 
-            let actual_osc = harness::read_f32(&graph, osc, Part::Outlets, "out");
-            let actual_math = harness::read_f32(&graph, math, Part::Outlets, "out");
-            let actual_remap = harness::read_f32(&graph, remap, Part::Outlets, "out");
+            let actual_osc = testing::read_field::<f32>(&graph, osc, Part::Outlets, "out");
+            let actual_math = testing::read_field::<f32>(&graph, math, Part::Outlets, "out");
+            let actual_remap = testing::read_field::<f32>(&graph, remap, Part::Outlets, "out");
 
             assert!(
                 (actual_osc - expected_osc).abs() < 1e-5,
@@ -267,13 +267,13 @@ mod tests {
     fn the_math_and_remap_inlets_never_write_an_equal_value() {
         let mut registry = TypeRegistry::new();
         register_node_kind::<Math>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let node = graph.insert(Node::of(Math::default()));
 
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
         graph.drain_dirty();
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
 
         assert!(!graph.is_dirty(node));
     }

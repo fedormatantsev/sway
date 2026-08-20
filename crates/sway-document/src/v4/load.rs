@@ -18,7 +18,7 @@ use bevy_reflect::{PartialReflect, ReflectFromReflect, TypeRegistry};
 use ron::value::RawValue;
 use serde::de::DeserializeSeed;
 use sway_graph::graph::{
-    Graph, Node, NodeParts, Part, Port, node_kind_type_id, registered_node_kinds,
+    Graph, Node, Part, Port, node_kind_type_id, part_type, registered_node_kinds,
 };
 
 use crate::v4::diagnostics::{LoadDiagnostics, LoadItemError};
@@ -103,11 +103,9 @@ fn build_node(
 
     let mut node = Node::new(full_path, default_value);
 
-    let inlets_type_id = registry
-        .get_type_data::<NodeParts>(type_id)
-        .expect("register_node_kind registers NodeParts")
-        .inlets()
-        .type_id;
+    let inlets_type_id = part_type(registry, type_id, Part::Inlets)
+        .expect("register_node_kind asserts all three parts")
+        .type_id();
     let inlets_registration =
         registry
             .get(inlets_type_id)

@@ -4,11 +4,11 @@
 //!
 //! - [`ReflectNodeKind`] — the reflected [`NodeKind`] trait, which the tick
 //!   uses to call `evaluate` on a `&mut dyn Reflect`.
-//! - [`NodeParts`] — the reflected type of each of the three parts, so the
-//!   editor, the document and the legality rule can walk a kind's schema
-//!   without an instance in hand.
-//! - `ReflectDefault` — how [`GraphCommand::Create`](crate::graph::GraphCommand)
+//! - `ReflectDefault` — how [`Graph::create`](crate::graph::Graph::create)
 //!   builds a fresh value.
+//!
+//! The reflected type of each of the three parts is *not* registered: it is
+//! already on the kind's own `TypeInfo`, and [`part_type`] reads it from there.
 
 use core::any::TypeId;
 
@@ -17,7 +17,7 @@ use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_ecs::world::World;
 use bevy_reflect::std_traits::ReflectDefault;
 use bevy_reflect::{
-    FromReflect, FromType, GetTypeRegistration, Reflect, TypeInfo, TypePath, TypeRegistry, Typed,
+    FromReflect, GetTypeRegistration, Reflect, TypeInfo, TypePath, TypeRegistry, Typed,
     reflect_trait,
 };
 
@@ -45,110 +45,69 @@ pub trait NodeKind {
     fn evaluate(&mut self, world: &World);
 }
 
-/// The reflected type of one part of a node kind.
-#[derive(Clone, Copy, Debug)]
-pub struct PartType {
-    /// The part's concrete `TypeId`. `TypeId::of::<()>()` for an empty part.
-    pub type_id: TypeId,
-    /// The part's reflected type path. `"()"` for an empty part.
-    pub type_path: &'static str,
-    /// The part's static `TypeInfo`, when it has one.
-    pub info: Option<&'static TypeInfo>,
-}
-
-impl PartType {
-    /// Whether this part is the empty `()` part.
-    pub fn is_empty(&self) -> bool {
-        self.type_id == TypeId::of::<()>()
-    }
-}
-
-/// The reflected type of each of a node kind's three parts.
+/// The reflected type of one of a node kind's three parts.
 ///
-/// Registered as type data, so it is resolvable from the type registry:
+/// Read straight off the registration's own `TypeInfo` rather than from type
+/// data of its own: `TypeInfo::Struct::field` already answers this, and one
+/// registered item per node kind restating it is one more thing to keep in
+/// step. `None` when the type is not registered, is not a struct, or has no
+/// field by that name — which [`register_node_kind`] refuses to register.
 ///
 /// ```ignore
-/// let parts = registry.get_type_data::<NodeParts>(type_id)?;
-/// let inlets = parts.part(Part::Inlets);
+/// let inlets = part_type(registry, type_id, Part::Inlets)?;
 /// ```
-#[derive(Clone, Debug)]
-pub struct NodeParts {
-    inlets: PartType,
-    state: PartType,
-    outlets: PartType,
-}
-
-impl NodeParts {
-    /// The reflected type of one part.
-    pub fn part(&self, part: Part) -> PartType {
-        match part {
-            Part::Inlets => self.inlets,
-            Part::State => self.state,
-            Part::Outlets => self.outlets,
-        }
-    }
-
-    /// The reflected type of the `inlets` part.
-    pub fn inlets(&self) -> PartType {
-        self.inlets
-    }
-
-    /// The reflected type of the `state` part.
-    pub fn state(&self) -> PartType {
-        self.state
-    }
-
-    /// The reflected type of the `outlets` part.
-    pub fn outlets(&self) -> PartType {
-        self.outlets
-    }
-}
-
-fn part_type_of(info: &'static TypeInfo, name: &str) -> Option<PartType> {
-    let TypeInfo::Struct(struct_info) = info else {
+pub fn part_type(
+    registry: &TypeRegistry,
+    type_id: TypeId,
+    part: Part,
+) -> Option<&'static TypeInfo> {
+    let TypeInfo::Struct(struct_info) = registry.get(type_id)?.type_info() else {
         return None;
     };
-    let field = struct_info.field(name)?;
-    Some(PartType {
-        type_id: field.type_id(),
-        type_path: field.type_path(),
-        info: field.type_info(),
-    })
+    struct_info.field(part.as_str())?.type_info()
 }
 
-impl<T: Typed> FromType<T> for NodeParts {
-    fn from_type() -> Self {
-        let info = T::type_info();
-        let part = |name: &str| {
-            part_type_of(info, name).unwrap_or_else(|| {
-                panic!(
-                    "`{}` is not a node kind: design D3 requires a struct with \
-                     exactly the fields `inlets`, `state` and `outlets` (use \
-                     `()` for an empty part); `{name}` is missing",
-                    info.type_path()
-                )
-            })
-        };
-        Self {
-            inlets: part("inlets"),
-            state: part("state"),
-            outlets: part("outlets"),
-        }
-    }
+/// Whether a part is the empty `()` part.
+pub fn is_empty_part(info: &TypeInfo) -> bool {
+    info.type_id() == TypeId::of::<()>()
 }
 
 /// Registers a node kind with a bare [`TypeRegistry`].
 ///
 /// Panics if `T` is not a struct with exactly the three part fields — a D3
-/// violation is a programming error, not a runtime condition.
+/// violation is a programming error, not a runtime condition, and this is
+/// where a caller expects to be told they got it wrong.
 pub fn register_node_kind<T>(registry: &mut TypeRegistry)
 where
     T: NodeKind + Reflect + Typed + TypePath + FromReflect + GetTypeRegistration + Default,
 {
+    assert_node_kind_shape::<T>();
     registry.register::<T>();
     registry.register_type_data::<T, ReflectNodeKind>();
     registry.register_type_data::<T, ReflectDefault>();
-    registry.register_type_data::<T, NodeParts>();
+}
+
+/// Design D3: a node kind is one struct with exactly the fields `inlets`,
+/// `state` and `outlets`, an absent part being `()`.
+fn assert_node_kind_shape<T: Typed + TypePath>() {
+    let info = T::type_info();
+    let TypeInfo::Struct(struct_info) = info else {
+        panic!(
+            "`{}` is not a node kind: design D3 requires a struct with exactly \
+             the fields `inlets`, `state` and `outlets` (use `()` for an empty \
+             part)",
+            info.type_path()
+        );
+    };
+    for part in Part::ALL {
+        assert!(
+            struct_info.field(part.as_str()).is_some(),
+            "`{}` is not a node kind: design D3 requires a struct with exactly \
+             the fields `inlets`, `state` and `outlets` (use `()` for an empty \
+             part); `{part}` is missing",
+            info.type_path()
+        );
+    }
 }
 
 /// `App`-side sugar for [`register_node_kind`].
@@ -197,32 +156,59 @@ mod tests {
     use crate::graph::testing::{Counter, Sink, test_registry};
 
     #[test]
-    fn a_node_kind_registers_its_three_part_types() {
+    fn each_of_a_node_kinds_three_part_types_is_readable() {
         let registry = test_registry();
-        let parts = registry
-            .get_type_data::<NodeParts>(TypeId::of::<Counter>())
-            .expect("NodeParts is registered type data");
+        let path = |part| {
+            part_type(&registry, TypeId::of::<Counter>(), part)
+                .expect("a registered node kind has all three parts")
+                .type_path()
+        };
 
-        assert_eq!(parts.inlets().type_path, "sway_graph::graph::testing::Step");
+        assert_eq!(path(Part::Inlets), "sway_graph::graph::testing::Step");
         assert_eq!(
-            parts.state().type_path,
+            path(Part::State),
             "sway_graph::graph::testing::Accumulator"
         );
-        assert_eq!(
-            parts.outlets().type_path,
-            "sway_graph::graph::testing::Total"
-        );
-        assert!(!parts.inlets().is_empty());
+        assert_eq!(path(Part::Outlets), "sway_graph::graph::testing::Total");
+        assert!(!is_empty_part(
+            part_type(&registry, TypeId::of::<Counter>(), Part::Inlets).unwrap()
+        ));
     }
 
     #[test]
-    fn an_empty_part_registers_as_the_unit_type() {
+    fn an_empty_part_reads_back_as_the_unit_type() {
         let registry = test_registry();
-        let parts = registry
-            .get_type_data::<NodeParts>(TypeId::of::<Sink>())
-            .expect("NodeParts is registered type data");
-        assert!(parts.state().is_empty());
-        assert_eq!(parts.state().type_path, "()");
+        let state = part_type(&registry, TypeId::of::<Sink>(), Part::State)
+            .expect("an absent part is `()`, not a missing field");
+        assert!(is_empty_part(state));
+        assert_eq!(state.type_path(), "()");
+    }
+
+    #[test]
+    fn an_unregistered_type_has_no_part_types() {
+        #[derive(Reflect, Default)]
+        struct NotRegistered {
+            inlets: (),
+            state: (),
+            outlets: (),
+        }
+        let registry = test_registry();
+        assert!(part_type(&registry, TypeId::of::<NotRegistered>(), Part::Inlets).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a node kind")]
+    fn registering_a_type_without_the_three_parts_is_refused_at_the_call_site() {
+        #[derive(Reflect, Default)]
+        struct Wrong {
+            inlets: (),
+            outlets: (),
+        }
+        impl NodeKind for Wrong {
+            fn evaluate(&mut self, _world: &World) {}
+        }
+        let mut registry = TypeRegistry::new();
+        register_node_kind::<Wrong>(&mut registry);
     }
 
     #[test]

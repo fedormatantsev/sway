@@ -19,7 +19,8 @@
 //!
 //! **Marker inlets are pure schema.** `children: Vec<SceneChild>` has no
 //! useful runtime value. It exists to declare that the port exists, what its
-//! type is, and that it is variadic — the editor reads that from `NodeParts`,
+//! type is, and that it is variadic — the editor reads that from the kind's
+//! declared part type,
 //! the legality rule reads it at connect time, and the projectors read the
 //! *edge index*, never the field. Do not "optimize away" an unread marker
 //! field: removing it removes the port.

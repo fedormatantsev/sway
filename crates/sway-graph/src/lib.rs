@@ -7,8 +7,7 @@
 pub mod graph;
 
 pub use graph::{
-    Compat, ConnectError, Edge, EdgeId, EvalOrder, FieldWrite, Graph, GraphPlugin, GraphStep,
-    GraphTickSet, Node, NodeId, NodeKind, NodeParts, Part, PartType, Port, PropagateStep,
-    ReflectNodeKind, RegisterNodeKind, Target, node_kind_type_id, register_node_kind,
-    registered_node_kinds, tick_graph,
+    Compat, ConnectError, Edge, EdgeId, FieldWrite, Graph, GraphPlugin, GraphTickSet, Node, NodeId,
+    NodeKind, Part, Port, ReflectNodeKind, RegisterNodeKind, is_empty_part, node_kind_type_id,
+    part_type, register_node_kind, registered_node_kinds, tick_graph,
 };

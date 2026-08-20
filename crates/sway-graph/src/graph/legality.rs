@@ -67,7 +67,7 @@ pub fn compatibility(src: &TypeInfo, dst: &TypeInfo) -> Option<Compat> {
 
 /// Applies the rule to two resolved values, which is what `connect` has in
 /// hand. `None` when either value has no static type, or the pair is illegal.
-pub fn compatibility_of_values(
+pub(crate) fn compatibility_of_values(
     src: &dyn PartialReflect,
     dst: &dyn PartialReflect,
 ) -> Option<Compat> {

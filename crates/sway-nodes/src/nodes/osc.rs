@@ -116,14 +116,14 @@ mod tests {
     use sway_graph::graph::{Graph, Node, Part, Port};
 
     use super::*;
-    use crate::nodes::harness;
+    use sway_graph::graph::testing;
     use crate::nodes::math::{Math, MathIn};
 
     #[test]
     fn oscillator_at_phase_quarter_is_one_with_no_midi() {
         let mut registry = TypeRegistry::new();
         register_node_kind::<Oscillator>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let node = graph.insert(Node::of(Oscillator {
                 inlets: OscillatorIn {
@@ -137,16 +137,16 @@ mod tests {
             },
         ));
 
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
 
-        assert_eq!(harness::read_f32(&graph, node, Part::Outlets, "out"), 1.0);
+        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out"), 1.0);
     }
 
     #[test]
     fn a_zero_period_holds_still_rather_than_dividing() {
         let mut registry = TypeRegistry::new();
         register_node_kind::<Oscillator>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let node = graph.insert(Node::of(Oscillator {
                 inlets: OscillatorIn {
@@ -160,9 +160,9 @@ mod tests {
             },
         ));
 
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
 
-        assert_eq!(harness::read_f32(&graph, node, Part::Outlets, "out"), 1.0);
+        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out"), 1.0);
     }
 
     /// Verifies the `midiTime -> oscillator` wiring shape: an upstream node's
@@ -175,7 +175,7 @@ mod tests {
         let mut registry = TypeRegistry::new();
         register_node_kind::<Oscillator>(&mut registry);
         register_node_kind::<Math>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         // Stands in for `MidiTime`: any node whose `out` reaches `time`.
         let time_source = graph.insert(Node::of(Math {
@@ -202,10 +202,10 @@ mod tests {
             .connect(Port::new(time_source, "out"), Port::new(node, "time"), 0)
             .expect("legal");
 
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
 
         assert_eq!(
-            harness::read_f32(&graph, node, Part::Outlets, "out"),
+            testing::read_field::<f32>(&graph, node, Part::Outlets, "out"),
             1.0,
             "a quarter-cycle time driven in from an upstream node must reach \
              the output in ONE tick"
@@ -217,7 +217,7 @@ mod tests {
         let mut registry = TypeRegistry::new();
         register_node_kind::<Oscillator>(&mut registry);
         register_node_kind::<Math>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let amplitude = graph.insert(Node::of(Math {
                 inlets: MathIn {
@@ -243,9 +243,9 @@ mod tests {
             .connect(Port::new(amplitude, "out"), Port::new(node, "amplitude"), 0)
             .expect("legal");
 
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
 
-        assert_eq!(harness::read_f32(&graph, node, Part::Outlets, "out"), 0.5);
+        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out"), 0.5);
     }
 
     #[test]
@@ -272,13 +272,13 @@ mod tests {
     fn an_equal_write_does_not_dirty_the_node() {
         let mut registry = TypeRegistry::new();
         register_node_kind::<Oscillator>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let node = graph.insert(Node::of(Oscillator::default()));
 
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
         graph.drain_dirty();
-        harness::tick(&mut graph, &world);
+        testing::tick_once(&mut graph, &world);
 
         assert!(
             !graph.is_dirty(node),

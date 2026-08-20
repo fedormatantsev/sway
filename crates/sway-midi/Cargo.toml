@@ -13,3 +13,7 @@ bevy_ecs.workspace = true
 bevy_reflect.workspace = true
 bevy_time.workspace = true
 crossbeam-channel.workspace = true
+
+[dev-dependencies]
+# The tick harness, rather than a copy of it in this crate.
+sway-graph = { workspace = true, features = ["test-support"] }

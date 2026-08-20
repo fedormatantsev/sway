@@ -112,7 +112,7 @@ mod tests {
     use sway_graph::graph::{Graph, Node, Part};
 
     use super::*;
-    use crate::nodes::harness;
+    use sway_graph::graph::testing;
 
     const PARAMS: EnvelopeParams = EnvelopeParams {
         attack: 0.05,
@@ -125,15 +125,15 @@ mod tests {
     fn an_unset_gate_stays_silent() {
         let mut registry = TypeRegistry::new();
         register_node_kind::<Envelope>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let node = graph.insert(Node::of(Envelope::default()));
 
         for _ in 0..5 {
-            harness::tick(&mut graph, &world);
+            testing::tick_once(&mut graph, &world);
         }
 
-        assert_eq!(harness::read_f32(&graph, node, Part::Outlets, "out"), 0.0);
+        assert_eq!(testing::read_field::<f32>(&graph, node, Part::Outlets, "out"), 0.0);
     }
 
     /// Raising the gate mid-run matches `adsr_unscaled` fed the same on/off
@@ -144,7 +144,7 @@ mod tests {
     fn the_gate_reproduces_adsr_unscaled_against_the_nodes_own_clock() {
         let mut registry = TypeRegistry::new();
         register_node_kind::<Envelope>(&mut registry);
-        let world = harness::trace_world(registry);
+        let world = testing::trace_world(registry);
         let mut graph = Graph::default();
         let node = graph.insert(Node::of(Envelope {
                 inlets: EnvelopeIn {
@@ -155,16 +155,16 @@ mod tests {
             },
         ));
 
-        let dt = 1.0 / harness::TICK_HZ;
+        let dt = 1.0 / testing::TICK_HZ;
         let mut now = 0.0_f64;
         let mut gate_on: Option<f64> = None;
         let mut gate_off: Option<f64> = None;
 
         for tick in 0..60 {
             let gate = (10..40).contains(&tick);
-            harness::set_field(&mut graph, node, "gate", &gate);
+            testing::set_field(&mut graph, node, "gate", &gate);
 
-            harness::tick(&mut graph, &world);
+            testing::tick_once(&mut graph, &world);
             now += dt;
             if gate {
                 gate_on.get_or_insert(now);
@@ -173,7 +173,7 @@ mod tests {
             }
 
             let expected = gate_on.map_or(0.0, |on| adsr_unscaled(on, gate_off, now, PARAMS));
-            let actual = harness::read_f32(&graph, node, Part::Outlets, "out");
+            let actual = testing::read_field::<f32>(&graph, node, Part::Outlets, "out");
             assert!(
                 (actual - expected).abs() < 1e-5,
                 "tick {tick}: actual={actual} expected={expected}"

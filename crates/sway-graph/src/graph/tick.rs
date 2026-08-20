@@ -20,14 +20,15 @@ use bevy_reflect::{GetPath, ParsedPath, PartialReflect, ReflectMut, TypeRegistry
 use crate::graph::id::NodeId;
 use crate::graph::model::{Graph, reflect_equal};
 use crate::graph::node::Part;
-use crate::graph::order::{GraphStep, PropagateStep, Target};
+use crate::graph::edge::Compat;
+use crate::graph::order::{GraphStep, PropagateStep};
 use crate::graph::registry::ReflectNodeKind;
 
 /// Runs the rebuilt plan once.
 ///
 /// `world` must not contain the `Graph` — [`tick_graph`] guarantees that by
 /// running inside `resource_scope`.
-pub fn run(graph: &mut Graph, world: &World, registry: &TypeRegistry) {
+pub(crate) fn run(graph: &mut Graph, world: &World, registry: &TypeRegistry) {
     // Taken out so each step can borrow the graph mutably, put back after.
     let order = graph.take_order();
     for step in &order.steps {
@@ -81,7 +82,7 @@ fn propagate(graph: &mut Graph, step: &PropagateStep) {
         let Ok(field) = dst.value_mut().reflect_path_mut(&step.dst_path) else {
             return;
         };
-        write(field, value, step.target)
+        write(field, value, step.compat, step.index)
     };
     if changed {
         graph.dirty_insert(step.dst);
@@ -90,15 +91,23 @@ fn propagate(graph: &mut Graph, step: &PropagateStep) {
 
 /// Writes `value` into `field` per the destination's shape, guarded by a
 /// reflect-equality check so an equal value does not dirty the node.
-fn write(field: &mut dyn PartialReflect, value: &dyn PartialReflect, target: Target) -> bool {
-    match target {
-        Target::Direct => {
+///
+/// `index` is read only for a variadic destination; rebuild derives it from
+/// the slot sort and it means nothing for the other two.
+fn write(
+    field: &mut dyn PartialReflect,
+    value: &dyn PartialReflect,
+    compat: Compat,
+    index: usize,
+) -> bool {
+    match compat {
+        Compat::Direct => {
             if reflect_equal(field, value) {
                 return false;
             }
             field.try_apply(value).is_ok()
         }
-        Target::Optional => {
+        Compat::Optional => {
             let mut some = DynamicTuple::default();
             some.insert_boxed(value.to_dynamic());
             let some = DynamicEnum::new("Some", DynamicVariant::Tuple(some));
@@ -107,7 +116,7 @@ fn write(field: &mut dyn PartialReflect, value: &dyn PartialReflect, target: Tar
             }
             field.try_apply(&some).is_ok()
         }
-        Target::Index(index) => {
+        Compat::Variadic => {
             let ReflectMut::List(list) = field.reflect_mut() else {
                 return false;
             };

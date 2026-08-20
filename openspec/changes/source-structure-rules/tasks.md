@@ -41,14 +41,14 @@
 
 ## 5. `sway-graph`: surface reduction
 
-- [ ] 5.1 Collapse `Target` into `Compat` plus a computed index; keep `Compat` as the edge's connect-time verdict and make the merged form crate-private.
-- [ ] 5.2 Delete `NodeParts`/`PartType` type data; add `part_type(registry, type_id, part) -> Option<&'static TypeInfo>` and move the D3 shape check into `register_node_kind` as an explicit assertion.
-- [ ] 5.3 Update `sway-document`, `sway-editor` and `sway-runtime` at every `NodeParts` call site.
-- [ ] 5.4 Make `EvalOrder`, `GraphStep`, `PropagateStep`, `Link`, `Sorted`, `topological_order`, `absolute_path`, `compatibility_of_values`, `tick::run` and the `path`/`order` modules crate-private; trim `lib.rs` and `graph/mod.rs` re-exports to what callers use.
-- [ ] 5.5 Drop `bevy_transform` from `sway-graph`; move `bevy_time` to an optional dependency.
-- [ ] 5.6 Add a non-default `test-support` feature exporting `trace_world`, `tick_once`, `read_field`, `set_field` and the fixture node kinds from `graph::testing`.
+- [x] 5.1 Collapse `Target` into `Compat` plus a computed index; keep `Compat` as the edge's connect-time verdict and make the merged form crate-private.
+- [x] 5.2 Delete `NodeParts`/`PartType` type data; add `part_type(registry, type_id, part) -> Option<&'static TypeInfo>` and move the D3 shape check into `register_node_kind` as an explicit assertion.
+- [x] 5.3 Update `sway-document`, `sway-editor` and `sway-runtime` at every `NodeParts` call site.
+- [x] 5.4 Make `EvalOrder`, `GraphStep`, `PropagateStep`, `Link`, `Sorted`, `topological_order`, `absolute_path`, `compatibility_of_values`, `tick::run` and the `path`/`order` modules crate-private; trim `lib.rs` and `graph/mod.rs` re-exports to what callers use.
+- [x] 5.5 Drop `bevy_transform` from `sway-graph`; move `bevy_time` to an optional dependency.
+- [x] 5.6 Add a non-default `test-support` feature exporting `trace_world`, `tick_once`, `read_field`, `set_field` and the fixture node kinds from `graph::testing`.
 - [x] 5.7 Move `ViewportInputRx` from `sway-graph` to where it is drained (group 6), and delete `sway-graph`'s temporary `sway-viewport-input` re-export.
-- [ ] 5.8 `cargo test -p sway-graph --all-features` and `cargo check --workspace`.
+- [x] 5.8 `cargo test -p sway-graph --all-features` and `cargo check --workspace`.
 
 ## 6. `sway-base-nodes` (renamed from `sway-nodes`)
 

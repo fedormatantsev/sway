@@ -12,9 +12,6 @@ pub mod math;
 pub mod osc;
 pub mod value;
 
-#[cfg(test)]
-pub(crate) mod harness;
-
 pub use envelope::{Envelope, EnvelopeIn, EnvelopeOut, EnvelopeState};
 pub use math::{Math, MathIn, MathOut, Remap, RemapIn, RemapOut};
 pub use osc::{Oscillator, OscillatorIn, OscillatorOut, Waveform};

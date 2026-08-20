@@ -17,7 +17,7 @@ use crate::graph::node::{Node, Part};
 /// An empty `relative` addresses the whole part. A `relative` that starts with
 /// an index access (`"[0]"`) is appended without a separating dot, which is
 /// what `bevy_reflect`'s parser expects.
-pub fn absolute_path(part: Part, relative: &str) -> String {
+pub(crate) fn absolute_path(part: Part, relative: &str) -> String {
     let part = part.as_str();
     if relative.is_empty() {
         return part.to_owned();
@@ -32,7 +32,7 @@ pub fn absolute_path(part: Part, relative: &str) -> String {
 ///
 /// Rebuild does this once per edge; the tick then walks the parsed form every
 /// tick with no string parsing and no allocation.
-pub fn parse(part: Part, relative: &str) -> Option<ParsedPath> {
+pub(crate) fn parse(part: Part, relative: &str) -> Option<ParsedPath> {
     ParsedPath::parse(&absolute_path(part, relative)).ok()
 }
 
