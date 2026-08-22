@@ -6,7 +6,7 @@
 //! Graph(
 //!     version: 4,
 //!     nodes: {
-//!         "lfoA":  Node(type: "Oscillator", metadata: {"pos": {"glam::Vec2": (x: -460.0, y: 40.0)}}, inlets: (period: 8.0)),
+//!         "lfoA":  Node(type: "CurveSampler", metadata: {"pos": {"glam::Vec2": (x: -460.0, y: 40.0)}}, inlets: (time: 0.0, keys: [])),
 //!         "vec3A": Node(type: "MakeVec3", metadata: {}, inlets: (x: -0.8)),
 //!     },
 //!     edges: [ Edge(from: ("lfoA", "out"), to: ("vec3A", "y"), slot: 0) ],
@@ -202,7 +202,7 @@ mod tests {
 Graph(
     version: 4,
     nodes: {
-        "lfoA": Node(type: "Oscillator", metadata: {"pos": {"glam::Vec2": (x: -460.0, y: 40.0)}}, inlets: (period: 8.0, amplitude: 0.5)),
+        "lfoA": Node(type: "CurveSampler", metadata: {"pos": {"glam::Vec2": (x: -460.0, y: 40.0)}}, inlets: (time: 0.0, keys: [(0.0, 0.0), (8.0, 0.5)])),
         "vec3A": Node(type: "MakeVec3", metadata: {}, inlets: (x: -0.8, y: 0.0, z: 0.0)),
     },
     edges: [
@@ -217,7 +217,7 @@ Graph(
 
         assert_eq!(doc.version, 4);
         assert_eq!(doc.nodes.len(), 2);
-        assert_eq!(doc.nodes["lfoA"].kind, "Oscillator");
+        assert_eq!(doc.nodes["lfoA"].kind, "CurveSampler");
         assert_eq!(doc.nodes["lfoA"].metadata.len(), 1);
         assert!(doc.nodes["vec3A"].metadata.is_empty());
         assert_eq!(doc.edges.len(), 1);

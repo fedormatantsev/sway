@@ -3,13 +3,16 @@ name = "sway-base-nodes"
 version.workspace = true
 edition.workspace = true
 
-# The base value/signal nodes: every one is a pure function of its inlets and
-# state, so this crate reads nothing outside the graph and needs no clock.
+# The base value/signal nodes: this crate owns the generic Trigger payload and
+# may resolve handle inlets through the occurrence arena. It still reads no
+# clock and no MIDI — time arrives on an inlet.
 [dependencies]
 sway-graph.workspace = true
+sway-events.workspace = true
+serde.workspace = true
 bevy_app.workspace = true
 bevy_ecs.workspace = true
-bevy_math.workspace = true
+bevy_math = { workspace = true, features = ["serialize"] }
 bevy_reflect.workspace = true
 
 [dev-dependencies]

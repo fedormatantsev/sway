@@ -100,6 +100,12 @@ impl PulseClock {
     }
 }
 
+impl Default for PulseClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,9 +3,9 @@
 // nodes, and every connection below is an edge in this file.
 //
 //   midiTime ──time──▶ lfoA, lfoB
-//   lfoA ──amplitude──▶ lfoB
 //   lfoA ──y──▶ vec3A ──translation──▶ cubeA ─┐
-//   lfoB ──y──▶ vec3B ──translation──▶ cubeB ─┤─children─▶ group
+//   lfoA ──a──▶ lfoScale ◀──b── lfoB          │
+//   lfoScale ──y──▶ vec3B ──translation──▶ cubeB ─┤─children─▶ group
 //   mat  ──material──▶ cubeA, cubeB, cubeC              │
 //   cube ──mesh──────▶ cubeA, cubeB, cubeC ─────────────┘
 //
@@ -49,15 +49,16 @@
 //
 // `frame` is never authored and never a bespoke animation node — design
 // D3/D4's whole point. It is three nodes that already exist: `MidiTime` (the
-// same node the cubes' LFOs read) feeds an `Oscillator` running `Saw`, whose
-// -1..1 output `Remap` rescales to 0..30, the sequence's frame count. Nobody
-// clamps on the write side: the sprite material's read-side `layer_index` is
-// what keeps a `Remap` output that reaches exactly 30.0 on frame 29 rather
-// than sampling out of range (D4) — spriteRemap's `out_max: 30.0` is
-// deliberately exact, not `29.0`, to let that safeguard do its job. The two
-// layers run the same period but opposite phase (`spriteOsc2.phase: 0.5`),
-// so they are never on the same frame — a visible "own frame offset" per
-// layer without a second animation mechanism.
+// same node the cubes' curves read) feeds a `CurveSampler` with a one-shot
+// ramp in −1..1, whose output `Remap` rescales to 0..30, the sequence's frame
+// count. Time is clamped to the keys, not wrapped, so once MidiTime passes
+// the last key the layer holds on that frame. Nobody clamps on the Remap
+// write side: the sprite material's read-side `layer_index` is what keeps a
+// `Remap` output that reaches exactly 30.0 on frame 29 rather than sampling
+// out of range (D4) — spriteRemap's `out_max: 30.0` is deliberately exact,
+// not `29.0`, to let that safeguard do its job. The two layers use opposite
+// ramps (`spriteOsc` −1→1, `spriteOsc2` 1→−1), so they freeze on different
+// frames.
 //
 // `colorSeq` and `depthSeq` are each connected to *both* materials — one
 // `FrameSequence` loading a folder once and feeding two consumers is D7's
@@ -118,11 +119,12 @@ Graph(
     version: 4,
     nodes: {
         // ---------------------------------------------------------------
-        // Time, and the two cube LFOs.
+        // Time, and the two cube curves (one-shot, then hold).
         // ---------------------------------------------------------------
         "midiTime": Node(type: "MidiTime", metadata: {"pos": {"glam::Vec2": (-700.0, 100.0)}}, inlets: ()),
-        "lfoA": Node(type: "Oscillator", metadata: {"pos": {"glam::Vec2": (-460.0, 40.0)}}, inlets: (time: 0.0, period: 8.0, shape: Sine, phase: 0.0, amplitude: 0.5)),
-        "lfoB": Node(type: "Oscillator", metadata: {"pos": {"glam::Vec2": (-460.0, 160.0)}}, inlets: (time: 0.0, period: 2.0, shape: Sine, phase: 0.0, amplitude: 0.0)),
+        "lfoA": Node(type: "CurveSampler", metadata: {"pos": {"glam::Vec2": (-460.0, 40.0)}}, inlets: (time: 0.0, keys: [(0.0, 0.0), (4.0, 0.5), (8.0, 0.0)])),
+        "lfoB": Node(type: "CurveSampler", metadata: {"pos": {"glam::Vec2": (-460.0, 160.0)}}, inlets: (time: 0.0, keys: [(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)])),
+        "lfoScale": Node(type: "Math", metadata: {"pos": {"glam::Vec2": (-340.0, 160.0)}}, inlets: (op: Mul, a: 0.0, b: 0.0)),
         "vec3A": Node(type: "MakeVec3", metadata: {"pos": {"glam::Vec2": (-220.0, 40.0)}}, inlets: (x: -0.8, y: 0.0, z: 0.0)),
         "vec3B": Node(type: "MakeVec3", metadata: {"pos": {"glam::Vec2": (-220.0, 160.0)}}, inlets: (x: 0.8, y: 0.0, z: 0.0)),
 
@@ -157,10 +159,9 @@ Graph(
         // Data, not Display: this run is heights, not colour, and reading it
         // through an sRGB view would warp every displacement (design D8).
         "depthSeq": Node(type: "FrameSequence", metadata: {"pos": {"glam::Vec2": (-220.0, 540.0)}}, inlets: (folder: "sprites/pulse_depth", color_space: Data)),
-        "spriteOsc": Node(type: "Oscillator", metadata: {"pos": {"glam::Vec2": (-460.0, 420.0)}}, inlets: (time: 0.0, period: 6.0, shape: Saw, phase: 0.0, amplitude: 1.0)),
-        // Same period, opposite phase: the two layers are always on different
-        // frames without a second animation mechanism.
-        "spriteOsc2": Node(type: "Oscillator", metadata: {"pos": {"glam::Vec2": (-460.0, 620.0)}}, inlets: (time: 0.0, period: 6.0, shape: Saw, phase: 0.5, amplitude: 1.0)),
+        "spriteOsc": Node(type: "CurveSampler", metadata: {"pos": {"glam::Vec2": (-460.0, 420.0)}}, inlets: (time: 0.0, keys: [(0.0, -1.0), (6.0, 1.0)])),
+        // Opposite ramp: the two layers freeze on different frames.
+        "spriteOsc2": Node(type: "CurveSampler", metadata: {"pos": {"glam::Vec2": (-460.0, 620.0)}}, inlets: (time: 0.0, keys: [(0.0, 1.0), (6.0, -1.0)])),
         // -1..1 (Saw's own range) to 0..30 (the sequence's 30 frames).
         // out_max is exactly 30.0 on purpose — the read-side clamp is what
         // turns a value that reaches it into layer 29, not a `29.0` authored
@@ -184,15 +185,16 @@ Graph(
         "spritePlane2": Node(type: "MeshNode", metadata: {"pos": {"glam::Vec2": (260.0, 620.0)}}, inlets: (translation: (0.3, 1.5, -0.5), rotation: (0.0, 0.258819, 0.0, 0.965926), scale: (1.0, 1.0, 1.0))),
     },
     edges: [
-        // Time into every oscillator.
+        // Time into every CurveSampler.
         Edge(from: ("midiTime", "out"), to: ("lfoA", "time"), slot: 0),
         Edge(from: ("midiTime", "out"), to: ("lfoB", "time"), slot: 0),
         Edge(from: ("midiTime", "out"), to: ("spriteOsc", "time"), slot: 0),
         Edge(from: ("midiTime", "out"), to: ("spriteOsc2", "time"), slot: 0),
-        // lfoA both drives cubeA and modulates lfoB's amplitude.
-        Edge(from: ("lfoA", "out"), to: ("lfoB", "amplitude"), slot: 0),
+        // lfoA drives cubeA and, via Math, scales lfoB onto cubeB.
         Edge(from: ("lfoA", "out"), to: ("vec3A", "y"), slot: 0),
-        Edge(from: ("lfoB", "out"), to: ("vec3B", "y"), slot: 0),
+        Edge(from: ("lfoA", "out"), to: ("lfoScale", "a"), slot: 0),
+        Edge(from: ("lfoB", "out"), to: ("lfoScale", "b"), slot: 0),
+        Edge(from: ("lfoScale", "out"), to: ("vec3B", "y"), slot: 0),
         // A whole Vec3 into a placement's translation.
         Edge(from: ("vec3A", "out"), to: ("cubeA", "translation"), slot: 0),
         Edge(from: ("vec3B", "out"), to: ("cubeB", "translation"), slot: 0),

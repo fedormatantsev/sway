@@ -70,10 +70,11 @@ HDMI. The runtime runs whether or not a graph is loaded.
 **Document (`sway-document`)** is out of `sway-graph`. It reads and writes the
 `Graph` resource — no parallel snapshot model inside the engine.
 
-**Supporting crates:** `sway-base-nodes` (built-in value node kinds),
+**Supporting crates:** `sway-base-nodes` (built-in value/signal node kinds,
+including `CurveSampler`, `Timer`, and the generic `Trigger` payload),
 `sway-midi-core` (MIDI IO, messages, and pulse-clock math), `sway-midi` (Bevy
-MIDI plugin, transport and control-change snapshots, and `MidiTime` / `MidiCc`
-as ordinary nodes), `sway-geo` (geometry
+MIDI plugin, transport and control-change snapshots, `MidiTime` / `MidiCc`,
+channel-filtered `MidiNotes`, and `OnMidiNote`), `sway-geo` (geometry
 tables and CPU operators), `sway-editor` (masonry UI on the live graph),
 `sway-gpu` (single device-creation pin for the bevy↔vello coupling).
 
@@ -236,10 +237,14 @@ edges.
    connections carries occurrences end to end within one tick.
 
 **`MidiNotes` is the first producer**: it publishes every note-on and note-off
-of the tick as one batch — channel, note, velocity, on/off and the sub-tick
-offset the MIDI drain already records — and selects nothing, leaving the empty
-handle on a silent tick. The converter nodes that turn note occurrences into
-the generic events other domains understand are follow-up work (`docs/roadmap.md`).
+of the tick on its authored channel as one batch — channel, note, velocity,
+on/off and the sub-tick offset the MIDI drain already records — leaving the
+empty handle on a silent tick. It still does not pick a pitch. **`OnMidiNote`**
+matches an authored scientific-pitch name (`C4`, `D#1`) against that stream
+and publishes generic `Trigger` occurrences on `pressed` / `released`.
+`Trigger` lives in `sway-base-nodes`; `sway-midi` depends on that crate one way
+so the converter can name the payload. A host that adds `MidiPlugin` does not
+register `Trigger` on MIDI's behalf.
 
 ## 4. Ordering, rebuild, and tick
 
@@ -490,10 +495,12 @@ sway-graph            Graph resource, NodeId, mutation API, order, tick
 sway-events           occurrence arena + EventHandle<P>; one plugin, one
                       pre-tick clear (the engine depends on none of it)
 sway-document         version 4 on-disk format; stable ids; load/save the Graph
-sway-base-nodes       the base value/signal node kinds (Oscillator, Envelope,
-                      Math, Remap, MakeVec3) — pure functions of their inlets
+sway-base-nodes       the base value/signal node kinds (CurveSampler, Timer,
+                      Trigger, Math, Remap, MakeVec3) — pure functions of their
+                      inlets (a handle inlet is resolved through the arena)
 sway-midi-core        MIDI IO, typed messages, PulseClock (no Bevy)
-sway-midi             Bevy plugin, Transport snapshot, MidiTime, MidiCc, MidiNotes
+sway-midi             Bevy plugin, Transport snapshot, MidiTime, MidiCc,
+                      channel-filtered MidiNotes, OnMidiNote
 sway-geo              Geometry attribute tables and CPU operators (dormant)
 sway-runtime          headless Bevy app; render-coupled node kinds; projectors
 sway-viewport-input   the viewport's pointer/key/scroll vocabulary

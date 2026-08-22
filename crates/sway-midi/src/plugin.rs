@@ -57,9 +57,16 @@ impl Plugin for MidiPlugin {
             // host that adds `MidiPlugin` registers neither on the domain's
             // behalf (`midi`: MIDI note events live in the MIDI domain).
             .register_node_kind::<crate::nodes::MidiNotes>()
+            .register_type::<crate::nodes::MidiNotesIn>()
             .register_type::<crate::nodes::MidiNotesOut>()
             .register_type::<crate::nodes::NoteEvent>()
             .register_event_handle::<crate::nodes::NoteEvent>()
+            // OnMidiNote names Trigger from the generic signal layer. This
+            // plugin registers the converter, not Trigger — that would leak
+            // another domain's type (design D2).
+            .register_node_kind::<crate::nodes::OnMidiNote>()
+            .register_type::<crate::nodes::OnMidiNoteIn>()
+            .register_type::<crate::nodes::OnMidiNoteOut>()
             .insert_resource(MidiRx(self.rx.clone()))
             .init_resource::<MidiInbox>()
             .init_resource::<TickMidi>()
@@ -498,6 +505,34 @@ mod tests {
             ),
             sway_events::EventHandle::EMPTY,
             "it ticks without MIDI hardware present"
+        );
+    }
+
+    #[test]
+    fn one_plugin_puts_on_midi_note_in_the_palette_and_does_not_register_trigger() {
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let mut app = App::new();
+        app.add_plugins(TimePlugin)
+            .insert_resource(Time::<Fixed>::from_hz(120.0))
+            .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
+            .add_plugins((GraphPlugin, sway_events::EventsPlugin, MidiPlugin { rx }));
+        app.update();
+
+        let registry = app
+            .world()
+            .resource::<bevy_ecs::reflect::AppTypeRegistry>()
+            .clone();
+        let read = registry.read();
+        assert!(
+            sway_graph::graph::registered_node_kinds(&read)
+                .iter()
+                .any(|kind| kind.ends_with("::OnMidiNote")),
+            "the converter is in the palette"
+        );
+        assert!(
+            read.get(core::any::TypeId::of::<sway_base_nodes::Trigger>())
+                .is_none(),
+            "MidiPlugin must not register Trigger"
         );
     }
 

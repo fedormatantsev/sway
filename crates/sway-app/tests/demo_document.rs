@@ -54,7 +54,7 @@ fn the_demo_document_loads_with_no_diagnostics() {
         diagnostics.items,
         registered_node_kinds(&registry),
     );
-    assert_eq!(graph.len(), 26, "every node in the file loaded");
+    assert_eq!(graph.len(), 27, "every node in the file loaded");
     assert!(!graph.edges().is_empty());
     assert!(
         ids.node_of("cubeA").is_some(),

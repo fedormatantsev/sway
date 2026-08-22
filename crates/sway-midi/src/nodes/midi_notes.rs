@@ -47,27 +47,35 @@ pub struct NoteEvent {
     pub offset: f32,
 }
 
+/// [`MidiNotes`]'s inlets.
+#[derive(Reflect, Default, Debug, Clone, Copy, PartialEq)]
+#[reflect(Default, Debug, PartialEq)]
+pub struct MidiNotesIn {
+    /// The MIDI channel in the protocol's own 0–15 numbering, not display
+    /// 1–16. Truncated toward zero and clamped when read, same rule as
+    /// [`MidiCc`](crate::MidiCc). Default 0.
+    pub channel: f32,
+}
+
 /// [`MidiNotes`]'s outlets.
 #[derive(Reflect, Default, Debug)]
 #[reflect(Default, Debug)]
 pub struct MidiNotesOut {
     /// A handle naming this tick's batch of note occurrences, or the empty
-    /// handle on a tick in which no note message arrived.
+    /// handle on a tick in which no matching note message arrived.
     pub notes: EventHandle<NoteEvent>,
 }
 
-/// Publishes every note message of the tick as one batch.
+/// Publishes every note message of the tick on one channel as one batch.
 ///
-/// **It selects nothing.** `MidiCc` filters because it publishes *one* held
-/// value and has to pick which; a batch does not. Publishing everything and
-/// letting a later node choose costs nothing, avoids an "omni" encoding in an
-/// `f32` inlet, and means one `MidiNotes` in a scene can feed every consumer —
-/// which is why this node has no inlets at all (design D11).
+/// The node selects a channel and still publishes every pitch: one
+/// `MidiNotes` feeds every [`OnMidiNote`](crate::OnMidiNote) that listens to
+/// it. Several channels are several of these nodes.
 #[derive(Reflect, Default, Debug)]
 #[reflect(NodeKind, Default)]
 pub struct MidiNotes {
-    /// Inlets — none: there is nothing to choose.
-    pub inlets: (),
+    /// Inlets — which channel to publish.
+    pub inlets: MidiNotesIn,
     /// State — none: notes, batches and handles are never kept between ticks.
     pub state: (),
     /// Outlets.
@@ -86,12 +94,12 @@ impl NodeKind for MidiNotes {
             self.outlets.notes = EventHandle::EMPTY;
             return;
         };
-        // Arrival order, and no message of any other kind.
-        self.outlets.notes = arena.publish(
-            tick.events
-                .iter()
-                .filter_map(|&(offset, message)| note_event(offset, message)),
-        );
+        let channel = (self.inlets.channel as i32).clamp(0, 15) as u8;
+        // Arrival order, matching channel only, and no message of any other
+        // kind.
+        self.outlets.notes = arena.publish(tick.events.iter().filter_map(|&(offset, message)| {
+            note_event(offset, message).filter(|event| event.channel == channel)
+        }));
     }
 }
 
@@ -151,6 +159,7 @@ mod tests {
     fn registry() -> TypeRegistry {
         let mut registry = TypeRegistry::new();
         register_node_kind::<MidiNotes>(&mut registry);
+        registry.register::<MidiNotesIn>();
         registry.register::<MidiNotesOut>();
         registry.register::<NoteEvent>();
         register_event_handle::<NoteEvent>(&mut registry);
@@ -174,12 +183,20 @@ mod tests {
         read_field::<EventHandle<NoteEvent>>(graph, node, Part::Outlets, "notes")
     }
 
-    /// Ticks a fresh graph holding one `MidiNotes` against `world`.
-    fn tick_notes(world: &World) -> (Graph, NodeId) {
+    /// Ticks a fresh graph holding one `MidiNotes` on `channel` against `world`.
+    fn tick_notes_on(world: &World, channel: f32) -> (Graph, NodeId) {
         let mut graph = Graph::default();
-        let node = graph.insert(Node::of(MidiNotes::default()));
+        let node = graph.insert(Node::of(MidiNotes {
+            inlets: MidiNotesIn { channel },
+            ..Default::default()
+        }));
         tick(&mut graph, world);
         (graph, node)
+    }
+
+    /// Ticks a default `MidiNotes` (channel 0).
+    fn tick_notes(world: &World) -> (Graph, NodeId) {
+        tick_notes_on(world, 0.0)
     }
 
     #[test]
@@ -239,7 +256,7 @@ mod tests {
             },
         )]);
 
-        let (graph, node) = tick_notes(&world);
+        let (graph, node) = tick_notes_on(&world, 3.0);
 
         let batch = notes_of(&world, &graph, node).expect("a batch");
         assert_eq!(batch.len(), 1);
@@ -248,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn every_channel_is_published() {
+    fn each_node_publishes_only_its_channel() {
         let world = world_with(vec![
             (
                 0.0,
@@ -268,14 +285,47 @@ mod tests {
             ),
         ]);
 
-        let (graph, node) = tick_notes(&world);
+        let mut graph = Graph::default();
+        let ch0 = graph.insert(Node::of(MidiNotes {
+            inlets: MidiNotesIn { channel: 0.0 },
+            ..Default::default()
+        }));
+        let ch9 = graph.insert(Node::of(MidiNotes {
+            inlets: MidiNotesIn { channel: 9.0 },
+            ..Default::default()
+        }));
+        tick(&mut graph, &world);
 
-        let batch = notes_of(&world, &graph, node).expect("a batch");
+        let batch0 = notes_of(&world, &graph, ch0).expect("channel 0 batch");
+        let batch9 = notes_of(&world, &graph, ch9).expect("channel 9 batch");
         assert_eq!(
-            batch.iter().map(|note| note.channel).collect::<Vec<_>>(),
-            vec![0, 9],
-            "the node selects nothing: every note message, on every channel"
+            batch0.iter().map(|note| note.channel).collect::<Vec<_>>(),
+            vec![0],
+            "channel 0 ignores channel 9"
         );
+        assert_eq!(
+            batch9.iter().map(|note| note.channel).collect::<Vec<_>>(),
+            vec![9],
+        );
+        assert_eq!(batch9[0].note, 36);
+    }
+
+    #[test]
+    fn channel_is_clamped() {
+        let world = world_with(vec![(
+            0.0,
+            MidiMessage::NoteOn {
+                channel: 15,
+                note: 60,
+                velocity: 10,
+            },
+        )]);
+
+        let (graph, node) = tick_notes_on(&world, 20.0);
+
+        let batch = notes_of(&world, &graph, node).expect("clamped to 15");
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].channel, 15);
     }
 
     #[test]

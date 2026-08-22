@@ -82,9 +82,9 @@ pub struct SpriteMaterialAsset {
 /// (design D4). Putting it here would silently impose one playback behaviour
 /// and make ping-pong or hold-at-end unreachable, because the wrap would
 /// already have happened before any node could act on it. The graph expresses
-/// playback instead — `MidiTime → Oscillator(Saw) → Remap(-1..1 → 0..layers)`
-/// is a loop, and swapping `Saw` for `Triangle` is a ping-pong — where the
-/// choice is visible on the canvas rather than buried in this function.
+/// playback instead — wrap or remap in the graph, not in this function.
+/// `MidiTime → CurveSampler → Remap(… → 0..layers)` is a one-shot walk that
+/// holds at the end because the sampler clamps time to its keys.
 ///
 /// So this is a safeguard with no expressive content: the minimum needed to
 /// guarantee the sequence is never sampled outside its own layers. A frame

@@ -255,28 +255,28 @@ mod tests {
     }
 
     #[test]
-    fn an_oscillator_math_remap_chain_matches_the_shared_pure_functions() {
-        // Oscillator(1.0 Hz, Sine) -> Math(Add, b=1.0) -> Remap(0..2 -> -1..1,
-        // clamped). The Oscillator's `time` inlet is driven each tick by
-        // `set_field` to simulate a clock source, matching the pure-function
-        // reference from `chain-math-remap.in.ron`.
-        use crate::nodes::osc::{Oscillator, OscillatorIn};
-        use crate::nodes::osc::{Waveform, oscillator_value};
+    fn a_curve_sampler_math_remap_chain_matches_the_shared_pure_functions() {
+        // CurveSampler((0,0)→(1,1)) -> Math(Add, b=1.0) -> Remap(0..2 -> -1..1,
+        // clamped). The sampler's `time` inlet is driven each tick.
+        use crate::nodes::curve_sampler::{
+            CurveKeys, CurveSampler, CurveSamplerIn, curve_sampler_value,
+        };
 
         let mut registry = TypeRegistry::new();
-        register_node_kind::<Oscillator>(&mut registry);
+        register_node_kind::<CurveSampler>(&mut registry);
         register_node_kind::<Math>(&mut registry);
         register_node_kind::<Remap>(&mut registry);
         let world = testing::trace_world(registry);
         let mut graph = Graph::default();
 
-        let osc = graph.insert(Node::of(Oscillator {
-            inlets: OscillatorIn {
+        let keys = vec![
+            bevy_math::Vec2::new(0.0, 0.0),
+            bevy_math::Vec2::new(1.0, 1.0),
+        ];
+        let osc = graph.insert(Node::of(CurveSampler {
+            inlets: CurveSamplerIn {
                 time: 0.0,
-                period: 1.0,
-                shape: Waveform::Sine,
-                phase: 0.0,
-                amplitude: 1.0,
+                keys: CurveKeys(keys.clone()),
             },
             ..Default::default()
         }));
@@ -306,13 +306,13 @@ mod tests {
             .connect(Port::new(math, "out"), Port::new(remap, "input"), 0)
             .expect("legal");
 
-        let dt = 1.0 / testing::TICK_HZ;
-        let mut expected_time = 0.0_f64;
+        let dt = 1.0 / testing::TICK_HZ as f32;
+        let mut expected_time = 0.0_f32;
         for tick in 0..31 {
-            testing::set_field(&mut graph, osc, "time", &(expected_time as f32));
+            testing::set_field(&mut graph, osc, "time", &expected_time);
             testing::tick_once(&mut graph, &world);
 
-            let expected_osc = oscillator_value(1.0, Waveform::Sine, 0.0, 1.0, expected_time);
+            let expected_osc = curve_sampler_value(expected_time, &keys);
             let expected_math = math_value(MathOp::Add, expected_osc, 1.0);
             let expected_remap = remap_value(expected_math, 0.0, 2.0, -1.0, 1.0, true);
 

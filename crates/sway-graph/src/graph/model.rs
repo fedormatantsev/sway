@@ -578,11 +578,10 @@ mod tests {
             "an annotation is not a shape change"
         );
         assert_eq!(format!("{:?}", graph.eval_order()), before);
-        assert_eq!(
+        assert!(
             graph
                 .connect(Port::new(a, "out"), Port::new(b, "step"), 0)
                 .is_ok(),
-            true,
             "legality is unaffected"
         );
     }

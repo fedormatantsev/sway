@@ -5644,6 +5644,8 @@ dependencies = [
  "bevy_ecs",
  "bevy_math",
  "bevy_reflect",
+ "serde",
+ "sway-events",
  "sway-graph",
 ]
 
@@ -5756,6 +5758,7 @@ dependencies = [
  "bevy_reflect",
  "bevy_time",
  "crossbeam-channel",
+ "sway-base-nodes",
  "sway-events",
  "sway-graph",
  "sway-midi-core",

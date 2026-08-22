@@ -7,6 +7,9 @@ version.workspace = true
 sway-midi-core.workspace = true
 sway-graph.workspace = true
 sway-events.workspace = true
+# Trigger lives on the generic signal layer. This crate names it so OnMidiNote
+# can fire it; it does not depend on runtime or any other peer domain.
+sway-base-nodes.workspace = true
 bevy_app.workspace = true
 bevy_ecs.workspace = true
 bevy_reflect.workspace = true

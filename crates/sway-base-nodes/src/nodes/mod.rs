@@ -5,15 +5,17 @@
 //! [`sway_graph::graph::RegisterNodeKind`] by
 //! [`BaseNodesPlugin`](crate::BaseNodesPlugin).
 
-pub mod envelope;
+pub mod curve_sampler;
 pub mod make_vec3;
 pub mod math;
-pub mod osc;
+pub mod timer;
+pub mod trigger;
 
-pub use envelope::{Envelope, EnvelopeIn, EnvelopeOut, EnvelopeState};
+pub use curve_sampler::{CurveKeys, CurveSampler, CurveSamplerIn, CurveSamplerOut};
 pub use make_vec3::{MakeVec3, MakeVec3In, MakeVec3Out};
 pub use math::{Math, MathIn, MathOp, MathOut, Remap, RemapIn, RemapOut};
-pub use osc::{Oscillator, OscillatorIn, OscillatorOut, Waveform};
+pub use timer::{Timer, TimerIn, TimerOut, TimerState};
+pub use trigger::Trigger;
 
 #[cfg(test)]
 mod tests {
@@ -49,7 +51,7 @@ mod tests {
             "every base node kind's short name must be unique: {names:?}"
         );
 
-        for expected in ["MakeVec3", "Math", "Remap", "Oscillator", "Envelope"] {
+        for expected in ["MakeVec3", "Math", "Remap", "CurveSampler", "Timer"] {
             assert!(
                 names.contains(&expected),
                 "missing `{expected}` in {names:?}"
