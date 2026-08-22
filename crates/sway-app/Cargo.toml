@@ -11,6 +11,7 @@ path = "src/main.rs"
 bevy = { workspace = true, features = ["file_watcher"] }
 crossbeam-channel.workspace = true
 sway-graph.workspace = true
+sway-events.workspace = true
 sway-viewport-input.workspace = true
 sway-selection.workspace = true
 sway-document.workspace = true

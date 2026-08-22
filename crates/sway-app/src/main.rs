@@ -268,6 +268,10 @@ fn main() -> ExitCode {
 
         app.add_plugins((
             sway_graph::GraphPlugin,
+            // The occurrence arena and its pre-tick clear. Deliberately not
+            // gated on `assets_ready` below: the clear is what keeps the arena
+            // bounded whatever else is or is not running.
+            sway_events::EventsPlugin,
             LiveGraphPlugin {
                 graph_file: project.graph_file.clone(),
             },

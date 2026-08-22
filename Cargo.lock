@@ -5626,6 +5626,7 @@ dependencies = [
  "sway-document",
  "sway-editor",
  "sway-editor-viewport",
+ "sway-events",
  "sway-gpu",
  "sway-graph",
  "sway-midi",
@@ -5698,6 +5699,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sway-events"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "bevy_reflect",
+ "bevy_time",
+ "ron",
+ "serde",
+ "sway-document",
+ "sway-graph",
+]
+
+[[package]]
 name = "sway-geo"
 version = "0.1.0"
 dependencies = [
@@ -5741,6 +5756,7 @@ dependencies = [
  "bevy_reflect",
  "bevy_time",
  "crossbeam-channel",
+ "sway-events",
  "sway-graph",
  "sway-midi-core",
 ]

@@ -1,0 +1,29 @@
+[package]
+name = "sway-events"
+version.workspace = true
+edition.workspace = true
+
+# The occurrence vocabulary that sits between the engine and the domains: the
+# per-tick arena, the handle a wire carries, and the one plugin that empties
+# the arena before every tick. It never reads the graph — `sway-graph` is here
+# for `GraphTickSet` alone, so the clear can be ordered before the tick — and
+# it must never depend on a node domain: a domain that publishes or reads
+# occurrences depends on *this* crate, which is what keeps two domains from
+# depending on each other to exchange them.
+[dependencies]
+bevy_app.workspace = true
+bevy_ecs.workspace = true
+bevy_reflect.workspace = true
+# A handle has to serialize for a node kind that declares one to save at all,
+# which is why `serde` is here and deliberately not in `sway-graph`.
+serde.workspace = true
+sway-graph.workspace = true
+
+[dev-dependencies]
+# The tick harness, rather than a copy of it in this crate.
+sway-graph = { workspace = true, features = ["test-support"] }
+bevy_time.workspace = true
+# The document round-trip is exercised from here, so `sway-document` stays
+# untouched by this change.
+sway-document.workspace = true
+ron.workspace = true

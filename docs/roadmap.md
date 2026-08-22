@@ -12,6 +12,21 @@ Tags mark the part of the project an idea belongs to: `#editor` `#graph`
 
 ## Backlog
 
+- [ ] Note-to-event converter nodes `#midi` `#nodes`
+  `MidiNotes` publishes the tick's raw note occurrences and selects nothing.
+  Nothing in the app reads them yet: the converters that pick among them and
+  fire the generic events other domains understand — `OnNotePressed` and its
+  kin — are still to come, along with the event-driven `Envelope` gate that is
+  the first real consumer.
+
+  Open question, from design D11 of `add-event-channels`: those converters
+  imply `sway-midi` naming a *generic* payload that is planned to live in
+  `sway-base-nodes` — a domain crate depending on another domain crate, which
+  `architecture`'s "dependencies point from host to domain to engine" forbids,
+  and whose own scenario says shared vocabulary belongs in a crate both depend
+  on. Decide where that generic payload lives before writing the converters:
+  `sway-events` itself, a new vocabulary crate, or somewhere else.
+
 - [ ] Composite inspector widgets `#editor`
   Vec2 should be two f32 boxes, not a single text field. Same for other vectors
   and matrices.

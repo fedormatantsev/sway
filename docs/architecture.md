@@ -64,7 +64,8 @@ HDMI. The runtime runs whether or not a graph is loaded.
   propagate copies outlet into inlet and must not write an equal value.
 - **Node evaluation** — only when output depends on an inlet in the same tick
   and must sit in dataflow order. Otherwise ordinary Bevy systems.
-- **Events (`sway-events`)** — separate crate; see §3.
+- **Events (`sway-events`)** — separate crate; occurrences in a per-tick
+  arena, addressed by handles that travel ordinary edges. See §3.
 
 **Document (`sway-document`)** is out of `sway-graph`. It reads and writes the
 `Graph` resource — no parallel snapshot model inside the engine.
@@ -178,35 +179,67 @@ viewport's gizmo and picker — calls the methods directly. Picking returns an
 ## 3. Events
 
 Events are not value wires and are not owned by `sway-graph`. **`sway-events`**
-registers the systems that own buffer lifecycle.
+owns an **occurrence arena** and the one plugin that empties it. A value wire
+carries a *level* — the tick copies a field and a node reads whatever stands
+there; an event wire carries the things that *happen*, over exactly the same
+edges.
 
-- **Emitter entities** carry **`TriggerOut<P>`** components, generic over an
-  event payload `P`. Each implementation decides how that outlet is populated
-  (MIDI note edge, transport boundary, and so on).
-- **Event wires** are `Relationship` components on the consumer, implementing
-  an `EventWire` trait that names a `Payload` type and a wire `NAME`. They
-  connect a `TriggerOut<P>` to a **`TriggerIn<W>`**.
-- **Buffers exist only per event wire**, never on the `TriggerOut` — fan-out
-  gives each consumer its own copy. `TriggerIn<W>` *is* that buffer, living on
-  the consumer; a component hook installed by `register_event_wire::<W>`
-  inserts it alongside `W`.
-- Registration monomorphises the clear and copy functions so the tick never
-  sees a generic.
-- Event wires round-trip through the document like value wires, keyed by type
-  path. Event-wire dispatch is a separate catalog from value `ReflectWire`
-  (not implemented in this change). Drag-to-connect legality reads both.
+- The occurrences live in an **`EventArena`**, a non-send `World` resource
+  holding **this tick's batches**. What travels the wire is an
+  **`EventHandle<P>`**: two integers and a payload type tag, *naming* one
+  batch. Two operations reach a batch and nothing else does — `publish` takes a
+  whole batch and returns its handle, `read` takes a handle and returns that
+  batch. A handle is a name, not a capability, so a consumer holding one has no
+  operation that could add to what it received: the read and write paths are
+  separated structurally rather than by discipline.
+- **A handle is an ordinary reflected field value**, so a trigger connection is
+  an ordinary edge: the same copy step, the same exact-type legality rule,
+  `Option<EventHandle<P>>` for an optional inlet and `Vec<EventHandle<P>>` for
+  a variadic merge in ordering-key order. `sway-graph` names no handle,
+  occurrence, payload type or arena, and needs no knowledge of any of them.
+- **A producer publishes during its own `evaluate`** — it hands its whole batch
+  to the arena, gets a handle back, and writes that handle to its own outlet —
+  and **holds no state**: no buffer, no occurrences, no handle between ticks.
+  With nothing to publish it writes the **empty handle**, and publishing an
+  empty batch yields that same empty handle, so an unconditional producer
+  cannot report a change on a tick where nothing happened.
+- **A consumer reads by handle.** Fan-out costs nothing and copies nothing:
+  every consumer of an outlet holds the same handle and reads the same
+  refcounted batch. Reading does not consume. A node that forwards or merges
+  publishes a batch of its own.
+- **The arena is emptied before every tick** — drop every batch, bump the
+  generation — which is the whole lifecycle, O(batches) rather than O(nodes),
+  with no per-kind index of which fields are handles.
+- **A stale handle reads empty.** A handle carries the generation it was
+  published in, so one that outlived its tick reads as *no occurrences* —
+  never as whatever now occupies its slot, and never as a failed evaluation.
+  Two behaviours fall out of that rather than needing machinery: a producer
+  that stops publishing leaves nothing observable behind, and **a trigger
+  connection inside a cycle carries nothing**, because the handle its partner
+  published last tick is stale.
+- **Publishing dirties.** A handle names one tick's batch, so a publishing node
+  writes a different outlet value every tick and is reported changed, as is
+  every node its handle reaches. Only the empty handle replacing the empty
+  handle reports nothing.
+- **A handle is session state.** It is never authorable; a document stores the
+  empty handle for a handle inlet, so a save names no batch and no generation
+  and is byte-stable across ticks.
+- Registration is one call per payload type (`register_event_handle::<P>`); the
+  arena itself needs no registration of any kind.
 
 **Order relative to the graph tick** (`FixedUpdate`):
 
-1. Clear all event-wire buffers.
-2. For each event wire, copy/append from the source `TriggerOut` into that
-   wire's buffer.
-3. Graph tick runs — behaviours may read their `TriggerIn` / wire buffer.
-4. Clear `TriggerOut`s.
+1. `EventClearSet` — empty the arena. Deliberately *not* gated on asset
+   loading, so the arena stays bounded whatever else is running.
+2. Graph tick runs — producers publish and consumers read, in the order the
+   graph already puts a producer before its consumers, so a chain of trigger
+   connections carries occurrences end to end within one tick.
 
-Continuous values still need the fixed graph tick; events use that epoch so
-every behaviour in the order sees the same occurrences for the tick. Variadic
-fan-in is out of scope for MVP.
+**`MidiNotes` is the first producer**: it publishes every note-on and note-off
+of the tick as one batch — channel, note, velocity, on/off and the sub-tick
+offset the MIDI drain already records — and selects nothing, leaving the empty
+handle on a silent tick. The converter nodes that turn note occurrences into
+the generic events other domains understand are follow-up work (`docs/roadmap.md`).
 
 ## 4. Ordering, rebuild, and tick
 
@@ -320,7 +353,7 @@ not months of dependency patching.
 | Node placement on the editor canvas | **`sway-editor`**, persisted as a `"pos"` annotation on the node |
 | Viewport pointer/key vocabulary | **`sway-viewport-input`**, shared by `sway-editor` and `sway-editor-viewport` |
 | Deferring an edit past a widget's event dispatch | **`sway-editor`** (`EditorEdit` + its `PreUpdate` applier) |
-| Event-wire buffers + pre-tick clear/copy | **`sway-events`** |
+| Occurrence arena (this tick's batches) + its pre-tick clear | **`sway-events`** |
 | Document parse/emit | **`sway-document`** from the `Graph` |
 | Geometry tables / operators | **`sway-geo`** (CPU; dormant for the MVP, §6) |
 
@@ -386,10 +419,9 @@ ordinary Bevy entities after the tick; Bevy takes over from there
 ```
 PreUpdate     drain EditorEdit → Graph (editor builds only)
 FixedUpdate   MIDI feed → drain → sample Transport
+              sway-events: clear the arena
               rebuild order if dirty
-              sway-events: clear wire buffers → copy TriggerOut → buffers
               graph tick (TruncateList / Propagate / Evaluate)
-              sway-events: clear TriggerOuts
 Update        projectors (producers → materials → scene → attach → parent)
               Changed<T> reactions, services
 PostUpdate    transform propagation, visibility
@@ -455,12 +487,13 @@ mid-tick.
 sway-gpu              wgpu instance/device/queue — bevy↔vello pin lives here
 sway-graph            Graph resource, NodeId, mutation API, order, tick
                       (no MIDI, no document, no bevy_render, no UI, no channel)
-sway-events           event wires, per-wire buffers, pre-tick clear/copy
+sway-events           occurrence arena + EventHandle<P>; one plugin, one
+                      pre-tick clear (the engine depends on none of it)
 sway-document         version 4 on-disk format; stable ids; load/save the Graph
 sway-base-nodes       the base value/signal node kinds (Oscillator, Envelope,
                       Math, Remap, MakeVec3) — pure functions of their inlets
 sway-midi-core        MIDI IO, typed messages, PulseClock (no Bevy)
-sway-midi             Bevy plugin, Transport snapshot, MidiTime
+sway-midi             Bevy plugin, Transport snapshot, MidiTime, MidiCc, MidiNotes
 sway-geo              Geometry attribute tables and CPU operators (dormant)
 sway-runtime          headless Bevy app; render-coupled node kinds; projectors
 sway-viewport-input   the viewport's pointer/key/scroll vocabulary
@@ -485,7 +518,8 @@ need a separate schema crate.
 - **Order** — determinism, cycle append behaviour, **one-tick** chain
   resolution.
 - **Change detection** — an equal propagate leaves the destination undirtied.
-- **Events** — clear/copy/clear-out invariants; fan-out isolation per wire
+- **Events** — the arena's publish/read/clear invariants; a stale handle
+  reading empty; fan-out sharing one batch; what publishing does to the dirty set
   buffer.
 - **Cooking** — pure geometry functions; unrelated changes recompute nothing.
 - **Document** — round-trip; malformed input reports; load mints stable ids
@@ -500,8 +534,9 @@ need a separate schema crate.
 
 - Evaluation cost is the author's problem; the tool reports rather than
   polices.
-- Events as in §3; value wires and event wires are distinct. Event payloads are
-  generic (`TriggerOut<P>`).
+- Events as in §3. An event wire *is* a value wire — the value it carries is an
+  `EventHandle<P>`, so payloads stay generic while the engine keeps one edge
+  kind and one legality rule.
 - Document lives outside `sway-graph`; authoring is the graph's own
   operations, not a second vocabulary restating them as data (§2, §11).
 - MIDI IO and pulse-clock math live in `sway-midi-core`; the `Transport`

@@ -5,6 +5,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Res, ResMut};
 use crossbeam_channel::Receiver;
+use sway_events::RegisterEventHandle;
 use sway_graph::graph::RegisterNodeKind;
 
 use crate::{
@@ -52,6 +53,13 @@ impl Plugin for MidiPlugin {
             .register_node_kind::<crate::nodes::MidiCc>()
             .register_type::<crate::nodes::MidiCcIn>()
             .register_type::<crate::nodes::MidiCcOut>()
+            // The notes node brings its payload and its handle with it: a
+            // host that adds `MidiPlugin` registers neither on the domain's
+            // behalf (`midi`: MIDI note events live in the MIDI domain).
+            .register_node_kind::<crate::nodes::MidiNotes>()
+            .register_type::<crate::nodes::MidiNotesOut>()
+            .register_type::<crate::nodes::NoteEvent>()
+            .register_event_handle::<crate::nodes::NoteEvent>()
             .insert_resource(MidiRx(self.rx.clone()))
             .init_resource::<MidiInbox>()
             .init_resource::<TickMidi>()
@@ -409,6 +417,147 @@ mod tests {
 
         let graph = app.world().resource::<Graph>();
         assert_eq!(read_field::<f32>(graph, node, Part::Outlets, "out"), 1.0);
+    }
+
+    /// The notes node needs the arena as well as the domain, which is what
+    /// `sway-app` wires up: `EventsPlugin` beside `GraphPlugin`.
+    fn notes_app(rx: Receiver<TimedMidi>) -> (App, sway_graph::graph::NodeId) {
+        let mut app = App::new();
+        app.add_plugins(TimePlugin)
+            .insert_resource(Time::<Fixed>::from_hz(120.0))
+            .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
+            .add_plugins((GraphPlugin, sway_events::EventsPlugin, MidiPlugin { rx }));
+        app.update();
+        let node = app
+            .world_mut()
+            .resource_mut::<Graph>()
+            .insert(Node::of(crate::MidiNotes::default()));
+        (app, node)
+    }
+
+    fn published_notes(app: &App, node: sway_graph::graph::NodeId) -> Vec<crate::NoteEvent> {
+        let handle = read_field::<sway_events::EventHandle<crate::NoteEvent>>(
+            app.world().resource::<Graph>(),
+            node,
+            Part::Outlets,
+            "notes",
+        );
+        app.world()
+            .get_non_send::<sway_events::EventArena>()
+            .and_then(|arena| arena.read(handle))
+            .map(|batch| batch.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn one_plugin_puts_the_notes_node_in_the_palette_and_ticks_it() {
+        // `midi`: One plugin is the whole domain — and the host registered
+        // neither the payload nor its handle on the domain's behalf.
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let mut app = App::new();
+        app.add_plugins(TimePlugin)
+            .insert_resource(Time::<Fixed>::from_hz(120.0))
+            .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
+            .add_plugins((GraphPlugin, sway_events::EventsPlugin, MidiPlugin { rx }));
+        app.update();
+
+        let registry = app
+            .world()
+            .resource::<bevy_ecs::reflect::AppTypeRegistry>()
+            .clone();
+        let path = {
+            let read = registry.read();
+            assert!(
+                read.get_with_type_path("sway_midi::nodes::midi_notes::NoteEvent")
+                    .is_some(),
+                "the payload came with the plugin"
+            );
+            *sway_graph::graph::registered_node_kinds(&read)
+                .iter()
+                .find(|kind| kind.ends_with("::MidiNotes"))
+                .expect("the notes node is in the palette")
+        };
+
+        // Created from the palette by type path, exactly as the editor does.
+        let node = {
+            let read = registry.read();
+            app.world_mut()
+                .resource_mut::<Graph>()
+                .create(&read, path)
+                .expect("a registered node kind")
+        };
+        // No MIDI hardware, so no note ever arrives.
+        app.update();
+
+        assert_eq!(
+            read_field::<sway_events::EventHandle<crate::NoteEvent>>(
+                app.world().resource::<Graph>(),
+                node,
+                Part::Outlets,
+                "notes",
+            ),
+            sway_events::EventHandle::EMPTY,
+            "it ticks without MIDI hardware present"
+        );
+    }
+
+    #[test]
+    fn the_notes_node_publishes_the_ticks_notes_through_the_real_path() {
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let (mut app, node) = notes_app(rx);
+
+        tick_with(
+            &mut app,
+            [
+                MidiMessage::NoteOn {
+                    channel: 0,
+                    note: 60,
+                    velocity: 100,
+                },
+                MidiMessage::NoteOff {
+                    channel: 0,
+                    note: 60,
+                    velocity: 0,
+                },
+            ],
+        );
+
+        let notes = published_notes(&app, node);
+        assert_eq!(notes.len(), 2, "both messages arrived as occurrences");
+        assert!(notes[0].on && notes[0].note == 60);
+        assert!(!notes[1].on, "in arrival order");
+    }
+
+    #[test]
+    fn notes_do_not_survive_their_tick() {
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let (mut app, node) = notes_app(rx);
+        tick_with(
+            &mut app,
+            [MidiMessage::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            }],
+        );
+        assert_eq!(published_notes(&app, node).len(), 1);
+
+        app.update();
+
+        assert_eq!(
+            read_field::<sway_events::EventHandle<crate::NoteEvent>>(
+                app.world().resource::<Graph>(),
+                node,
+                Part::Outlets,
+                "notes",
+            ),
+            sway_events::EventHandle::EMPTY,
+            "a second tick with no input leaves the empty handle"
+        );
+        assert!(
+            published_notes(&app, node).is_empty(),
+            "and the first tick's notes are not published again"
+        );
     }
 
     #[test]

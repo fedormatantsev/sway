@@ -45,6 +45,8 @@ An annotation whose type is not registered MUST be reported and skipped, and the
 
 Loading MUST restore inlets and annotations, and MUST NOT require state, outlets or annotations to be present. Any value that identifies a loaded asset MUST NOT be stored, because it is meaningful only within one session; a node that references an asset MUST store the path it loads from instead.
 
+An inlet that holds session state rather than an authored value MUST be stored as a placeholder that carries nothing of the session that wrote it, and MUST load as freshly initialised session state. An occurrence handle is such an inlet: what a document records of it MUST NOT name a batch of occurrences or the tick it belonged to, and MUST load as the empty handle. A node kind that declares a handle inlet MUST otherwise save and load by exactly the same rule as every other node, without the document naming that inlet or its payload type.
+
 #### Scenario: Saving omits state and outlets
 - **WHEN** a node with populated state and outlets is saved
 - **THEN** the entry holds its inlets, kind and annotations only
@@ -75,6 +77,16 @@ Loading MUST restore inlets and annotations, and MUST NOT require state, outlets
 - **WHEN** a node that has loaded an asset is saved and reloaded
 - **THEN** the entry stores the path it loads from
 - **AND** the node loads that asset again on reload
+
+#### Scenario: An occurrence handle inlet round-trips as the empty handle
+- **WHEN** a node whose inlets include a handle naming a batch of occurrences is saved and reloaded
+- **THEN** the node loads with its other inlets restored
+- **AND** its handle inlet is the empty handle
+
+#### Scenario: A handle inlet does not stop a node from saving
+- **WHEN** a document containing a node kind that declares a handle inlet is saved
+- **THEN** that node is written like every other node
+- **AND** no diagnostic is reported for it
 
 ### Requirement: Unresolved ids, kinds and paths are reported and skipped
 Loading MUST report and skip a node whose kind is not known, and an edge naming an id that does not resolve or a path that does not exist on the node it addresses. A single bad entry MUST NOT prevent the rest of the document from loading.

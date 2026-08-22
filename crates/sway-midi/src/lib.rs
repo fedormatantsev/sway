@@ -4,7 +4,9 @@ mod plugin;
 mod transport;
 
 pub use controls::MidiControls;
-pub use nodes::{MidiCc, MidiCcIn, MidiCcOut, MidiTime, MidiTimeOut};
+pub use nodes::{
+    MidiCc, MidiCcIn, MidiCcOut, MidiNotes, MidiNotesOut, MidiTime, MidiTimeOut, NoteEvent,
+};
 pub use plugin::{MidiClock, MidiInbox, MidiPlugin, MidiRx, TickMidi};
 pub use sway_midi_core::{
     MidiInput, MidiMessage, PulseClock, TimedMidi, VIRTUAL_DESTINATION_NAME, host_time_now,
