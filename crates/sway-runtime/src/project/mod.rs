@@ -52,6 +52,8 @@ use sway_graph::graph::{Graph, NodeId};
 mod tests;
 
 pub mod cameras;
+pub mod effect_gpu;
+pub mod effects;
 pub mod entities;
 pub mod materials;
 pub mod producers;
@@ -60,6 +62,7 @@ pub mod scene;
 pub use cameras::{
     CameraTargets, CaptureIntent, CaptureIntents, EditorCameraPreview, PresentedCamera,
     PresentedTarget, allocate_camera_targets, publish_camera_consumers, retarget_cameras,
+    source_camera,
 };
 pub use entities::NodeEntities;
 pub use materials::{project_pbr_materials, project_sprite_materials};
@@ -165,6 +168,9 @@ impl Plugin for RuntimePlugin {
             .init_resource::<cameras::CameraDiagnostics>()
             .init_resource::<PresentedCamera>()
             .init_resource::<CaptureIntents>()
+            .init_resource::<effects::ShowFrame>()
+            .init_resource::<effects::EffectPasses>()
+            .add_plugins(effect_gpu::EffectGpuPlugin)
             .add_systems(
                 Update,
                 (
@@ -192,6 +198,7 @@ impl Plugin for RuntimePlugin {
                     project_scene_entities,
                     attach_materials,
                     project_children,
+                    effects::tick_show_frame,
                     // Targets after the entities exist, so a camera spawned
                     // this pass is pointed at its own target this pass.
                     // `RenderDevice` is absent in a device-free test app, and
@@ -201,6 +208,8 @@ impl Plugin for RuntimePlugin {
                         resource_exists::<bevy::render::renderer::RenderDevice>
                             .and_then(resource_exists::<bevy::render::texture::ManualTextureViews>),
                     ),
+                    effects::publish_effect_passes,
+                    effects::sync_depth_prepass,
                     publish_camera_consumers,
                     clear_dirty,
                 )

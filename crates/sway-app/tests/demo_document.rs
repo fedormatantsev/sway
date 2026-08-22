@@ -162,3 +162,48 @@ fn the_demo_survives_a_save_and_reload_with_its_placement_intact() {
     let _ = std::fs::remove_file(&saved);
     let _ = std::fs::remove_file(&again);
 }
+
+#[test]
+fn the_demo_presents_its_camera_and_has_no_effect_nodes() {
+    // Existing Camera → Output documents keep presenting; this change must
+    // not add effect nodes to the demo (design — Migration Plan).
+    let registry_app = registry_app();
+    let registry = registry_app.world().resource::<AppTypeRegistry>().clone();
+    let registry = registry.read();
+    let (graph, _, diagnostics) =
+        sway_document::load_from_path(&demo_path(), &registry).expect("the demo parses");
+    assert!(diagnostics.is_clean(), "{:#?}", diagnostics.items);
+
+    for (_, node) in graph.iter() {
+        assert!(
+            !sway_runtime::nodes::is_postprocess(node.value()),
+            "the demo must not grow effect nodes in this change"
+        );
+    }
+
+    let gpu = sway_gpu::GpuContext::new(None);
+    let mut app = App::new();
+    app.add_plugins((
+        bevy::app::TaskPoolPlugin::default(),
+        bevy::asset::AssetPlugin::default(),
+    ));
+    app.init_asset::<Mesh>();
+    app.init_asset::<Image>();
+    app.init_asset::<StandardMaterial>();
+    app.init_asset::<sway_runtime::SpriteMaterialAsset>();
+    app.add_plugins(sway_runtime::RuntimePlugin);
+    app.insert_resource(bevy::render::renderer::RenderDevice::from(
+        gpu.device.clone(),
+    ))
+    .init_resource::<bevy::render::texture::ManualTextureViews>();
+    *app.world_mut().resource_mut::<sway_graph::Graph>() = graph;
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<sway_runtime::PresentedCamera>()
+            .0
+            .is_some(),
+        "Camera → Output still presents"
+    );
+}

@@ -126,9 +126,10 @@ pub struct EditorPresenter {
     ui_texture: UiTexture,
     ui_renderer: UiRenderer,
     /// What each entry of the toolbar's camera list means, in the same order.
-    /// `None` is the editor's own camera; the rest are the document's camera
-    /// nodes. Rebuilt with the list, so an index the toolbar reports back
-    /// always resolves against the list it was showing.
+    /// `None` is the editor's own camera; the rest are camera-target producers
+    /// (camera nodes and post-process nodes). Rebuilt with the list, so an
+    /// index the toolbar reports back always resolves against the list it was
+    /// showing.
     camera_choices: Vec<Option<NodeId>>,
 }
 
@@ -237,9 +238,9 @@ impl EditorPresenter {
         self.apply_cameras(app);
     }
 
-    /// Offers the editor's own camera plus every camera node in the document,
-    /// so a document with several cameras can be inspected through each of
-    /// them without rewiring the graph.
+    /// Offers the editor's own camera plus every camera-target producer in the
+    /// document — camera nodes and post-process nodes — so a chain can be
+    /// inspected at each step without rewiring the graph.
     ///
     /// Named and ordered here rather than in `sway-editor`, which has no
     /// notion of a camera at all: the shell is what depends on both the
@@ -247,32 +248,24 @@ impl EditorPresenter {
     /// steady document keeps steady names.
     fn apply_cameras(&mut self, app: &mut App) {
         let mut choices: Vec<Option<NodeId>> = vec![None];
+        let mut names: Vec<String> = vec!["Editor".to_string()];
         if let Some(graph) = app.world().get_resource::<Graph>() {
-            let mut cameras: Vec<NodeId> = graph
+            let mut producers: Vec<(NodeId, &'static str)> = graph
                 .iter()
-                .filter(|(_, node)| {
-                    node.value()
-                        .downcast_ref::<sway_runtime::nodes::Camera>()
-                        .is_some()
+                .filter_map(|(id, node)| {
+                    sway_runtime::nodes::preview_label(node.value()).map(|label| (id, label))
                 })
-                .map(|(id, _)| id)
                 .collect();
-            cameras.sort_unstable();
-            choices.extend(cameras.into_iter().map(Some));
+            producers.sort_unstable_by_key(|(id, _)| *id);
+            for (index, (id, label)) in producers.into_iter().enumerate() {
+                choices.push(Some(id));
+                names.push(format!("{label} {}", index + 1));
+            }
         }
 
         if choices != self.camera_choices {
             self.camera_choices = choices;
         }
-        let names: Vec<String> = self
-            .camera_choices
-            .iter()
-            .enumerate()
-            .map(|(index, choice)| match choice {
-                None => "Editor".to_string(),
-                Some(_) => format!("Camera {index}"),
-            })
-            .collect();
         self.editor.apply_cameras(&names);
     }
 

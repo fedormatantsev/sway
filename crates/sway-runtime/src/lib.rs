@@ -14,5 +14,5 @@ pub use nodes::sprite_material::{
 };
 pub use project::{
     CameraTargets, CaptureIntent, CaptureIntents, EditorCameraPreview, NodeEntities,
-    PresentedCamera, PresentedTarget, ProducerSet, ProjectionSet, RuntimePlugin,
+    PresentedCamera, PresentedTarget, ProducerSet, ProjectionSet, RuntimePlugin, source_camera,
 };

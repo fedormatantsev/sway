@@ -23,6 +23,7 @@ pub mod frame_sequence;
 pub mod mesh;
 pub mod output;
 pub mod pbr_material;
+pub mod postprocess;
 pub mod protocol;
 pub mod scene;
 pub mod sprite_material;
@@ -32,6 +33,10 @@ pub use frame_sequence::{FrameSequence, FrameSequenceIn, FrameSequenceState};
 pub use mesh::{MeshAsset, MeshAssetIn, MeshAssetState, PlaneMesh, PlaneMeshIn, PlaneMeshState};
 pub use output::{Output, OutputIn};
 pub use pbr_material::{PbrMaterial, PbrMaterialIn, PbrMaterialState};
+pub use postprocess::{
+    ColorGrade, ColorGradeIn, DepthOfField, DepthOfFieldIn, FilmGrain, FilmGrainIn,
+    is_camera_target_producer, is_postprocess, preview_label,
+};
 pub use scene::{
     Camera, CameraIn, DEFAULT_CAMERA_RESOLUTION, DirectionalLight, DirectionalLightIn, Group,
     GroupIn, MeshNode, MeshNodeIn, PointLight, PointLightIn,
@@ -62,6 +67,7 @@ pub fn register_runtime_node_kinds(app: &mut App) {
         .register_type::<protocol::ImageSequenceOut>()
         .register_type::<protocol::SceneNodeOut>()
         .register_type::<protocol::CameraTargetOut>()
+        .register_type::<protocol::CameraFeedOut>()
         // --- producers -------------------------------------------------
         .register_node_kind::<MeshAsset>()
         .register_type::<MeshAssetIn>()
@@ -97,6 +103,13 @@ pub fn register_runtime_node_kinds(app: &mut App) {
         .register_type::<OutputIn>()
         .register_node_kind::<Capture>()
         .register_type::<CaptureIn>()
+        // --- post-process (camera-target producers, not scene nodes) ---
+        .register_node_kind::<DepthOfField>()
+        .register_type::<DepthOfFieldIn>()
+        .register_node_kind::<ColorGrade>()
+        .register_type::<ColorGradeIn>()
+        .register_node_kind::<FilmGrain>()
+        .register_type::<FilmGrainIn>()
         // Addressable by path from a document or the inspector.
         .register_type::<Transform>()
         // A camera's `resolution` inlet, addressable whole or per component.
@@ -158,6 +171,9 @@ mod tests {
             "PointLight",
             "Output",
             "Capture",
+            "DepthOfField",
+            "ColorGrade",
+            "FilmGrain",
         ] {
             assert!(
                 short_names.contains(&expected),

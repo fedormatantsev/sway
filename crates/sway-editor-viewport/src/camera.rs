@@ -7,8 +7,8 @@ use bevy::prelude::*;
 use bevy::render::texture::ManualTextureViews;
 use sway_graph::graph::{Graph, NodeId};
 use sway_runtime::headless::VIEWPORT_HANDLE;
-use sway_runtime::nodes::Camera as CameraNode;
-use sway_runtime::{CameraTargets, EditorCameraPreview, NodeEntities};
+use sway_runtime::nodes::{Camera as CameraNode, is_camera_target_producer};
+use sway_runtime::{CameraTargets, EditorCameraPreview, NodeEntities, source_camera};
 use sway_viewport_input::{ViewportButton, ViewportInput};
 
 /// How far a full-viewport drag turns the camera. Deltas arrive normalized
@@ -206,12 +206,12 @@ pub fn settle_viewport_camera(graph: Option<Res<Graph>>, mut active: ResMut<View
     let Some(node) = active.node() else {
         return;
     };
-    let still_a_camera = graph.is_some_and(|graph| {
+    let still_previewable = graph.is_some_and(|graph| {
         graph
             .get(node)
-            .is_some_and(|node| node.value().downcast_ref::<CameraNode>().is_some())
+            .is_some_and(|node| is_camera_target_producer(node.value()))
     });
-    if !still_a_camera {
+    if !still_previewable {
         *active = ViewportCamera::Editor;
     }
 }
@@ -252,6 +252,7 @@ pub fn settle_viewport_camera(graph: Option<Res<Graph>>, mut active: ResMut<View
 /// than the previous frame's.
 pub fn apply_active_camera(
     active: Res<ViewportCamera>,
+    graph: Option<Res<Graph>>,
     nodes: Option<Res<NodeEntities>>,
     targets: Option<Res<CameraTargets>>,
     mut resolved: ResMut<ActiveViewportCamera>,
@@ -259,9 +260,17 @@ pub fn apply_active_camera(
     mut cameras: Query<&mut Camera>,
 ) {
     // Which camera the *pane* shows. Only this drives picking and the gizmo.
+    // A post-process node has no entity; picking walks to the source camera.
     let shown = match *active {
         ViewportCamera::Editor => editor_cameras.iter().next(),
-        ViewportCamera::Node(node) => nodes.as_ref().and_then(|nodes| nodes.entity(node)),
+        ViewportCamera::Node(node) => nodes.as_ref().and_then(|nodes| {
+            nodes.entity(node).or_else(|| {
+                graph
+                    .as_ref()
+                    .and_then(|graph| source_camera(graph, node))
+                    .and_then(|camera| nodes.entity(camera))
+            })
+        }),
     };
 
     let editor_camera = editor_cameras.iter().next();
@@ -368,9 +377,9 @@ pub fn publish_camera_preview(
     }
 
     let next = match (active.node(), graph.as_ref()) {
-        (Some(node), Some(graph)) => graph
-            .get(node)
-            .and_then(|node| node.value().downcast_ref::<CameraNode>())
+        (Some(node), Some(graph)) => source_camera(graph, node)
+            .and_then(|camera| graph.get(camera))
+            .and_then(|camera| camera.value().downcast_ref::<CameraNode>())
             .map(|camera| EditorCameraPreview {
                 node: Some(node),
                 size: fit_aspect(*last_pane, camera.inlets.resolution).size,
@@ -711,6 +720,34 @@ mod active_camera_tests {
     }
 
     #[test]
+    fn a_deleted_postprocess_node_falls_back_to_the_editors_own() {
+        use sway_runtime::nodes::ColorGrade;
+
+        let (mut app, editor, first, _, _, second_entity, _) = app();
+        let grade = app
+            .world_mut()
+            .resource_mut::<Graph>()
+            .insert(Node::of(ColorGrade::default()));
+        app.add_systems(Update, settle_viewport_camera.before(apply_active_camera));
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Node(grade);
+        app.update();
+        assert_eq!(
+            *app.world().resource::<ViewportCamera>(),
+            ViewportCamera::Node(grade),
+            "a live effect stays selected"
+        );
+
+        app.world_mut().resource_mut::<Graph>().remove(grade);
+        app.update();
+        assert_eq!(
+            *app.world().resource::<ViewportCamera>(),
+            ViewportCamera::Editor
+        );
+        assert!(active(&app, editor));
+        let _ = (first, second_entity);
+    }
+
+    #[test]
     fn previewing_a_camera_reports_no_node_as_changed() {
         // Which camera is showing is editor state: switching it must not
         // dirty a node or respawn anything projected.
@@ -1029,6 +1066,37 @@ mod preview_tests {
             app.world().resource::<EditorCameraPreview>().size,
             UVec2::new(1280, 720),
             "twice the pixels, the same 16:9 framing"
+        );
+    }
+
+    #[test]
+    fn previewing_a_color_grade_asks_for_the_source_cameras_aspect() {
+        use sway_graph::graph::Port;
+        use sway_runtime::nodes::{ColorGrade, protocol};
+
+        let mut app = app(UVec2::new(640, 480));
+        let camera = add_camera(&mut app, UVec2::new(1920, 1080));
+        let grade = app
+            .world_mut()
+            .resource_mut::<Graph>()
+            .insert(Node::of(ColorGrade::default()));
+        app.world_mut()
+            .resource_mut::<Graph>()
+            .connect(
+                Port::new(camera, protocol::CAMERA),
+                Port::new(grade, protocol::SOURCE),
+                0,
+            )
+            .expect("camera feeds grade");
+        *app.world_mut().resource_mut::<ViewportCamera>() = ViewportCamera::Node(grade);
+        app.update();
+
+        assert_eq!(
+            *app.world().resource::<EditorCameraPreview>(),
+            EditorCameraPreview {
+                node: Some(grade),
+                size: UVec2::new(640, 360),
+            }
         );
     }
 }

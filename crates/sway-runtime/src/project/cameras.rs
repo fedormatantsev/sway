@@ -37,6 +37,7 @@ use sway_graph::graph::{Graph, NodeId};
 use crate::headless::VIEWPORT_HANDLE;
 use crate::nodes::capture::{Capture, expand_pattern};
 use crate::nodes::output::Output;
+use crate::nodes::postprocess::{ColorGrade, DepthOfField, FilmGrain, is_postprocess};
 use crate::nodes::protocol;
 use crate::nodes::scene::Camera;
 use crate::project::source_of;
@@ -174,6 +175,8 @@ enum Complaint {
     CaptureWithNoCamera,
     CaptureWithNoPath,
     CaptureWithBadPath,
+    PostprocessWithNoSource,
+    DepthOfFieldNotOnCamera,
 }
 
 impl CameraDiagnostics {
@@ -189,13 +192,78 @@ impl CameraDiagnostics {
     }
 }
 
-/// Which cameras something consumes this frame, and how big each one's target
-/// should be.
+/// The camera at the start of a camera-target chain, if this node is a
+/// camera or a post-process node that eventually feeds from one.
+///
+/// Follows each post-process node's `source` inlet. A cycle, a missing
+/// source, or a node that is neither a camera nor an effect yields `None`.
+/// This walk does not care whether the chain can *produce* (a `DepthOfField`
+/// wired after a colour pass still names a camera); allocation uses
+/// [`producing_chain`] for that.
+pub fn source_camera(graph: &Graph, producer: NodeId) -> Option<NodeId> {
+    let mut current = producer;
+    let mut seen = HashSet::<NodeId>::new();
+    loop {
+        if !seen.insert(current) {
+            return None;
+        }
+        let value = graph.get(current)?.value();
+        if value.downcast_ref::<Camera>().is_some() {
+            return Some(current);
+        }
+        if is_postprocess(value) {
+            current = source_of(graph, current, protocol::SOURCE)?;
+            continue;
+        }
+        return None;
+    }
+}
+
+/// The chain from `producer` back to its camera, if every step can produce a
+/// target. `DepthOfField` only produces when its immediate source is a
+/// `Camera`; an effect with no source produces nothing.
+pub(crate) fn producing_chain(graph: &Graph, producer: NodeId) -> Option<Vec<NodeId>> {
+    let mut chain = Vec::new();
+    let mut current = producer;
+    let mut seen = HashSet::<NodeId>::new();
+    loop {
+        if !seen.insert(current) {
+            return None;
+        }
+        let value = graph.get(current)?.value();
+        if value.downcast_ref::<Camera>().is_some() {
+            chain.push(current);
+            return Some(chain);
+        }
+        if value.downcast_ref::<DepthOfField>().is_some() {
+            let src = source_of(graph, current, protocol::SOURCE)?;
+            if graph.get(src)?.value().downcast_ref::<Camera>().is_none() {
+                return None;
+            }
+            chain.push(current);
+            current = src;
+            continue;
+        }
+        if value.downcast_ref::<ColorGrade>().is_some()
+            || value.downcast_ref::<FilmGrain>().is_some()
+        {
+            let src = source_of(graph, current, protocol::SOURCE)?;
+            chain.push(current);
+            current = src;
+            continue;
+        }
+        return None;
+    }
+}
+
+/// Which camera-target producers something consumes this frame, and how big
+/// each one's target should be.
 ///
 /// A graph consumer needs the authored resolution; the editor previewing a
-/// camera needs only the pane's pixels. A camera both consume is allocated at
-/// the authored resolution, because the pixels the graph asked for are the
-/// ones that have to exist (design D4).
+/// producer needs only the pane's pixels. A camera both consume is allocated
+/// at the authored resolution, because the pixels the graph asked for are the
+/// ones that have to exist (design D4). Each consumed effect shares its
+/// source camera's size.
 fn desired_sizes(graph: &Graph, preview: Option<&EditorCameraPreview>) -> HashMap<NodeId, UVec2> {
     let mut desired: HashMap<NodeId, UVec2> = HashMap::default();
 
@@ -205,29 +273,34 @@ fn desired_sizes(graph: &Graph, preview: Option<&EditorCameraPreview>) -> HashMa
         if !consumes {
             continue;
         }
-        let Some(camera) = source_of(graph, id, protocol::CAMERA) else {
+        let Some(producer) = source_of(graph, id, protocol::CAMERA) else {
             continue;
         };
+        let Some(chain) = producing_chain(graph, producer) else {
+            continue;
+        };
+        let camera = *chain.last().expect("a producing chain ends on a camera");
         let Some(resolution) = authored_resolution(graph, camera) else {
             continue;
         };
-        // An authored claim always wins, and every authored claim on one
-        // camera is the same size, so the last writer is the same as the
-        // first.
-        desired.insert(camera, resolution);
+        for node in chain {
+            desired.insert(node, resolution);
+        }
     }
 
     // The preview claims only what no graph consumer already claimed: the
     // pixels a capture asked for are the ones that have to exist, and a
-    // preview-sized target would be fewer of them (design D4).
+    // preview-sized target would be fewer of them (design D4). An effect
+    // whose source camera is already claimed takes that camera's size.
     if let Some(preview) = preview
-        && let Some(camera) = preview.node
-        && !desired.contains_key(&camera)
-        && graph
-            .get(camera)
-            .is_some_and(|node| node.value().downcast_ref::<Camera>().is_some())
+        && let Some(producer) = preview.node
+        && let Some(chain) = producing_chain(graph, producer)
     {
-        desired.insert(camera, preview.size);
+        let camera = *chain.last().expect("a producing chain ends on a camera");
+        let size = desired.get(&camera).copied().unwrap_or(preview.size);
+        for node in chain {
+            desired.entry(node).or_insert(size);
+        }
     }
 
     desired
@@ -246,6 +319,50 @@ fn authored_resolution(graph: &Graph, node: NodeId) -> Option<UVec2> {
     )
 }
 
+/// Once-only diagnostics for post-process nodes that cannot produce a target.
+fn report_postprocess_diagnostics(graph: &Graph, diagnostics: &mut CameraDiagnostics) {
+    for (id, node) in graph.iter() {
+        let value = node.value();
+        if value.downcast_ref::<DepthOfField>().is_some() {
+            match source_of(graph, id, protocol::SOURCE) {
+                None => {
+                    if diagnostics.first_time(id, Complaint::PostprocessWithNoSource) {
+                        warn!(
+                            "post-process node {id} has no source connected, so it produces no frames"
+                        );
+                    }
+                    diagnostics.cleared(id, Complaint::DepthOfFieldNotOnCamera);
+                }
+                Some(src) => {
+                    diagnostics.cleared(id, Complaint::PostprocessWithNoSource);
+                    let on_camera = graph
+                        .get(src)
+                        .is_some_and(|n| n.value().downcast_ref::<Camera>().is_some());
+                    if on_camera {
+                        diagnostics.cleared(id, Complaint::DepthOfFieldNotOnCamera);
+                    } else if diagnostics.first_time(id, Complaint::DepthOfFieldNotOnCamera) {
+                        warn!(
+                            "depth-of-field node {id} is not wired to a camera, so it produces no frames"
+                        );
+                    }
+                }
+            }
+            continue;
+        }
+        if is_postprocess(value) {
+            if source_of(graph, id, protocol::SOURCE).is_none() {
+                if diagnostics.first_time(id, Complaint::PostprocessWithNoSource) {
+                    warn!(
+                        "post-process node {id} has no source connected, so it produces no frames"
+                    );
+                }
+            } else {
+                diagnostics.cleared(id, Complaint::PostprocessWithNoSource);
+            }
+        }
+    }
+}
+
 /// Allocates, resizes and releases camera targets, and registers each in
 /// `ManualTextureViews`.
 ///
@@ -260,6 +377,7 @@ pub fn allocate_camera_targets(
     mut diagnostics: ResMut<CameraDiagnostics>,
 ) {
     let desired = desired_sizes(&graph, preview.as_deref());
+    report_postprocess_diagnostics(&graph, &mut diagnostics);
 
     // Release first, so a resized camera's handle is available to be reissued
     // to its own replacement rather than growing the handle space every edit.
@@ -355,8 +473,8 @@ pub fn publish_camera_consumers(
                     // nothing until its camera is wired here.
                     if diagnostics.first_time(id, Complaint::OutputWithNoCamera) {
                         warn!(
-                            "output node {id} has no camera connected, so nothing is presented — \
-                             connect a camera's `camera` outlet to it"
+                            "output node {id} has no camera target connected, so nothing is presented — \
+                             connect a camera-target producer's `camera` outlet to it"
                         );
                     }
                 }
@@ -370,7 +488,7 @@ pub fn publish_camera_consumers(
 
         let Some(camera) = source_of(&graph, id, protocol::CAMERA) else {
             if diagnostics.first_time(id, Complaint::CaptureWithNoCamera) {
-                warn!("capture node {id} has no camera connected, so it writes nothing");
+                warn!("capture node {id} has no camera target connected, so it writes nothing");
             }
             continue;
         };
@@ -498,6 +616,16 @@ mod tests {
             .expect("a camera connects to a consumer");
     }
 
+    fn feed(graph: &mut Graph, from: NodeId, to: NodeId) {
+        graph
+            .connect(
+                Port::new(from, protocol::CAMERA),
+                Port::new(to, protocol::SOURCE),
+                0,
+            )
+            .expect("a producer feeds an effect");
+    }
+
     #[test]
     fn a_camera_nothing_consumes_is_not_allocated() {
         // Lazy allocation is what keeps a document with four 4K cameras from
@@ -620,6 +748,81 @@ mod tests {
             "a problem that comes back is reportable again"
         );
     }
+
+    #[test]
+    fn source_camera_walks_a_three_node_chain() {
+        let mut graph = Graph::default();
+        let cam = insert(&mut graph, camera(UVec2::new(1920, 1080)));
+        let dof = insert(&mut graph, DepthOfField::default());
+        let grade = insert(&mut graph, ColorGrade::default());
+        feed(&mut graph, cam, dof);
+        feed(&mut graph, dof, grade);
+
+        assert_eq!(source_camera(&graph, cam), Some(cam));
+        assert_eq!(source_camera(&graph, dof), Some(cam));
+        assert_eq!(source_camera(&graph, grade), Some(cam));
+    }
+
+    #[test]
+    fn source_camera_is_none_when_the_source_is_missing() {
+        let mut graph = Graph::default();
+        let grade = insert(&mut graph, ColorGrade::default());
+        assert_eq!(source_camera(&graph, grade), None);
+    }
+
+    #[test]
+    fn a_consumed_color_grade_asks_for_the_cameras_size() {
+        let mut graph = Graph::default();
+        let cam = insert(&mut graph, camera(UVec2::new(1920, 1080)));
+        let grade = insert(&mut graph, ColorGrade::default());
+        let output = insert(&mut graph, Output::default());
+        feed(&mut graph, cam, grade);
+        connect(&mut graph, grade, output);
+
+        let desired = desired_sizes(&graph, None);
+        assert_eq!(desired.get(&cam), Some(&UVec2::new(1920, 1080)));
+        assert_eq!(desired.get(&grade), Some(&UVec2::new(1920, 1080)));
+    }
+
+    #[test]
+    fn an_unwired_effect_asks_for_nothing_even_when_consumed() {
+        let mut graph = Graph::default();
+        let grade = insert(&mut graph, ColorGrade::default());
+        let output = insert(&mut graph, Output::default());
+        connect(&mut graph, grade, output);
+        assert!(desired_sizes(&graph, None).is_empty());
+    }
+
+    #[test]
+    fn depth_of_field_after_a_color_pass_asks_for_nothing() {
+        let mut graph = Graph::default();
+        let cam = insert(&mut graph, camera(UVec2::new(1920, 1080)));
+        let grade = insert(&mut graph, ColorGrade::default());
+        let dof = insert(&mut graph, DepthOfField::default());
+        let output = insert(&mut graph, Output::default());
+        feed(&mut graph, cam, grade);
+        feed(&mut graph, grade, dof);
+        connect(&mut graph, dof, output);
+        assert!(
+            desired_sizes(&graph, None).is_empty(),
+            "DoF cannot produce, so the chain allocates nothing"
+        );
+    }
+
+    #[test]
+    fn previewing_a_grade_asks_for_the_panes_pixels_for_the_whole_chain() {
+        let mut graph = Graph::default();
+        let cam = insert(&mut graph, camera(UVec2::new(3840, 2160)));
+        let grade = insert(&mut graph, ColorGrade::default());
+        feed(&mut graph, cam, grade);
+        let preview = EditorCameraPreview {
+            node: Some(grade),
+            size: UVec2::new(640, 360),
+        };
+        let desired = desired_sizes(&graph, Some(&preview));
+        assert_eq!(desired.get(&cam), Some(&UVec2::new(640, 360)));
+        assert_eq!(desired.get(&grade), Some(&UVec2::new(640, 360)));
+    }
 }
 
 /// Allocation against a real device.
@@ -669,6 +872,17 @@ mod device_tests {
                 0,
             )
             .expect("a camera connects to a consumer");
+    }
+
+    fn feed(app: &mut App, from: NodeId, to: NodeId) {
+        app.world_mut()
+            .resource_mut::<Graph>()
+            .connect(
+                Port::new(from, protocol::CAMERA),
+                Port::new(to, protocol::SOURCE),
+                0,
+            )
+            .expect("a producer feeds an effect");
     }
 
     fn camera(resolution: UVec2) -> Camera {
@@ -1177,6 +1391,220 @@ mod device_tests {
                 Some(RenderTarget::TextureView(h)) if *h == VIEWPORT_HANDLE
             ),
             "a camera the graph did not produce renders into the pane-sized viewport"
+        );
+    }
+
+    #[test]
+    fn a_color_grade_on_the_output_allocates_two_targets_of_the_cameras_size() {
+        let mut app = app();
+        let cam = insert(&mut app, camera(UVec2::new(1920, 1080)));
+        let grade = insert(&mut app, ColorGrade::default());
+        let output = insert(&mut app, Output::default());
+        feed(&mut app, cam, grade);
+        connect(&mut app, grade, output);
+        app.update();
+
+        let targets = app.world().resource::<CameraTargets>();
+        let cam_t = targets.target(cam).expect("camera allocated");
+        let grade_t = targets.target(grade).expect("grade allocated");
+        assert_eq!((cam_t.width, cam_t.height), (1920, 1080));
+        assert_eq!((grade_t.width, grade_t.height), (1920, 1080));
+        assert_ne!(targets.handle(cam), targets.handle(grade));
+    }
+
+    #[test]
+    fn disconnecting_the_output_releases_the_grade_and_the_camera() {
+        let mut app = app();
+        let cam = insert(&mut app, camera(UVec2::new(1920, 1080)));
+        let grade = insert(&mut app, ColorGrade::default());
+        let output = insert(&mut app, Output::default());
+        feed(&mut app, cam, grade);
+        connect(&mut app, grade, output);
+        app.update();
+        assert_eq!(app.world().resource::<CameraTargets>().len(), 2);
+
+        let edge = {
+            let graph = app.world().resource::<Graph>();
+            graph
+                .edges()
+                .iter()
+                .find(|e| e.dst.node == output)
+                .expect("output connection")
+                .id
+        };
+        app.world_mut().resource_mut::<Graph>().disconnect(edge);
+        app.update();
+        assert!(app.world().resource::<CameraTargets>().is_empty());
+    }
+
+    #[test]
+    fn editing_the_camera_resolution_resizes_the_grade_too() {
+        let mut app = app();
+        let cam = insert(&mut app, camera(UVec2::new(1920, 1080)));
+        let grade = insert(&mut app, ColorGrade::default());
+        let output = insert(&mut app, Output::default());
+        feed(&mut app, cam, grade);
+        connect(&mut app, grade, output);
+        app.update();
+
+        app.world_mut()
+            .resource_mut::<Graph>()
+            .get_mut(cam)
+            .expect("still there")
+            .value_mut()
+            .downcast_mut::<Camera>()
+            .expect("a camera")
+            .inlets
+            .resolution = UVec2::new(1280, 720);
+        app.update();
+
+        let targets = app.world().resource::<CameraTargets>();
+        let cam_t = targets.target(cam).expect("camera");
+        let grade_t = targets.target(grade).expect("grade");
+        assert_eq!((cam_t.width, cam_t.height), (1280, 720));
+        assert_eq!((grade_t.width, grade_t.height), (1280, 720));
+    }
+
+    #[test]
+    fn branching_keeps_the_camera_target_and_the_grain_target() {
+        let mut app = app();
+        let cam = insert(&mut app, camera(UVec2::new(800, 600)));
+        let grain = insert(&mut app, FilmGrain::default());
+        let output = insert(&mut app, Output::default());
+        let capture = insert(&mut app, Capture::default());
+        connect(&mut app, cam, output);
+        feed(&mut app, cam, grain);
+        connect(&mut app, grain, capture);
+        app.update();
+
+        let targets = app.world().resource::<CameraTargets>();
+        assert!(targets.target(cam).is_some());
+        assert!(targets.target(grain).is_some());
+        assert_ne!(targets.handle(cam), targets.handle(grain));
+    }
+
+    #[test]
+    fn an_unwired_consumed_grade_gets_no_target() {
+        let mut app = app();
+        let grade = insert(&mut app, ColorGrade::default());
+        let output = insert(&mut app, Output::default());
+        connect(&mut app, grade, output);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<CameraTargets>()
+                .target(grade)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn depth_of_field_after_a_grade_gets_no_target() {
+        let mut app = app();
+        let cam = insert(&mut app, camera(UVec2::new(1920, 1080)));
+        let grade = insert(&mut app, ColorGrade::default());
+        let dof = insert(&mut app, DepthOfField::default());
+        let output = insert(&mut app, Output::default());
+        feed(&mut app, cam, grade);
+        feed(&mut app, grade, dof);
+        connect(&mut app, dof, output);
+        app.update();
+        let targets = app.world().resource::<CameraTargets>();
+        assert!(targets.target(dof).is_none());
+        assert!(targets.target(grade).is_none());
+    }
+
+    #[test]
+    fn output_wired_to_film_grain_publishes_the_grain_handle() {
+        let mut app = app();
+        let cam = insert(&mut app, camera(UVec2::new(800, 600)));
+        let grain = insert(&mut app, FilmGrain::default());
+        let output = insert(&mut app, Output::default());
+        feed(&mut app, cam, grain);
+        connect(&mut app, grain, output);
+        app.update();
+
+        let targets = app.world().resource::<CameraTargets>();
+        let grain_handle = targets.handle(grain).expect("grain allocated");
+        let presented = app
+            .world()
+            .resource::<PresentedCamera>()
+            .0
+            .expect("presented");
+        assert_eq!(presented.node, grain);
+        assert_eq!(presented.handle, grain_handle);
+        assert_eq!(presented.resolution, UVec2::new(800, 600));
+    }
+
+    #[test]
+    fn capture_wired_to_color_grade_publishes_the_grade_handle() {
+        let mut app = app();
+        let cam = insert(&mut app, camera(UVec2::new(1920, 1080)));
+        let grade = insert(&mut app, ColorGrade::default());
+        let capture = insert(
+            &mut app,
+            Capture {
+                inlets: CaptureIn {
+                    path: "grabs/frame_####.png".into(),
+                    recording: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        feed(&mut app, cam, grade);
+        connect(&mut app, grade, capture);
+        app.update();
+
+        let targets = app.world().resource::<CameraTargets>();
+        let grade_handle = targets.handle(grade).expect("grade allocated");
+        let intents = &app.world().resource::<CaptureIntents>().0;
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].camera, grade);
+        assert_eq!(intents[0].resolution, UVec2::new(1920, 1080));
+        assert_eq!(targets.handle(intents[0].camera), Some(grade_handle));
+    }
+
+    #[test]
+    fn branching_output_and_capture_publish_two_different_handles() {
+        let mut app = app();
+        let cam = insert(&mut app, camera(UVec2::new(800, 600)));
+        let grain = insert(&mut app, FilmGrain::default());
+        let output = insert(&mut app, Output::default());
+        let capture = insert(
+            &mut app,
+            Capture {
+                inlets: CaptureIn {
+                    path: "grabs/frame_####.png".into(),
+                    recording: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        connect(&mut app, cam, output);
+        feed(&mut app, cam, grain);
+        connect(&mut app, grain, capture);
+        app.update();
+
+        let presented = app
+            .world()
+            .resource::<PresentedCamera>()
+            .0
+            .expect("presented");
+        let intent = &app.world().resource::<CaptureIntents>().0[0];
+        assert_eq!(presented.node, cam);
+        assert_eq!(intent.camera, grain);
+        assert_ne!(
+            presented.handle,
+            app.world()
+                .resource::<CameraTargets>()
+                .handle(grain)
+                .unwrap()
+        );
+        assert_eq!(
+            presented.handle,
+            app.world().resource::<CameraTargets>().handle(cam).unwrap()
         );
     }
 }

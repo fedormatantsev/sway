@@ -119,6 +119,15 @@ pub struct CameraTargetOut {
     pub camera: CameraTarget,
 }
 
+/// The outlets of a node that produces a camera target and is not a scene
+/// placement — a post-process node. No [`SceneChild`]: offering one would
+/// admit child and pose connections the `nodes` spec forbids.
+#[derive(Reflect, Default, Debug, Clone, Copy, PartialEq)]
+#[reflect(Default, Debug, PartialEq)]
+pub struct CameraFeedOut {
+    pub camera: CameraTarget,
+}
+
 /// The outlets of every scene node: one port, offering itself as a child.
 ///
 /// Every scene node accepts children *and* can be one, which is what makes
@@ -153,6 +162,8 @@ pub const SEQUENCE: &str = "sequence";
 /// its rendered frames through. Both sides share one name, like `material`
 /// and `mesh`.
 pub const CAMERA: &str = "camera";
+/// The inlet a post-process node takes its source camera target on.
+pub const SOURCE: &str = "source";
 /// A camera's authored resolution.
 pub const RESOLUTION: &str = "resolution";
 /// A capture node's output path pattern.
@@ -243,5 +254,29 @@ mod tests {
         assert!(is_valueless(&MeshSource));
         assert!(is_valueless(&SceneChild));
         assert!(is_valueless(&CameraTarget));
+    }
+
+    #[test]
+    fn a_camera_feed_outlet_is_the_camera_target_and_nothing_a_scene_node_has() {
+        // Post-process nodes produce frames without being placements.
+        // `CameraTargetOut` carries a `child` port; this one must not.
+        use bevy::reflect::{Typed, structs::Struct};
+        let bevy::reflect::TypeInfo::Struct(info) = CameraFeedOut::type_info() else {
+            panic!("CameraFeedOut is a struct");
+        };
+        let names: Vec<&str> = info.iter().map(|field| field.name()).collect();
+        assert_eq!(names, vec!["camera"]);
+
+        let outlets = CameraFeedOut::default();
+        assert!(
+            outlets.field("child").is_none(),
+            "a feed is not a scene child"
+        );
+        assert_eq!(
+            std::mem::size_of::<CameraFeedOut>(),
+            0,
+            "the outlet part is a protocol marker and must stay valueless"
+        );
+        assert!(is_valueless(&outlets.camera));
     }
 }
