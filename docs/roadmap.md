@@ -12,6 +12,15 @@ Tags mark the part of the project an idea belongs to: `#editor` `#graph`
 
 ## Backlog
 
+- [ ] Node categories `#editor` `#nodes`
+  Group node kinds by category (`Midi::Notes`, `Midi::OnNote`, `Math::Add`).
+  The palette shows those groups instead of a flat type-path list. Each
+  category has a color used in the editor (palette rows and canvas nodes).
+
+- [ ] Renameable node names `#editor` `#document`
+  Each node shows a name on the canvas, distinct from its kind. The author
+  can rename it.
+
 - [ ] Composite inspector widgets `#editor`
   Vec2 should be two f32 boxes, not a single text field. Same for other vectors
   and matrices.
